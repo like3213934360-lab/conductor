@@ -20,6 +20,8 @@ export const GraphNodeSchema = z.object({
   input: z.record(z.string(), z.unknown()).default({}),
   /** 是否可跳过（路由短路时） */
   skippable: z.boolean().default(false),
+  /** 三模型审计: 节点优先级 (数值越大越先调度, 默认 0) */
+  priority: z.number().default(0),
 })
 
 export type GraphNode = z.infer<typeof GraphNodeSchema>
@@ -42,6 +44,51 @@ export const RunGraphSchema = z.object({
   nodes: z.array(GraphNodeSchema).min(1),
   /** 图中所有边（空数组 = 按 dependsOn 自动推断） */
   edges: z.array(GraphEdgeSchema).default([]),
+}).superRefine((data, ctx) => {
+  // 三模型审计: 重复 node ID 校验
+  const nodeIds = new Set<string>()
+  for (const node of data.nodes) {
+    if (nodeIds.has(node.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `重复的节点 ID: ${node.id}`,
+        path: ['nodes'],
+      })
+    }
+    nodeIds.add(node.id)
+  }
+
+  // 三模型审计: 边端点引用校验
+  for (let i = 0; i < data.edges.length; i++) {
+    const edge = data.edges[i]!
+    if (!nodeIds.has(edge.from)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `边 [${i}] 的 from 节点不存在: ${edge.from}`,
+        path: ['edges', i, 'from'],
+      })
+    }
+    if (!nodeIds.has(edge.to)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `边 [${i}] 的 to 节点不存在: ${edge.to}`,
+        path: ['edges', i, 'to'],
+      })
+    }
+  }
+
+  // 三模型审计: dependsOn 引用校验
+  for (const node of data.nodes) {
+    for (const dep of node.dependsOn) {
+      if (!nodeIds.has(dep)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `节点 ${node.id} 的 dependsOn 引用不存在: ${dep}`,
+          path: ['nodes'],
+        })
+      }
+    }
+  }
 })
 
 export type RunGraph = z.infer<typeof RunGraphSchema>

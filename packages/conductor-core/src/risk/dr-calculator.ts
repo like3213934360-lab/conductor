@@ -154,12 +154,15 @@ export class DRCalculator {
   }
 
   /**
-   * 计算 DAG 最大深度 (BFS)
+   * 计算 DAG 最大深度 (Kahn BFS)
+   *
+   * 三模型审计修复 (Gemini P0):
+   * 使用持久化 maxDepths map + Math.max 保证正确的最长路径而非最短路径
    */
   private computeMaxDepth(graph: RunGraph): number {
     if (graph.nodes.length === 0) return 0
 
-    // 构建邻接 + 入度 (三模型审计 P1: 合并 edges + dependsOn)
+    // 构建邻接 + 入度 (合并 edges + dependsOn)
     const adj = new Map<string, string[]>()
     const inDegree = new Map<string, number>()
     for (const node of graph.nodes) {
@@ -184,27 +187,37 @@ export class DRCalculator {
       }
     }
 
-    // BFS 拓扑排序 → 层级计算
-    const queue: Array<{ id: string; depth: number }> = []
+    // 三模型审计: 持久化 maxDepths map (修复最长路径 vs 最短路径)
+    const maxDepths = new Map<string, number>()
+    const queue: string[] = []
     for (const [id, deg] of inDegree.entries()) {
-      if (deg === 0) queue.push({ id, depth: 0 })
+      if (deg === 0) {
+        queue.push(id)
+        maxDepths.set(id, 0)
+      }
     }
 
-    let maxDepth = 0
+    let globalMax = 0
     while (queue.length > 0) {
       const current = queue.shift()!
-      maxDepth = Math.max(maxDepth, current.depth)
-      const neighbors = adj.get(current.id) ?? []
+      const currentDepth = maxDepths.get(current) ?? 0
+      globalMax = Math.max(globalMax, currentDepth)
+
+      const neighbors = adj.get(current) ?? []
       for (const next of neighbors) {
+        // 更新 next 的最大深度 (取所有前驱中最大)
+        const prevMax = maxDepths.get(next) ?? 0
+        maxDepths.set(next, Math.max(prevMax, currentDepth + 1))
+
         const newDeg = (inDegree.get(next) ?? 1) - 1
         inDegree.set(next, newDeg)
         if (newDeg === 0) {
-          queue.push({ id: next, depth: current.depth + 1 })
+          queue.push(next)
         }
       }
     }
 
-    return maxDepth
+    return globalMax
   }
 
   private scoreToLevel(score: number): 'low' | 'medium' | 'high' | 'critical' {

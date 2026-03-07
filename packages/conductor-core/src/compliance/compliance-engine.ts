@@ -45,14 +45,21 @@ export class ComplianceEngine {
     }
   }
 
-  /** 动态注册新规则 */
+  /** 动态注册新规则 (三模型审计: 按 priority 排序) */
   registerRule(rule: ComplianceRule): void {
     this.rules.push(rule)
+    this.sortRulesByPriority()
   }
 
   /** 批量注册规则（插件贡献） */
   registerRules(rules: ComplianceRule[]): void {
     this.rules.push(...rules)
+    this.sortRulesByPriority()
+  }
+
+  /** 三模型审计: 按 priority 降序排序 (高优先级先执行) */
+  private sortRulesByPriority(): void {
+    this.rules.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
   }
 
   /** 动态移除规则 */
@@ -95,12 +102,13 @@ export class ComplianceEngine {
           if (timer !== undefined) clearTimeout(timer)
         }
       } catch (err) {
-        // Phase 3: 异常不炸出引擎，降级为 warn
+        // 三模型审计 (fail-closed): block 级规则异常/超时降为 block, 非 block 级降为 warn
+        const isBlockLevel = rule.severity === 'block'
         result = {
           ruleId: rule.id,
           ruleName: rule.name,
-          status: 'warn',
-          message: `规则执行异常: ${String(err)}`,
+          status: isBlockLevel ? 'block' : 'warn',
+          message: `规则执行异常 (${isBlockLevel ? 'fail-closed→block' : 'fail-open→warn'}): ${String(err)}`,
         }
       }
 

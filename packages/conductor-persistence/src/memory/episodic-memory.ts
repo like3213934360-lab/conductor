@@ -131,8 +131,12 @@ export class EpisodicMemory {
     ]) {
       try {
         this.db.exec(`ALTER TABLE reflexion_reflections ADD COLUMN ${col}`)
-      } catch {
-        // 列已存在，忽略
+      } catch (err: unknown) {
+        // 三模型审计: 只忽略 duplicate column 错误
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!msg.includes('duplicate column')) {
+          throw err
+        }
       }
     }
   }

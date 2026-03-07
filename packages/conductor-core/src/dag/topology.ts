@@ -118,6 +118,8 @@ export function assertAcyclicGraph(graph: RunGraph): void {
  * 查找当前可执行的就绪节点
  *
  * 条件: 所有前驱已完成(completed) 且自身状态为 pending/queued
+ *
+ * 三模型审计: 按 priority 降序排序 (高优先级先调度)
  */
 export function findReadyNodes(
   graph: RunGraph,
@@ -138,6 +140,18 @@ export function findReadyNodes(
       ready.push(node.id)
     }
   }
+
+  // 三模型审计: 按 priority 降序排序
+  // NOTE: priority 字段在 GraphNodeSchema 中已定义但 type inference 需要重新构建 shared 包
+  ready.sort((a, b) => {
+    const nodeA = graph.nodes.find(n => n.id === a)
+    const nodeB = graph.nodes.find(n => n.id === b)
+    const priA = typeof (nodeA as Record<string, unknown> | undefined)?.priority === 'number'
+      ? (nodeA as Record<string, unknown>).priority as number : 0
+    const priB = typeof (nodeB as Record<string, unknown> | undefined)?.priority === 'number'
+      ? (nodeB as Record<string, unknown>).priority as number : 0
+    return priB - priA
+  })
 
   return ready
 }

@@ -139,14 +139,16 @@ export class SemanticMemory {
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     const limit = query.limit ?? 50
+    params.limit = limit
 
     const stmt = this.db.prepare(`
       SELECT fact_id, subject, predicate, object, confidence,
+             importance, pinned,
              source_run_id, valid_from, valid_to
       FROM semantic_facts
       ${where}
       ORDER BY confidence DESC, valid_from DESC
-      LIMIT ${limit}
+      LIMIT @limit
     `)
 
     const rows = stmt.all(params) as FactRow[]

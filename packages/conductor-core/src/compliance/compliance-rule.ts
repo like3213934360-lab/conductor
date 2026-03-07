@@ -46,6 +46,10 @@ export interface ComplianceRule {
   readonly name: string
   /** 默认级别 */
   readonly defaultLevel: 'block' | 'warn' | 'degrade'
+  /** 三模型审计: 规则优先级 (数值越大越先执行, 默认 0) */
+  readonly priority?: number
+  /** 三模型审计: 规则严重度 (block 级规则异常时 fail-closed) */
+  readonly severity?: 'block' | 'warn' | 'degrade'
   /** 评估规则 */
   evaluate(ctx: ComplianceContext): ComplianceRuleResult | Promise<ComplianceRuleResult>
 }

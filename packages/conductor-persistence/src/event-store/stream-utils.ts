@@ -59,6 +59,12 @@ export async function* readJsonlStream<T>(
     skipLines?: number
     /** 可选的解析校验函数 */
     validator?: (parsed: unknown) => T
+    /**
+     * 严格模式 (三模型审计修复)
+     * true (默认): 损坏行抛出错误 (fail-closed)
+     * false: 损坏行警告并跳过 (fail-open, 旧行为)
+     */
+    strict?: boolean
   },
 ): AsyncIterable<T> {
   // 检查文件是否存在
@@ -76,6 +82,7 @@ export async function* readJsonlStream<T>(
 
   let lineNumber = 0
   const skipLines = options?.skipLines ?? 0
+  const strict = options?.strict ?? true
 
   for await (const line of rl) {
     lineNumber++
@@ -89,8 +96,14 @@ export async function* readJsonlStream<T>(
       } else {
         yield parsed as T
       }
-    } catch {
-      // 崩溃恢复: 跳过损坏行（截断写入）
+    } catch (err) {
+      if (strict) {
+        // 三模型审计: fail-closed — 损坏行中断流
+        throw new Error(
+          `[EVENT_STORE_ERROR] JSONL 第 ${lineNumber} 行解析失败 (strict mode): ${filePath} — ${String(err)}`,
+        )
+      }
+      // fail-open: 崩溃恢复模式，跳过损坏行
       console.warn(`[JSONL] 第 ${lineNumber} 行解析失败，跳过（可能是截断写入）: ${filePath}`)
     }
   }
