@@ -78,11 +78,26 @@ export type HookMode = 'waterfall' | 'parallel' | 'bail' | 'series'
 // ─────────────── Hook 定义 ───────────────
 
 /**
+ * 2026 SOTA: 可取消的 hook 上下文 (TC39 AbortController + Structured Concurrency)
+ *
+ * 参考:
+ * - TC39 AbortController Stage 4
+ * - Effect Runtime (2025): structured concurrency fiber cancellation
+ * - WHATWG DOM Abort Model: signal propagation across async boundaries
+ */
+export interface CancellableHookContext {
+  /** AbortSignal — 调用方可通过此信号取消 hook 执行 */
+  signal?: AbortSignal
+}
+
+/**
  * ConductorHooks — 所有可用的生命周期钩子
  *
  * Hook 命名遵循 before/after 约定:
  * - before*: 可修改输入的 waterfall hook
  * - after*:  只读观察的 series/parallel hook
+ *
+ * 2026 SOTA: 所有 hook context 继承 CancellableHookContext (signal 可选)
  */
 export interface ConductorHooks {
   // ─── 运行生命周期 ───

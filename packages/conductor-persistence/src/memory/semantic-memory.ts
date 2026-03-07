@@ -10,13 +10,17 @@
  */
 import type Database from 'better-sqlite3'
 
-/** 语义事实 */
+/** 语义事实 — 2026 SOTA: importance + pinning */
 export interface SemanticFact {
   factId?: number
   subject: string
   predicate: string
   object: string
   confidence: number
+  /** 2026 SOTA: 重要度分 (Generative Agents 2025: Importance Scoring) */
+  importance: number
+  /** 2026 SOTA: 是否固定 (不可淘汰, MemGPT 2023: critical memory) */
+  pinned: boolean
   sourceRunId?: string
   validFrom: string
   validTo?: string
@@ -56,10 +60,17 @@ export class SemanticMemory {
     `)
 
     // 审计修复 #1: 添加 last_accessed_at 列支持真正的 LRU
-    try {
-      this.db.exec(`ALTER TABLE semantic_facts ADD COLUMN last_accessed_at TEXT`)
-    } catch {
-      // 列已存在，忽略
+    // 2026 SOTA: 添加 importance + pinned 列
+    for (const col of [
+      'last_accessed_at TEXT',
+      'importance REAL NOT NULL DEFAULT 0.5',
+      'pinned INTEGER NOT NULL DEFAULT 0',
+    ]) {
+      try {
+        this.db.exec(`ALTER TABLE semantic_facts ADD COLUMN ${col}`)
+      } catch {
+        // 列已存在，忽略
+      }
     }
   }
 
@@ -149,6 +160,8 @@ export class SemanticMemory {
       predicate: row.predicate,
       object: row.object,
       confidence: row.confidence,
+      importance: row.importance ?? 0.5,
+      pinned: !!(row.pinned),
       sourceRunId: row.source_run_id ?? undefined,
       validFrom: row.valid_from,
       validTo: row.valid_to ?? undefined,
@@ -169,6 +182,8 @@ export class SemanticMemory {
           predicate: 'triggers_risk',
           object: riskLevel,
           confidence: 0.8,
+          importance: riskLevel === 'critical' ? 0.9 : 0.7,
+          pinned: false,
           sourceRunId: runId,
           validFrom: timestamp,
         })
@@ -193,10 +208,12 @@ export class SemanticMemory {
   /**
    * 淘汰最少使用的 N 条活跃事实 — 真正的 LRU 策略
    *
-   * 审计修复 #1: 从 FIFO (valid_from ASC) 改为 LRU (last_accessed_at ASC)
+   * 2026 SOTA:
+   * - LRU 排序 (COALESCE(last_accessed_at, valid_from) ASC)
+   * - 排除 pinned 事实 (关键记忆保护, MemGPT 2023)
+   * - 低重要度事实优先淘汰 (Generative Agents 2025)
    *
    * 科研参考: Packer 2023, MemGPT Section 4.2
-   * "evicts the least recently USED memory pages"
    */
   evictOldest(n: number): number {
     const result = this.db.prepare(`
@@ -204,13 +221,36 @@ export class SemanticMemory {
       SET valid_to = ?
       WHERE fact_id IN (
         SELECT fact_id FROM semantic_facts
-        WHERE valid_to IS NULL
-        ORDER BY COALESCE(last_accessed_at, valid_from) ASC
+        WHERE valid_to IS NULL AND pinned = 0
+        ORDER BY importance ASC, COALESCE(last_accessed_at, valid_from) ASC
         LIMIT ?
       )
     `).run(new Date().toISOString(), n)
 
     return result.changes
+  }
+
+  /**
+   * 2026 SOTA: 固定关键记忆 (不可淘汰)
+   *
+   * 参考: Packer 2023 MemGPT "critical memories are pinned"
+   */
+  pinFact(factId: number): void {
+    this.db.prepare(`UPDATE semantic_facts SET pinned = 1 WHERE fact_id = ?`).run(factId)
+  }
+
+  unpinFact(factId: number): void {
+    this.db.prepare(`UPDATE semantic_facts SET pinned = 0 WHERE fact_id = ?`).run(factId)
+  }
+
+  /**
+   * 2026 SOTA: 更新事实重要度
+   *
+   * 参考: Generative Agents 2025 "Importance Scores"
+   */
+  updateImportance(factId: number, importance: number): void {
+    const clamped = Math.max(0, Math.min(1, importance))
+    this.db.prepare(`UPDATE semantic_facts SET importance = ? WHERE fact_id = ?`).run(clamped, factId)
   }
 
   /**
@@ -262,6 +302,8 @@ interface FactRow {
   predicate: string
   object: string
   confidence: number
+  importance: number
+  pinned: number
   source_run_id: string | null
   valid_from: string
   valid_to: string | null

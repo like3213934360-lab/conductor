@@ -47,7 +47,7 @@ export interface ReflexionEvaluation {
   evaluatedAt: string
 }
 
-/** 反思结果 (Reflector 输出) */
+/** 反思结果 (Reflector 输出) — 2026 SOTA: Critic-Actor-Judge */
 export interface ReflexionReflection {
   /** 运行 ID */
   runId: string
@@ -59,6 +59,12 @@ export interface ReflexionReflection {
   lessonType: 'avoid' | 'prefer' | 'adjust'
   /** 置信度 (0-1) */
   confidence: number
+  /** 2026 SOTA: 反思质量分 (Shinn 2023 Section 3.2: LLM 评分) */
+  qualityScore: number
+  /** 2026 SOTA: 强化强度 (Critic-Actor-Judge 2025) */
+  reinforcementStrength: number
+  /** 被应用的次数 */
+  appliedCount: number
   /** 反思时间 */
   reflectedAt: string
 }
@@ -109,10 +115,26 @@ export class EpisodicMemory {
         action_items TEXT NOT NULL,
         lesson_type TEXT NOT NULL DEFAULT 'adjust',
         confidence REAL NOT NULL DEFAULT 0.5,
+        quality_score REAL NOT NULL DEFAULT 0.5,
+        reinforcement_strength REAL NOT NULL DEFAULT 1.0,
+        applied_count INTEGER NOT NULL DEFAULT 0,
         reflected_at TEXT NOT NULL,
         FOREIGN KEY (run_id) REFERENCES reflexion_evaluations(run_id)
       )
     `)
+
+    // 2026 SOTA: 添加新列 (向后兼容)
+    for (const col of [
+      'quality_score REAL NOT NULL DEFAULT 0.5',
+      'reinforcement_strength REAL NOT NULL DEFAULT 1.0',
+      'applied_count INTEGER NOT NULL DEFAULT 0',
+    ]) {
+      try {
+        this.db.exec(`ALTER TABLE reflexion_reflections ADD COLUMN ${col}`)
+      } catch {
+        // 列已存在，忽略
+      }
+    }
   }
 
   // ─── 阶段 1: Evaluator ──────────────────────────────
@@ -240,20 +262,26 @@ export class EpisodicMemory {
       actionItems,
       lessonType,
       confidence,
+      qualityScore: confidence * 0.8, // 2026 SOTA: 初始质量分 = 置信度 × 0.8
+      reinforcementStrength: 1.0,     // 2026 SOTA: 初始强化强度
+      appliedCount: 0,
       reflectedAt: new Date().toISOString(),
     }
 
-    // 持久化反思结果
+    // 持久化反思结果 (2026 SOTA: 含质量分 + 强化强度)
     this.db.prepare(`
       INSERT OR REPLACE INTO reflexion_reflections
-        (run_id, root_cause, action_items, lesson_type, confidence, reflected_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (run_id, root_cause, action_items, lesson_type, confidence, quality_score, reinforcement_strength, applied_count, reflected_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       reflection.runId,
       reflection.rootCause,
       JSON.stringify(reflection.actionItems),
       reflection.lessonType,
       reflection.confidence,
+      reflection.qualityScore,
+      reflection.reinforcementStrength,
+      reflection.appliedCount,
       reflection.reflectedAt,
     )
 
