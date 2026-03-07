@@ -127,29 +127,79 @@ export class ManifestIndex {
   }
 
   /**
-   * 搜索历史运行 — BM25 + 时间衰减
+   * 搜索历史运行 — 科研升级 F: Hybrid Retrieval
+   *
+   * 双路检索 + RRF 融合 + 时间衰减:
+   * 1. BM25 精确匹配 (prefix: false, fuzzy: 0)
+   * 2. Fuzzy 模糊匹配 (prefix: true, fuzzy: 0.3)
+   * 3. Reciprocal Rank Fusion (RRF) 合并两路排名
+   * 4. 时间衰减 (半衰期 7 天)
+   *
+   * 参考:
+   * - Cormack et al., "Reciprocal Rank Fusion" (SIGIR 2009)
+   * - MiniSearch 4.x 内置 TF-IDF 支持
+   * - Robertson & Zaragoza, "BM25 and Beyond" (2009)
    */
   search(query: string, topK: number = 5): ManifestSearchResult[] {
     const now = Date.now()
     const lambda = Math.LN2 / this.halfLifeMs
 
-    const rawResults = this.miniSearch.search(query)
+    // 路 1: BM25 精确匹配 (高精度)
+    const exactResults = this.miniSearch.search(query, {
+      prefix: false,
+      fuzzy: false,
+      boost: { goal: 3, filesText: 1.5, repoRoot: 1 },
+    }) as unknown as SearchResult[]
 
-    const results = rawResults as unknown as SearchResult[]
+    // 路 2: Fuzzy 模糊匹配 (高召回)
+    const fuzzyResults = this.miniSearch.search(query, {
+      prefix: true,
+      fuzzy: 0.3,
+      boost: { goal: 2, filesText: 1.5, repoRoot: 1 },
+    }) as unknown as SearchResult[]
 
-    return results
-      .map((result: SearchResult) => {
+    // RRF 融合 (k=60, SIGIR 2009 推荐值)
+    const k = 60
+    const rrfScores = new Map<string, { score: number; result: SearchResult }>()
+
+    // 路 1 RRF 贡献
+    for (let rank = 0; rank < exactResults.length; rank++) {
+      const r = exactResults[rank]!
+      const rrf = 1 / (k + rank + 1)
+      const existing = rrfScores.get(r.runId)
+      if (existing) {
+        existing.score += rrf
+      } else {
+        rrfScores.set(r.runId, { score: rrf, result: r })
+      }
+    }
+
+    // 路 2 RRF 贡献
+    for (let rank = 0; rank < fuzzyResults.length; rank++) {
+      const r = fuzzyResults[rank]!
+      const rrf = 1 / (k + rank + 1)
+      const existing = rrfScores.get(r.runId)
+      if (existing) {
+        existing.score += rrf
+      } else {
+        rrfScores.set(r.runId, { score: rrf, result: r })
+      }
+    }
+
+    // 时间衰减 + 最终排序
+    return Array.from(rrfScores.values())
+      .map(({ score: rrfScore, result }) => {
         const createdAt = new Date(result.createdAt).getTime()
-        // 审查修复 #8: 防御性 NaN + 未来时间边界
+        // 防御性 NaN + 未来时间边界
         const age = (Number.isFinite(createdAt) && createdAt <= now)
           ? now - createdAt
-          : 0 // 无效/未来时间不衰减
+          : 0
         const decay = age > 0 ? Math.exp(-lambda * age) : 1
-        const decayedScore = result.score * decay
+        const finalScore = rrfScore * decay
 
         return {
           runId: result.runId,
-          score: Number.isFinite(decayedScore) ? decayedScore : 0,
+          score: Number.isFinite(finalScore) ? finalScore : 0,
           goal: result.goal,
           lane: result.lane,
           riskLevel: result.riskLevel,

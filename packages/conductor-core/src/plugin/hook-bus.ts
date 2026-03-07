@@ -149,7 +149,7 @@ export class HookBus {
         const result = await this.runWithTimeout(
           entry.pluginName,
           hookName,
-          () => entry.fn(frozenInput, ...restArgs),
+          (signal) => entry.fn(frozenInput, ...restArgs, signal),
           entry.timeoutMs,
         )
         // waterfall: 非 undefined 返回值覆盖 current
@@ -182,7 +182,7 @@ export class HookBus {
         await this.runWithTimeout(
           entry.pluginName,
           hookName,
-          () => entry.fn(...args),
+          (signal) => entry.fn(...args, signal),
           entry.timeoutMs,
         )
         this.logHookExecution(hookName, entry.pluginName, Date.now() - start, 'ok')
@@ -210,7 +210,7 @@ export class HookBus {
         const result = await this.runWithTimeout(
           entry.pluginName,
           hookName,
-          () => entry.fn(...args),
+          (signal) => entry.fn(...args, signal),
           entry.timeoutMs,
         )
         this.logHookExecution(hookName, entry.pluginName, Date.now() - start, 'ok')
@@ -242,7 +242,7 @@ export class HookBus {
         await this.runWithTimeout(
           entry.pluginName,
           hookName,
-          () => entry.fn(...args),
+          (signal) => entry.fn(...args, signal),
           entry.timeoutMs,
         )
         this.logHookExecution(hookName, entry.pluginName, Date.now() - start, 'ok')
@@ -257,29 +257,42 @@ export class HookBus {
   }
 
   /**
-   * 超时保护执行器
+   * 超时保护执行器 — AbortController 协作取消
    *
-   * P0 修复: 使用 clearTimeout 防止 timer 泄漏
-   * Promise.race 后立即清理 timer，避免高频调用下的内存滞留。
+   * 科研升级 A (TC39 Stage 4 AbortController):
+   *
+   * 原实现 Promise.race 的问题:
+   * - 超时后底层 Promise 仍在运行，占用资源
+   * - Hook 无法感知已被取消，继续执行副作用
+   *
+   * 新实现:
+   * - 创建 AbortController，将 signal 传给 Hook
+   * - 超时触发 controller.abort() → signal.aborted = true
+   * - Hook 可通过 signal.throwIfAborted() 检查取消状态
+   * - clearTimeout 防止 timer 泄漏
    */
   private async runWithTimeout(
     pluginName: string,
     hookName: string,
-    fn: () => unknown | Promise<unknown>,
+    fn: (signal: AbortSignal) => unknown | Promise<unknown>,
     timeoutMs: number,
   ): Promise<unknown> {
+    const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
       return await Promise.race([
-        Promise.resolve(fn()),
+        Promise.resolve(fn(controller.signal)),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(
+          timer = setTimeout(() => {
+            // AbortController 协作取消: 通知底层停止工作
+            controller.abort(new Error(
               `插件 [${pluginName}] hook [${hookName}] 超时 (${timeoutMs}ms)`,
-            )),
-            timeoutMs,
-          )
+            ))
+            reject(new Error(
+              `插件 [${pluginName}] hook [${hookName}] 超时 (${timeoutMs}ms)`,
+            ))
+          }, timeoutMs)
         }),
       ])
     } finally {

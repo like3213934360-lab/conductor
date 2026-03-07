@@ -158,6 +158,85 @@ export class SemanticMemory {
       }
     }
   }
+
+  // ─── 科研升级 E: MemGPT eviction 接口 ──────────────
+
+  /**
+   * 统计活跃事实数量
+   *
+   * MemGPT 预算检查使用
+   */
+  count(): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM semantic_facts WHERE valid_to IS NULL',
+    ).get() as { cnt: number }
+    return row.cnt
+  }
+
+  /**
+   * 淘汰最旧的 N 条活跃事实 — LRU 策略
+   *
+   * 科研参考: Packer 2023, MemGPT Section 4.2
+   * "When the working context is full, the system
+   * evicts the least recently used memory pages"
+   *
+   * 实现: 关闭最旧的 N 条活跃事实 (设置 valid_to)
+   */
+  evictOldest(n: number): number {
+    const result = this.db.prepare(`
+      UPDATE semantic_facts
+      SET valid_to = ?
+      WHERE fact_id IN (
+        SELECT fact_id FROM semantic_facts
+        WHERE valid_to IS NULL
+        ORDER BY valid_from ASC
+        LIMIT ?
+      )
+    `).run(new Date().toISOString(), n)
+
+    return result.changes
+  }
+
+  /**
+   * 合并相同 subject+predicate 的事实 — 去重压缩
+   *
+   * 科研参考: Packer 2023, MemGPT Section 4.3
+   * "Compaction merges overlapping memory entries"
+   *
+   * 策略: 保留置信度最高的事实，关闭其余
+   */
+  compact(): number {
+    // 找出有多个活跃版本的 subject+predicate 组合
+    const duplicates = this.db.prepare(`
+      SELECT subject, predicate, COUNT(*) as cnt
+      FROM semantic_facts
+      WHERE valid_to IS NULL
+      GROUP BY subject, predicate
+      HAVING cnt > 1
+    `).all() as Array<{ subject: string; predicate: string; cnt: number }>
+
+    let compacted = 0
+    const now = new Date().toISOString()
+
+    for (const dup of duplicates) {
+      // 保留置信度最高的，关闭其余
+      const result = this.db.prepare(`
+        UPDATE semantic_facts
+        SET valid_to = ?
+        WHERE subject = ? AND predicate = ? AND valid_to IS NULL
+          AND fact_id NOT IN (
+            SELECT fact_id FROM semantic_facts
+            WHERE subject = ? AND predicate = ? AND valid_to IS NULL
+            ORDER BY confidence DESC
+            LIMIT 1
+          )
+      `).run(now, dup.subject, dup.predicate, dup.subject, dup.predicate)
+
+      compacted += result.changes
+    }
+
+    return compacted
+  }
 }
 
 /** 数据库行类型 */

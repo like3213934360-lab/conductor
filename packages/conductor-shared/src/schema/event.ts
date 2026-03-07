@@ -206,3 +206,175 @@ export type AGCEventType = AGCEvent['type']
  * ```
  */
 export type AGCTypedEventEnvelope = AGCEventEnvelope & AGCEvent
+
+// ─── 科研升级 C: Zod discriminatedUnion 运行时校验 ───
+//
+// 原实现: 反序列化后用 as unknown as PayloadType → 恶意 JSON 可注入
+// 新实现: Zod discriminatedUnion 在反序列化时强制校验 payload 结构
+//
+// 参考: Zod discriminatedUnion docs, OWASP Input Validation Cheat Sheet
+
+const RunCreatedPayloadSchema = z.object({
+  type: z.literal('RUN_CREATED'),
+  payload: z.object({
+    goal: z.string(),
+    nodeIds: z.array(z.string()),
+    repoRoot: z.string().optional(),
+    files: z.array(z.string()),
+  }),
+})
+
+const RunContextCapturedPayloadSchema = z.object({
+  type: z.literal('RUN_CONTEXT_CAPTURED'),
+  payload: z.object({
+    graph: z.object({
+      nodes: z.array(z.object({
+        id: z.string(), name: z.string(),
+        dependsOn: z.array(z.string()),
+        input: z.record(z.string(), z.unknown()),
+        skippable: z.boolean(),
+        model: z.string().optional(),
+      })),
+      edges: z.array(z.object({
+        from: z.string(), to: z.string(),
+        condition: z.string().optional(),
+      })),
+    }),
+    metadata: z.object({
+      goal: z.string(), files: z.array(z.string()),
+      initiator: z.string(),
+      repoRoot: z.string().optional(),
+      createdAt: z.string().optional(),
+    }),
+    options: z.object({
+      plugins: z.array(z.string()), debug: z.boolean(),
+      riskHint: z.string().optional(),
+      tokenBudget: z.number().optional(),
+    }),
+    capturedAt: z.string().optional(),
+  }),
+})
+
+const NodeQueuedPayloadSchema = z.object({
+  type: z.literal('NODE_QUEUED'),
+  payload: z.object({ nodeId: z.string() }),
+})
+
+const NodeStartedPayloadSchema = z.object({
+  type: z.literal('NODE_STARTED'),
+  payload: z.object({ nodeId: z.string(), model: z.string().optional() }),
+})
+
+const NodeCompletedPayloadSchema = z.object({
+  type: z.literal('NODE_COMPLETED'),
+  payload: z.object({ nodeId: z.string(), output: z.record(z.string(), z.unknown()) }),
+})
+
+const NodeFailedPayloadSchema = z.object({
+  type: z.literal('NODE_FAILED'),
+  payload: z.object({ nodeId: z.string(), error: z.string() }),
+})
+
+const NodeSkippedPayloadSchema = z.object({
+  type: z.literal('NODE_SKIPPED'),
+  payload: z.object({ nodeId: z.string(), reason: z.string() }),
+})
+
+const RiskAssessedPayloadSchema = z.object({
+  type: z.literal('RISK_ASSESSED'),
+  payload: z.object({
+    drScore: z.number(), level: z.string(),
+    factors: z.record(z.string(), z.number()),
+  }),
+})
+
+const ComplianceEvaluatedPayloadSchema = z.object({
+  type: z.literal('COMPLIANCE_EVALUATED'),
+  payload: z.object({
+    allowed: z.boolean(), worstStatus: z.string(), findingCount: z.number(),
+  }),
+})
+
+const CheckpointSavedPayloadSchema = z.object({
+  type: z.literal('CHECKPOINT_SAVED'),
+  payload: z.object({ checkpointId: z.string(), version: z.number() }),
+})
+
+const RouteDecidedPayloadSchema = z.object({
+  type: z.literal('ROUTE_DECIDED'),
+  payload: z.object({
+    lane: z.string(), nodePath: z.array(z.string()),
+    skippedNodes: z.array(z.string()),
+    skippedCount: z.number(), confidence: z.number(),
+  }),
+})
+
+const RunVerifiedPayloadSchema = z.object({
+  type: z.literal('RUN_VERIFIED'),
+  payload: z.object({ ok: z.boolean(), driftDetected: z.boolean() }),
+})
+
+const RunCompletedPayloadSchema = z.object({
+  type: z.literal('RUN_COMPLETED'),
+  payload: z.object({
+    finalStatus: z.enum(['completed', 'failed', 'cancelled', 'paused']),
+  }),
+})
+
+/**
+ * AGC 事件 Zod discriminatedUnion — 运行时强制校验
+ *
+ * 用于反序列化时替代 as unknown as 断言。
+ * 拒绝结构不匹配的恶意/损坏事件。
+ */
+export const AGCTypedEventSchema = z.discriminatedUnion('type', [
+  RunCreatedPayloadSchema,
+  RunContextCapturedPayloadSchema,
+  NodeQueuedPayloadSchema,
+  NodeStartedPayloadSchema,
+  NodeCompletedPayloadSchema,
+  NodeFailedPayloadSchema,
+  NodeSkippedPayloadSchema,
+  RiskAssessedPayloadSchema,
+  ComplianceEvaluatedPayloadSchema,
+  CheckpointSavedPayloadSchema,
+  RouteDecidedPayloadSchema,
+  RunVerifiedPayloadSchema,
+  RunCompletedPayloadSchema,
+])
+
+/**
+ * 安全解析 AGC 事件 — 科研升级 C
+ *
+ * 用法:
+ * ```ts
+ * const raw = JSON.parse(line)
+ * const event = parseAGCEvent(raw)
+ * if (event) {
+ *   switch (event.type) {
+ *     case 'RUN_CREATED': event.payload.nodeIds // 类型安全 + 运行时保证!
+ *   }
+ * }
+ * ```
+ *
+ * @returns 解析成功返回强类型事件，失败返回 null
+ */
+export function parseAGCEvent(raw: unknown): AGCTypedEventEnvelope | null {
+  // 第一步: 校验信封结构 (eventId, runId, version, timestamp)
+  const envelope = AGCEventEnvelopeSchema.safeParse(raw)
+  if (!envelope.success) return null
+
+  // 第二步: 校验事件类型 + payload 结构
+  const typed = AGCTypedEventSchema.safeParse({
+    type: envelope.data.type,
+    payload: envelope.data.payload,
+  })
+  if (!typed.success) return null
+
+  return {
+    ...envelope.data,
+    type: typed.data.type,
+    payload: typed.data.payload,
+  } as AGCTypedEventEnvelope
+}
+
