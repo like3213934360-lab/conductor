@@ -1,0 +1,140 @@
+{
+  "name": "arkts-language-support",
+  "displayName": "ArkTS Language Support",
+  "description": "HarmonyOS ArkTS 语言智能支持 — 基于 DevEco Studio ace-server",
+  "version": "0.2.0",
+  "publisher": "like3213934360-lab",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "keywords": [
+    "arkts",
+    "harmonyos",
+    "ets",
+    "huawei",
+    "openharmony"
+  ],
+  "activationEvents": [
+    "onLanguage:arkts",
+    "workspaceContains:**/*.ets"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "arkts",
+        "aliases": ["ArkTS", "arkts", "ets"],
+        "extensions": [".ets"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "arkts",
+        "scopeName": "source.ets",
+        "path": "./syntaxes/ets.tmLanguage.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "ArkTS DevEco (Darcula)",
+        "uiTheme": "vs-dark",
+        "path": "./themes/deveco-darcula-color-theme.json"
+      }
+    ],
+    "configuration": {
+      "title": "ArkTS",
+      "properties": {
+        "arkts.deveco.path": {
+          "type": "string",
+          "default": "",
+          "description": "自定义 DevEco Studio 安装路径（留空则自动检测）"
+        },
+        "arkts.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "LSP 通信日志级别（调试用）"
+        }
+      }
+    },
+    "semanticTokenTypes": [
+      {
+        "id": "decorator",
+        "superType": "type",
+        "description": "ArkTS decorator name (e.g. @Component, @State)"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "arkts",
+        "scopes": {
+          "decorator": [
+            "entity.name.function.decorator",
+            "support.type",
+            "entity.name.type"
+          ]
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[arkts]": {
+        "editor.semanticHighlighting.enabled": true
+      },
+      "editor.semanticTokenColorCustomizations": {
+        "enabled": true,
+        "rules": {
+          "namespace:arkts": "#A9B7C6",
+          "type:arkts": "#A9B7C6",
+          "class:arkts": "#A9B7C6",
+          "enum:arkts": "#A9B7C6",
+          "interface:arkts": "#A9B7C6",
+          "struct:arkts": "#A9B7C6",
+          "typeParameter:arkts": "#A9B7C6",
+          "parameter:arkts": "#A9B7C6",
+          "variable:arkts": "#A9B7C6",
+          "property:arkts": "#9876AA",
+          "enumMember:arkts": "#9876AA",
+          "function:arkts": "#FFC66D",
+          "method:arkts": "#FFC66D",
+          "keyword:arkts": "#CC7832",
+          "string:arkts": "#6A8759",
+          "number:arkts": "#6897BB",
+          "comment:arkts": "#808080",
+          "operator:arkts": "#A9B7C6",
+          "decorator:arkts": "#BBB529",
+          "variable.readonly:arkts": "#A9B7C6",
+          "property.static:arkts": {
+            "foreground": "#9876AA",
+            "fontStyle": "italic"
+          },
+          "method.static:arkts": {
+            "foreground": "#FFC66D",
+            "fontStyle": "italic"
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "package": "npx vsce package --no-dependencies",
+    "install-ext": "npx vsce package --no-dependencies -o arkts.vsix && code --install-extension arkts.vsix && rm arkts.vsix"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0",
+    "json5": "^2.2.3"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0"
+  }
+}

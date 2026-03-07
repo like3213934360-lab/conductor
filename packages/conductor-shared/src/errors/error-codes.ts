@@ -1,0 +1,32 @@
+/**
+ * Conductor AGC — 错误码定义
+ */
+
+export enum AGCErrorCode {
+  // 通用错误 (1xxx)
+  INTERNAL_ERROR = 'AGC_1000',
+  INVALID_INPUT = 'AGC_1001',
+  NOT_FOUND = 'AGC_1002',
+
+  // DAG 错误 (2xxx)
+  GRAPH_CYCLE_DETECTED = 'AGC_2001',
+  GRAPH_INVALID_EDGE = 'AGC_2002',
+  GRAPH_NODE_NOT_FOUND = 'AGC_2003',
+  GRAPH_EMPTY = 'AGC_2004',
+
+  // 合规错误 (3xxx)
+  COMPLIANCE_BLOCKED = 'AGC_3001',
+  COMPLIANCE_RULE_ERROR = 'AGC_3002',
+
+  // 风险错误 (4xxx)
+  RISK_ASSESSMENT_FAILED = 'AGC_4001',
+
+  // 状态错误 (5xxx)
+  STATE_VERSION_CONFLICT = 'AGC_5001',
+  EVENT_STORE_ERROR = 'AGC_5002',
+  CHECKPOINT_ERROR = 'AGC_5003',
+
+  // 验证错误 (6xxx)
+  VERIFY_DRIFT_DETECTED = 'AGC_6001',
+  VERIFY_REPLAY_MISMATCH = 'AGC_6002',
+}

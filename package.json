@@ -1,0 +1,21 @@
+{
+  "name": "arkts-lsp",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/ace-bridge && npm run build -w packages/vscode-extension",
+    "build:bridge": "npm run build -w packages/ace-bridge",
+    "build:ext": "npm run build -w packages/vscode-extension",
+    "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-mcp-server",
+    "test:conductor": "vitest run --project packages/conductor-*/vitest.config.ts",
+    "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-mcp-server --pretty",
+    "clean": "rm -rf packages/*/dist"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^3.0.0"
+  }
+}
