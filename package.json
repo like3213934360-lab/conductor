@@ -9,8 +9,12 @@
     "build:bridge": "npm run build -w packages/ace-bridge",
     "build:ext": "npm run build -w packages/vscode-extension",
     "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence packages/conductor-mcp-server",
+    "build:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter",
+    "build:all": "npm run build:conductor && npm run build:conductor-hub",
     "test:conductor": "vitest run --project packages/conductor-*/vitest.config.ts",
     "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence packages/conductor-mcp-server --pretty",
+    "typecheck:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter --pretty",
+    "typecheck:all": "npm run typecheck:conductor && npm run typecheck:conductor-hub",
     "clean": "rm -rf packages/*/dist"
   },
   "devDependencies": {

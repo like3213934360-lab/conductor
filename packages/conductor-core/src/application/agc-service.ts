@@ -28,6 +28,8 @@ import { RiskRouter } from '../risk/risk-router.js'
 import { ComplianceEngine } from '../compliance/compliance-engine.js'
 import type { ComplianceRule } from '../compliance/compliance-rule.js'
 import { DefaultComplianceRules } from '../compliance/default-rules.js'
+import type { ReflexionActorLoop } from '../reflexion/actor-loop.js'
+import type { UpcastingRegistry } from '../event-sourcing/upcasting.js'
 
 /** AGCService 依赖注入 */
 export interface AGCServiceDeps {
@@ -36,6 +38,10 @@ export interface AGCServiceDeps {
   logger?: CoreLogger
   /** Phase 3: 自定义合规规则（不传则使用默认规则） */
   complianceRules?: ComplianceRule[]
+  /** Phase 4: Reflexion Actor Loop (可选, 启用后自动注入反思记忆) */
+  reflexionLoop?: ReflexionActorLoop
+  /** Phase 4: Event Upcasting 注册表 (可选) */
+  upcastingRegistry?: UpcastingRegistry
 }
 
 /** 启动运行结果 */
@@ -70,6 +76,10 @@ export class AGCService {
   private readonly drCalculator: DRCalculator
   private readonly riskRouter: RiskRouter
   private readonly complianceEngine: ComplianceEngine
+  /** Phase 4: Reflexion 闭环 (可选) */
+  private readonly reflexionLoop?: ReflexionActorLoop
+  /** Phase 4: Event Upcasting (可选) */
+  private readonly upcastingRegistry?: UpcastingRegistry
 
   constructor(deps: AGCServiceDeps) {
     this.eventStore = deps.eventStore
@@ -82,6 +92,9 @@ export class AGCService {
     this.complianceEngine = new ComplianceEngine(
       deps.complianceRules ?? DefaultComplianceRules,
     )
+    // Phase 4: Reflexion + Upcasting
+    this.reflexionLoop = deps.reflexionLoop
+    this.upcastingRegistry = deps.upcastingRegistry
   }
 
   /**
@@ -309,6 +322,18 @@ export class AGCService {
     await this.checkpointStore.save({ checkpoint })
 
     this.logger.info('AGC 运行已启动', { runId, lane: route.lane, drScore: drScore.score })
+
+    // Phase 4 接入: Reflexion enrichRunContext 注入反思记忆
+    let enrichedContext: { reflexionPrompts: string[]; sourceRunIds: string[]; promptCount: number } | undefined
+    if (this.reflexionLoop) {
+      enrichedContext = this.reflexionLoop.enrichRunContext(parsed.metadata.goal)
+      if (enrichedContext.promptCount > 0) {
+        this.logger.info('Reflexion 注入反思记忆', {
+          runId, promptCount: enrichedContext.promptCount,
+          sourceRunIds: enrichedContext.sourceRunIds,
+        })
+      }
+    }
 
     return { runId, state: finalState, route, compliance, drScore, checkpoint }
   }

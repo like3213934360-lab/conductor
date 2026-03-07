@@ -25,13 +25,13 @@ export function registerAgcRunTool(server: McpServer, ctx: ServerContext): void 
         const result = await ctx.agcService.startRun({
           graph: {
             nodes: [
-              { id: 'ANALYZE', name: 'ANALYZE', dependsOn: [], input: {}, skippable: false },
-              { id: 'PARALLEL', name: 'PARALLEL', dependsOn: ['ANALYZE'], input: {}, skippable: false },
-              { id: 'DEBATE', name: 'DEBATE', dependsOn: ['PARALLEL'], input: {}, skippable: true },
-              { id: 'VERIFY', name: 'VERIFY', dependsOn: ['DEBATE'], input: {}, skippable: false },
-              { id: 'SYNTHESIZE', name: 'SYNTHESIZE', dependsOn: ['VERIFY'], input: {}, skippable: false },
-              { id: 'PERSIST', name: 'PERSIST', dependsOn: ['SYNTHESIZE'], input: {}, skippable: false },
-              { id: 'HITL', name: 'HITL', dependsOn: ['PERSIST'], input: {}, skippable: true },
+              { id: 'ANALYZE', name: 'ANALYZE', dependsOn: [], input: {}, skippable: false, priority: 0 },
+              { id: 'PARALLEL', name: 'PARALLEL', dependsOn: ['ANALYZE'], input: {}, skippable: false, priority: 0 },
+              { id: 'DEBATE', name: 'DEBATE', dependsOn: ['PARALLEL'], input: {}, skippable: true, priority: 0 },
+              { id: 'VERIFY', name: 'VERIFY', dependsOn: ['DEBATE'], input: {}, skippable: false, priority: 0 },
+              { id: 'SYNTHESIZE', name: 'SYNTHESIZE', dependsOn: ['VERIFY'], input: {}, skippable: false, priority: 0 },
+              { id: 'PERSIST', name: 'PERSIST', dependsOn: ['SYNTHESIZE'], input: {}, skippable: false, priority: 0 },
+              { id: 'HITL', name: 'HITL', dependsOn: ['PERSIST'], input: {}, skippable: true, priority: 0 },
             ],
             edges: [],
           },

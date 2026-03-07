@@ -1,0 +1,15 @@
+{
+  "name": "@anthropic/conductor-hub-shared",
+  "version": "0.1.0",
+  "description": "Conductor Hub — 模型注册表、任务类型、配置 Schema、共享类型",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -28,3 +28,6 @@ export type { SemanticFact, FactQuery } from './memory/semantic-memory.js'
 // File Lock — Phase 4 新增
 export { FileLock, withFileLock } from './event-store/file-lock.js'
 export type { FileLockOptions } from './event-store/file-lock.js'
+
+// Upcasting EventStore — Phase 4 装饰器
+export { UpcastingEventStore } from './event-store/upcasting-event-store.js'

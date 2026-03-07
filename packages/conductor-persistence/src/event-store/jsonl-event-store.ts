@@ -19,6 +19,7 @@ import type { AGCEventEnvelope } from '@anthropic/conductor-shared'
 import { AGCError, AGCErrorCode } from '@anthropic/conductor-shared'
 import type { EventStore, AppendEventsInput, LoadEventsQuery } from '@anthropic/conductor-core'
 import { appendJsonlLines, readJsonlStream, readLastJsonlLine } from './stream-utils.js'
+import { withFileLock } from './file-lock.js'
 
 /** JSONL EventStore 配置 */
 export interface JsonlEventStoreConfig {
@@ -135,9 +136,15 @@ export class JsonlEventStore implements EventStore {
         }
       }
 
-      // 序列化并原子追加
+      // Phase 4 接入: 跨进程文件锁 + 序列化并原子追加
+      const streamPath = this.getStreamPath(runId)
       const lines = events.map(e => JSON.stringify(e))
-      await appendJsonlLines(this.getStreamPath(runId), lines)
+      // 三模型建议修复: 确保父目录存在 (withFileLock 需要目录来创建 .lock 文件)
+      const dir = path.dirname(streamPath)
+      await fs.promises.mkdir(dir, { recursive: true })
+      await withFileLock(streamPath, async () => {
+        await appendJsonlLines(streamPath, lines)
+      })
     } finally {
       release()
     }

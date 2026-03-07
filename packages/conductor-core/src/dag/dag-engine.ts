@@ -72,15 +72,20 @@ export class DagEngine {
     const events: AGCEventEnvelope[] = []
     let currentVersion = state.version
 
-    // 收集节点状态
+    // 收集节点状态 + 节点输出 (Phase 4: 条件边评估)
     const nodeStatuses: Record<string, string> = {}
+    const nodeOutputs: Record<string, Record<string, unknown>> = {}
     for (const node of graph.nodes) {
       const ns = state.nodes[node.id]
       nodeStatuses[node.id] = ns?.status ?? 'pending'
+      // Phase 4 接入: 提取已完成节点的输出, 供条件边评估使用
+      if (ns?.output) {
+        nodeOutputs[node.id] = ns.output
+      }
     }
 
-    // 查找就绪节点
-    const readyNodes = findReadyNodes(graph, nodeStatuses)
+    // 查找就绪节点 (Phase 4: 传递 nodeOutputs 激活条件边)
+    const readyNodes = findReadyNodes(graph, nodeStatuses, nodeOutputs)
 
     // 限制并发数
     const runningCount = Object.values(nodeStatuses).filter(s => s === 'running').length

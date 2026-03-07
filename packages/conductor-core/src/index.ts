@@ -8,6 +8,7 @@
 export * from './contracts/event-store.js'
 export * from './contracts/checkpoint-store.js'
 export * from './contracts/logger.js'
+export * from './contracts/model-executor.js'
 
 // DAG 引擎
 export * from './dag/topology.js'
@@ -37,3 +38,7 @@ export * from './reflexion/actor-loop.js'
 
 // 应用服务
 export * from './application/agc-service.js'
+export * from './application/conductor-runtime.js'
+
+// 并发控制 — 三模型建议 1 新增
+export * from './concurrency/async-mutex.js'

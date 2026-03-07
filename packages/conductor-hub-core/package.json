@@ -1,0 +1,18 @@
+{
+  "name": "@anthropic/conductor-hub-core",
+  "version": "0.1.0",
+  "description": "Conductor Hub — 纯 Node 运行时：智能路由、多模型调用、并行查询、投票引擎、CLI Agent",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@anthropic/conductor-hub-shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}
