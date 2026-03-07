@@ -117,10 +117,16 @@ export class JsonlEventStore implements EventStore {
       }
       // expectedVersion === 'any' → 跳过校验
 
-      // 校验版本连续性
+      // 二次审查 P1 修复: 校验 event.runId 与目标 runId 一致
       const startVersion = currentVersion + 1
       for (let i = 0; i < events.length; i++) {
         const event = events[i]!
+        if (event.runId !== runId) {
+          throw new AGCError(
+            AGCErrorCode.STATE_VERSION_CONFLICT,
+            `事件 runId 不匹配: 期望 ${runId}，实际 ${event.runId}`,
+          )
+        }
         if (event.version !== startVersion + i) {
           throw new AGCError(
             AGCErrorCode.STATE_VERSION_CONFLICT,

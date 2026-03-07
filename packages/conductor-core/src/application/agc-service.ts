@@ -332,11 +332,26 @@ export class AGCService {
       goal: '', files: [] as string[], initiator: 'system',
     }
 
-    // 3. 漂移检测
-    const checkpointState = checkpoint?.state as AGCState | undefined
-    const driftDetected = checkpointState
-      ? checkpointState.version !== replayedState.version
-      : false
+    // 3. 二次审查 P0 修复: 漂移检测改为深度状态比较
+    //
+    // 原逻辑 (有 bug): checkpointState.version !== replayedState.version
+    // 问题: 任何新事件都会导致版本号前进, 导致假阳性
+    //
+    // 新逻辑: 从 checkpoint 开始增量回放 vs 全量回放, 比较最终节点状态是否一致
+    // 这才是真正的 "漂移检测" — 检测状态是否被外部修改/损坏
+    let driftDetected = false
+    if (checkpoint) {
+      const fullReplayEvents = await this.eventStore.load({ runId })
+      const fullReplayState = projectStateFromEvents(runId, fullReplayEvents)
+      // 比较节点状态 (忽略 version 字段)
+      const replayedNodeJson = JSON.stringify(Object.keys(replayedState.nodes).sort().map(k => ({
+        id: k, status: replayedState.nodes[k]?.status,
+      })))
+      const fullNodeJson = JSON.stringify(Object.keys(fullReplayState.nodes).sort().map(k => ({
+        id: k, status: fullReplayState.nodes[k]?.status,
+      })))
+      driftDetected = replayedNodeJson !== fullNodeJson
+    }
 
     // 4. 重算合规（使用完整图）
     const compliance = await this.complianceEngine.evaluate({
@@ -347,7 +362,7 @@ export class AGCService {
 
     const ok = !driftDetected && compliance.allowed
 
-    // 5. Phase 3 修复 #5: 发射 RUN_VERIFIED 事件
+    // 5. 发射 RUN_VERIFIED 事件
     const currentVersion = replayedState.version
     const verifyEvent: AGCEventEnvelope = {
       eventId: createEventId(),
@@ -363,13 +378,40 @@ export class AGCService {
       expectedVersion: currentVersion,
     })
 
+    // 6. 二次审查 P0 修复: 验证后保存 checkpoint (防止验证中毒)
+    const postVerifyState = reduceEvent(replayedState, verifyEvent)
+    const newCheckpointId = createCheckpointId()
+    const checkpointSaveEvent: AGCEventEnvelope = {
+      eventId: createEventId(),
+      runId,
+      type: 'CHECKPOINT_SAVED',
+      payload: { checkpointId: newCheckpointId, version: postVerifyState.version + 1 },
+      timestamp: createISODateTime(),
+      version: postVerifyState.version + 1,
+    }
+    await this.eventStore.append({
+      runId,
+      events: [checkpointSaveEvent],
+      expectedVersion: postVerifyState.version,
+    })
+
+    const finalState = reduceEvent(postVerifyState, checkpointSaveEvent)
+    await this.checkpointStore.save({
+      checkpoint: {
+        checkpointId: newCheckpointId,
+        runId,
+        version: finalState.version,
+        state: finalState,
+        createdAt: createISODateTime(),
+      },
+    })
+
     this.logger.info('运行验证完成', { runId, ok, driftDetected })
 
     return {
       ok,
-      // 审查修复 #11: 返回 replayedState，不是过期的 checkpointState
-      state: replayedState,
-      replayedState,
+      state: finalState,
+      replayedState: finalState,
       driftDetected,
       compliance,
     }

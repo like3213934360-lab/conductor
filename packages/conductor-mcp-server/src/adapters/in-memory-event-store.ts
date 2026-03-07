@@ -33,10 +33,16 @@ export class InMemoryEventStore implements EventStore {
       }
     }
 
-    // 审查修复 #13: 批次内版本连续性校验
+    // 审查修复 #13 + 二次审查 P1: runId 校验 + 版本连续性校验
     const startVersion = currentVersion + 1
     for (let i = 0; i < input.events.length; i++) {
       const event = input.events[i]!
+      if (event.runId !== input.runId) {
+        throw new AGCError(
+          AGCErrorCode.STATE_VERSION_CONFLICT,
+          `事件 runId 不匹配: 期望 ${input.runId}, 实际 ${event.runId}`,
+        )
+      }
       const expectedVer = startVersion + i
       if (event.version !== expectedVer) {
         throw new AGCError(
