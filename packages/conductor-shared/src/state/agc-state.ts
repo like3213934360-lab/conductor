@@ -57,6 +57,13 @@ export const AGCStateSchema = z.object({
     skippedCount: z.number(),
     confidence: z.number(),
   }).optional(),
+  /** 捕获的完整运行上下文 — Phase 2 新增 */
+  capturedContext: z.object({
+    graph: z.unknown(),
+    metadata: z.unknown(),
+    options: z.unknown(),
+    capturedAt: z.string(),
+  }).optional(),
   /** 最后一个检查点 ID */
   lastCheckpointId: z.string().optional(),
   /** 最后一个检查点版本 */

@@ -19,6 +19,7 @@
   "include": ["src/**/*.ts"],
   "references": [
     { "path": "../conductor-shared" },
-    { "path": "../conductor-core" }
+    { "path": "../conductor-core" },
+    { "path": "../conductor-persistence" }
   ]
 }

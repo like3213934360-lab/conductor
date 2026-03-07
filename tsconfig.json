@@ -16,6 +16,7 @@
     { "path": "packages/vscode-extension" },
     { "path": "packages/conductor-shared" },
     { "path": "packages/conductor-core" },
+    { "path": "packages/conductor-persistence" },
     { "path": "packages/conductor-mcp-server" }
   ]
 }

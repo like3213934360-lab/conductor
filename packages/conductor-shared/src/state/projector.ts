@@ -35,6 +35,20 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
       break
     }
 
+    case 'RUN_CONTEXT_CAPTURED': {
+      // Phase 2: 保存完整运行上下文用于 verifyRun() 重建
+      const payload = envelope.payload as {
+        graph: unknown; metadata: unknown; options: unknown
+      }
+      next.capturedContext = {
+        graph: payload.graph,
+        metadata: payload.metadata,
+        options: payload.options,
+        capturedAt: envelope.timestamp,
+      }
+      break
+    }
+
     case 'NODE_QUEUED': {
       const nodeId = (envelope.payload as { nodeId: string }).nodeId
       const nodeState = next.nodes[nodeId]
