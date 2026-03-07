@@ -12,6 +12,7 @@ import { createServerContext } from './context.js'
 import { createConductorServer } from './server.js'
 import { InMemoryEventStore } from './adapters/in-memory-event-store.js'
 import { InMemoryCheckpointStore } from './adapters/in-memory-checkpoint-store.js'
+import { ConductorHubService } from '@anthropic/conductor-hub-core'
 
 async function main(): Promise<void> {
   const dataDir = process.env['CONDUCTOR_DATA_DIR'] ?? path.join(process.cwd(), '.conductor-data')
@@ -33,8 +34,9 @@ async function main(): Promise<void> {
     const eventStore = new JsonlEventStore({ dataDir })
     const checkpointStore = new SqliteCheckpointStore(sqliteClient.getDatabase())
     const memoryManager = new MemoryManager({ db: sqliteClient.getDatabase() })
+    const hubService = new ConductorHubService()
 
-    ctx = createServerContext({ eventStore, checkpointStore, memoryManager })
+    ctx = createServerContext({ eventStore, checkpointStore, memoryManager, hubService })
 
     console.error('[Conductor AGC] 持久化模式启动 (JSONL + SQLite)')
     console.error(`[Conductor AGC] 数据目录: ${dataDir}`)
@@ -44,6 +46,7 @@ async function main(): Promise<void> {
     ctx = createServerContext({
       eventStore: new InMemoryEventStore(),
       checkpointStore: new InMemoryCheckpointStore(),
+      hubService: new ConductorHubService(),
     })
   }
 

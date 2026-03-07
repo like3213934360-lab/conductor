@@ -286,18 +286,33 @@ export class AGCRunDriver {
   // ── 私有方法 ──────────────────────────────────────────────────────────────
 
   /**
-   * 复查修复 #3: OCC 版本冲突自动重试
+   * 复查修复 #3 + 二轮修复: OCC 版本冲突自动重试
    *
-   * 当 eventStore.append 因版本冲突失败时，重新加载状态并重试。
-   * 最多重试 OCC_MAX_RETRIES 次。
+   * 使用事件工厂模式: 每次 OCC 冲突后从最新状态重新生成事件,
+   * 而不是仅更新版本号(避免 stale event decisions)。
+   *
+   * @param runId - 运行 ID
+   * @param eventFactory - 事件工厂: 接收最新 version, 返回需要追加的事件数组
    */
   private async appendWithRetry(
     runId: string,
-    events: AGCEventEnvelope[],
+    eventFactory: AGCEventEnvelope[] | ((baseVersion: number) => AGCEventEnvelope[]),
     expectedVersion: number,
   ): Promise<void> {
     let version = expectedVersion
     for (let attempt = 0; attempt <= OCC_MAX_RETRIES; attempt++) {
+      // 通过工厂函数或静态事件数组生成事件
+      const events = typeof eventFactory === 'function'
+        ? eventFactory(version)
+        : eventFactory
+      // 静态事件数组: 更新版本号
+      if (typeof eventFactory !== 'function' && attempt > 0) {
+        let v = version
+        for (const e of events) {
+          v++
+          e.version = v
+        }
+      }
       try {
         await this.eventStore.append({ runId, events, expectedVersion: version })
         return
@@ -315,12 +330,6 @@ export class AGCRunDriver {
         const latestEvents = await this.eventStore.load({ runId })
         const latestState = projectStateFromEvents(runId, latestEvents)
         version = latestState.version
-        // 更新事件版本号
-        let v = version
-        for (const e of events) {
-          v++
-          e.version = v
-        }
       }
     }
   }
@@ -351,8 +360,8 @@ export class AGCRunDriver {
       return { status: 'skipped' }
     }
 
-    // C. 发射 NODE_STARTED (OCC 重试)
-    await this.safeEmitNodeStarted(runId, nodeId)
+    // C. 发射 NODE_STARTED (OCC 重试) — 二轮修复: 传入计划执行的 executor 节点 ID
+    await this.safeEmitNodeStarted(runId, nodeId, executor.nodeId)
 
     // D. 执行（含超时和重试）
     let result: NodeExecutionResult
@@ -452,15 +461,15 @@ export class AGCRunDriver {
 
   // ── 安全事件发射方法 (所有方法内置 OCC 重试) ────────────────────────────
 
-  /** 发射 NODE_STARTED (OCC 重试) */
-  private async safeEmitNodeStarted(runId: string, nodeId: string): Promise<void> {
+  /** 发射 NODE_STARTED (OCC 重试), 二轮修复: 包含 model 字段 */
+  private async safeEmitNodeStarted(runId: string, nodeId: string, model?: string): Promise<void> {
     const evts = await this.eventStore.load({ runId })
     const st = projectStateFromEvents(runId, evts)
     const event: AGCEventEnvelope = {
       eventId: createEventId(),
       runId,
       type: 'NODE_STARTED',
-      payload: { nodeId },
+      payload: { nodeId, model },
       timestamp: createISODateTime(),
       version: st.version + 1,
     }
