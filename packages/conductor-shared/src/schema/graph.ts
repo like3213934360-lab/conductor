@@ -58,9 +58,28 @@ export const RunGraphSchema = z.object({
     nodeIds.add(node.id)
   }
 
-  // 三模型审计: 边端点引用校验
+  // 三模型审计 R2: 边端点引用 + 自环 + 重复边校验
+  const seenEdges = new Set<string>()
   for (let i = 0; i < data.edges.length; i++) {
     const edge = data.edges[i]!
+    // 自环检测 (3/3 共识)
+    if (edge.from === edge.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `边 [${i}] 是自环: ${edge.from} → ${edge.to}`,
+        path: ['edges', i],
+      })
+    }
+    // 重复边检测
+    const edgeKey = `${edge.from}->${edge.to}`
+    if (seenEdges.has(edgeKey)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `边 [${i}] 重复: ${edgeKey}`,
+        path: ['edges', i],
+      })
+    }
+    seenEdges.add(edgeKey)
     if (!nodeIds.has(edge.from)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

@@ -43,6 +43,8 @@ export class ComplianceEngine {
       ruleTimeoutMs: 5000,
       ...options,
     }
+    // 三模型审计 R2 (3/3 共识): 构造函数也要排序
+    this.sortRulesByPriority()
   }
 
   /** 动态注册新规则 (三模型审计: 按 priority 排序) */
@@ -102,8 +104,9 @@ export class ComplianceEngine {
           if (timer !== undefined) clearTimeout(timer)
         }
       } catch (err) {
-        // 三模型审计 (fail-closed): block 级规则异常/超时降为 block, 非 block 级降为 warn
-        const isBlockLevel = rule.severity === 'block'
+        // 三模型审计 R2: severity 回退到 defaultLevel (Codex P0)
+        const effectiveSeverity = rule.severity ?? rule.defaultLevel
+        const isBlockLevel = effectiveSeverity === 'block'
         result = {
           ruleId: rule.id,
           ruleName: rule.name,

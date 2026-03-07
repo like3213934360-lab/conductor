@@ -138,7 +138,8 @@ export class SemanticMemory {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const limit = query.limit ?? 50
+    // 三模型审计 R2 (Codex P1): LIMIT 正整数钳制，防止负值/超大值 DoS
+    const limit = Math.max(1, Math.min(500, Math.floor(query.limit ?? 50)))
     params.limit = limit
 
     const stmt = this.db.prepare(`
