@@ -145,17 +145,16 @@ export class ManifestIndex {
     const lambda = Math.LN2 / this.halfLifeMs
 
     // 路 1: BM25 精确匹配 (高精度)
+    // 审计修复 #6: 不加 boost, 让 RRF 在原始排名上融合 (避免 double-boosting)
     const exactResults = this.miniSearch.search(query, {
       prefix: false,
       fuzzy: false,
-      boost: { goal: 3, filesText: 1.5, repoRoot: 1 },
     }) as unknown as SearchResult[]
 
     // 路 2: Fuzzy 模糊匹配 (高召回)
     const fuzzyResults = this.miniSearch.search(query, {
       prefix: true,
       fuzzy: 0.3,
-      boost: { goal: 2, filesText: 1.5, repoRoot: 1 },
     }) as unknown as SearchResult[]
 
     // RRF 融合 (k=60, SIGIR 2009 推荐值)

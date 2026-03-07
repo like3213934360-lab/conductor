@@ -54,6 +54,13 @@ export class SemanticMemory {
       SET valid_to = @validTo
       WHERE subject = @subject AND predicate = @predicate AND valid_to IS NULL
     `)
+
+    // 审计修复 #1: 添加 last_accessed_at 列支持真正的 LRU
+    try {
+      this.db.exec(`ALTER TABLE semantic_facts ADD COLUMN last_accessed_at TEXT`)
+    } catch {
+      // 列已存在，忽略
+    }
   }
 
   /**
@@ -126,6 +133,16 @@ export class SemanticMemory {
     `)
 
     const rows = stmt.all(params) as FactRow[]
+
+    // 审计修复 #1: 更新访问时间 (LRU 追踪)
+    if (rows.length > 0) {
+      const factIds = rows.map(r => r.fact_id)
+      const placeholders = factIds.map(() => '?').join(',')
+      this.db.prepare(
+        `UPDATE semantic_facts SET last_accessed_at = ? WHERE fact_id IN (${placeholders})`,
+      ).run(new Date().toISOString(), ...factIds)
+    }
+
     return rows.map(row => ({
       factId: row.fact_id,
       subject: row.subject,
@@ -174,13 +191,12 @@ export class SemanticMemory {
   }
 
   /**
-   * 淘汰最旧的 N 条活跃事实 — LRU 策略
+   * 淘汰最少使用的 N 条活跃事实 — 真正的 LRU 策略
+   *
+   * 审计修复 #1: 从 FIFO (valid_from ASC) 改为 LRU (last_accessed_at ASC)
    *
    * 科研参考: Packer 2023, MemGPT Section 4.2
-   * "When the working context is full, the system
-   * evicts the least recently used memory pages"
-   *
-   * 实现: 关闭最旧的 N 条活跃事实 (设置 valid_to)
+   * "evicts the least recently USED memory pages"
    */
   evictOldest(n: number): number {
     const result = this.db.prepare(`
@@ -189,7 +205,7 @@ export class SemanticMemory {
       WHERE fact_id IN (
         SELECT fact_id FROM semantic_facts
         WHERE valid_to IS NULL
-        ORDER BY valid_from ASC
+        ORDER BY COALESCE(last_accessed_at, valid_from) ASC
         LIMIT ?
       )
     `).run(new Date().toISOString(), n)

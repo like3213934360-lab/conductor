@@ -200,9 +200,9 @@ export class MemoryManager {
     // Step 2: LRU eviction (如果仍超限)
     const afterCompact = this.semanticMemory.count()
     if (afterCompact > this.budget.maxSemanticFacts) {
+      // 审计修复 #4: 只淘汰实际超出的数量，避免过度淘汰
       const excess = afterCompact - this.budget.maxSemanticFacts
-      const toEvict = Math.max(excess, this.budget.evictionBatchSize)
-      evicted = this.semanticMemory.evictOldest(toEvict)
+      evicted = this.semanticMemory.evictOldest(excess)
     }
 
     return {

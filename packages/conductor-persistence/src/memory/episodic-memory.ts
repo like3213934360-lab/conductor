@@ -281,14 +281,22 @@ export class EpisodicMemory {
       prompts.push(this.matchToPrompt(match))
     }
 
-    // 2. Reflexion 反思注入（只注入高置信度、失败运行的反思）
-    const reflections = this.loadRecentReflections(topK)
+    // 2. Reflexion 反思注入（审计修复 #3: 添加目标相关性过滤）
+    const reflections = this.loadRelevantReflections(goal, topK)
     for (const ref of reflections) {
+      let actionText: string
+      try {
+        // 审计修复 #5: JSON.parse 安全包裹
+        const items = JSON.parse(ref.action_items) as string[]
+        actionText = items.join('; ')
+      } catch {
+        actionText = ref.action_items // 降级: 直接使用原始文本
+      }
       prompts.push({
         sourceRunId: ref.run_id,
         promptType: 'reflection',
         text: `[Reflexion] 历史运行失败教训 (${ref.lesson_type}): ${ref.root_cause}。` +
-              `建议: ${JSON.parse(ref.action_items).join('; ')}`,
+              `建议: ${actionText}`,
         relevance: ref.confidence,
       })
     }
@@ -313,14 +321,39 @@ export class EpisodicMemory {
     return { evaluation, reflection }
   }
 
-  /** 加载最近的反思结果 */
-  private loadRecentReflections(limit: number): ReflectionRow[] {
+  /**
+   * 加载与目标相关的反思结果
+   *
+   * 审计修复 #3: 从全局加载改为目标关键词过滤
+   * Reflexion (Shinn 2023): "只注入与当前试验相关的历史自我反思"
+   */
+  private loadRelevantReflections(goal: string, limit: number): ReflectionRow[] {
+    // 提取目标关键词 (简单分词)
+    const keywords = goal.split(/[\s,.，。]+/).filter(w => w.length > 2)
+    if (keywords.length === 0) {
+      return this.db.prepare(`
+        SELECT run_id, root_cause, action_items, lesson_type, confidence, reflected_at
+        FROM reflexion_reflections
+        WHERE confidence >= 0.5
+        ORDER BY reflected_at DESC
+        LIMIT ?
+      `).all(limit) as ReflectionRow[]
+    }
+
+    // 目标关键词匹配 (root_cause 中包含任何关键词)
+    const likeConditions = keywords.slice(0, 5).map((_, i) => `root_cause LIKE @kw${i}`)
+    const params: Record<string, string | number> = { limit }
+    keywords.slice(0, 5).forEach((kw, i) => {
+      params[`kw${i}`] = `%${kw}%`
+    })
+
     return this.db.prepare(`
       SELECT run_id, root_cause, action_items, lesson_type, confidence, reflected_at
       FROM reflexion_reflections
-      ORDER BY reflected_at DESC
-      LIMIT ?
-    `).all(limit) as ReflectionRow[]
+      WHERE confidence >= 0.5 AND (${likeConditions.join(' OR ')})
+      ORDER BY confidence DESC, reflected_at DESC
+      LIMIT @limit
+    `).all(params) as ReflectionRow[]
   }
 
   /** 将搜索结果转为 Reflexion 提示 */

@@ -105,8 +105,12 @@ export class DRCalculator {
     const damage = Math.min(10, (nodeCount * 0.8 + maxDepth * 1.5))
 
     // 2. Reproducibility (0-10)
-    // 无历史数据时中性值 5.0；有 riskHint 时微调
-    const reproducibility = 5.0
+    // 审计修复 #2: 从硬编码 5.0 改为基于 DAG 结构的动态值
+    // 越多节点无条件依赖 (skippable) → 越容易复现失败
+    const skippableCount = graph.nodes.filter(n => n.skippable).length
+    const skippableRatio = nodeCount > 0 ? skippableCount / nodeCount : 0.5
+    // skippable 比例越高 → 执行路径越确定 → 可复现性越高
+    const reproducibility = 2 + skippableRatio * 8 // 范围 2-10
 
     // 3. Exploitability (0-10)
     // 目标描述越短→越模糊→exploit 越容易 (反向映射)
