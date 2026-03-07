@@ -72,6 +72,8 @@ export class ManifestIndex {
   private readonly rrfK: number
   private readonly rrfExactWeight: number
   private readonly rrfFuzzyWeight: number
+  /** 三模型审计: 索引条目上限 (防 OOM) */
+  private readonly maxIndexSize: number
 
   /** Stopwords 过滤集 (LongRAG 2025) */
   private static readonly STOP_WORDS = new Set([
@@ -82,12 +84,13 @@ export class ManifestIndex {
     '都', '一', '个', '上', '也', '很', '到', '说', '要', '他',
   ])
 
-  constructor(db: Database.Database, config?: { halfLifeMs?: number; rrfK?: number; rrfExactWeight?: number; rrfFuzzyWeight?: number }) {
+  constructor(db: Database.Database, config?: { halfLifeMs?: number; rrfK?: number; rrfExactWeight?: number; rrfFuzzyWeight?: number; maxIndexSize?: number }) {
     this.db = db
     this.halfLifeMs = config?.halfLifeMs ?? 7 * 24 * 60 * 60 * 1000
     this.rrfK = config?.rrfK ?? 60
     this.rrfExactWeight = config?.rrfExactWeight ?? 0.6
     this.rrfFuzzyWeight = config?.rrfFuzzyWeight ?? 0.4
+    this.maxIndexSize = config?.maxIndexSize ?? 10000
 
     this.miniSearch = new MiniSearch<SearchDocument>({
       fields: ['goal', 'filesText', 'repoRoot'],
@@ -121,6 +124,9 @@ export class ManifestIndex {
 
   /** 索引新条目 */
   index(entry: ManifestEntry): void {
+    // 三模型审计: 容量检查 — 超限时淘汰最旧条目
+    this.enforceCapacity()
+
     this.stmtInsert.run({
       runId: entry.runId,
       goal: entry.goal,
@@ -230,13 +236,47 @@ export class ManifestIndex {
       .slice(0, topK)
   }
 
-  /** 从 SQLite 重建内存索引 */
+  /** 从 SQLite 重建内存索引 (三模型审计: 仅加载最新 maxIndexSize 条) */
   private rebuildIndex(): void {
-    const rows = this.stmtGetAll.all() as ManifestRow[]
+    const rows = this.db.prepare(`
+      SELECT run_id, goal, repo_root, files, lane, risk_level, worst_status,
+             node_count, created_at, completed_at, summary
+      FROM manifest
+      ORDER BY created_at DESC
+      LIMIT @limit
+    `).all({ limit: this.maxIndexSize }) as ManifestRow[]
     const docs = rows.map(row => this.rowToDocument(row))
     if (docs.length > 0) {
       this.miniSearch.addAll(docs)
     }
+  }
+
+  /**
+   * 三模型审计: 容量保护 — 超限时淘汰最旧条目
+   *
+   * 策略: 当索引 >= maxIndexSize 时, 删除最旧的 10% 条目
+   */
+  private enforceCapacity(): void {
+    if (this.miniSearch.documentCount < this.maxIndexSize) return
+
+    const evictCount = Math.max(1, Math.floor(this.maxIndexSize * 0.1))
+    const oldest = this.db.prepare(`
+      SELECT run_id FROM manifest
+      ORDER BY created_at ASC
+      LIMIT @evictCount
+    `).all({ evictCount }) as Array<{ run_id: string }>
+
+    for (const row of oldest) {
+      try {
+        this.miniSearch.discard(row.run_id)
+      } catch {
+        // 条目可能已不在索引中
+      }
+      this.db.prepare('DELETE FROM manifest WHERE run_id = @runId').run({ runId: row.run_id })
+    }
+
+    // vacuum 内部数据结构
+    this.miniSearch.vacuum()
   }
 
   private entryToDocument(entry: ManifestEntry): SearchDocument {
