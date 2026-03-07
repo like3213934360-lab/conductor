@@ -2,6 +2,7 @@
  * Conductor AGC — MCP Server 工厂
  *
  * Phase 5: 新增 Phase 4 工具 (reflexion/graph/sandbox)
+ * Phase 6: 新增 agc.advance 工具（状态机驱动器）
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { ServerContext } from './context.js'
@@ -11,6 +12,7 @@ import { registerAgcVerifyRunTool } from './tools/agc-verify-run.js'
 import { registerAgcMemorySearchTool } from './tools/agc-memory-search.js'
 import { registerAgcPluginsTool } from './tools/agc-plugins.js'
 import { registerPhase4Tools } from './tools/agc-phase4.js'
+import { registerAgcAdvanceTool } from './tools/agc-advance.js'
 
 /**
  * 创建并配置 Conductor MCP Server
@@ -18,7 +20,7 @@ import { registerPhase4Tools } from './tools/agc-phase4.js'
 export function createConductorServer(ctx: ServerContext): McpServer {
   const server = new McpServer({
     name: 'conductor-agc',
-    version: '0.5.0',
+    version: '0.6.0',
   })
 
   // 注册基础工具
@@ -35,5 +37,9 @@ export function createConductorServer(ctx: ServerContext): McpServer {
   // Phase 4: Reflexion + Graph + Sandbox 工具
   registerPhase4Tools(server, ctx)
 
+  // Phase 6: AGC 状态机驱动器（100% 工作流执行保证）
+  registerAgcAdvanceTool(server, ctx)
+
   return server
 }
+
