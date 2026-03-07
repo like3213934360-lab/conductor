@@ -259,10 +259,20 @@ function resolveValue(
     let current: unknown = output
     for (let i = 1; i < parts.length; i++) {
       if (current == null || typeof current !== 'object') return undefined
-      current = (current as Record<string, unknown>)[parts[i]!]
+      const key = parts[i]!
+      // 三模型审计: 过滤原型链属性 (防注入攻击)
+      if (FORBIDDEN_KEYS.has(key)) return undefined
+      current = (current as Record<string, unknown>)[key]
     }
     return current
   }
 
   return token
 }
+
+/** 三模型审计: 禁止访问的原型链属性 */
+const FORBIDDEN_KEYS = new Set([
+  '__proto__', 'constructor', 'prototype',
+  '__defineGetter__', '__defineSetter__',
+  '__lookupGetter__', '__lookupSetter__',
+])

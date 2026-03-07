@@ -369,7 +369,7 @@ export class AGCService {
     const graph: RunGraph = capturedCtx?.graph ?? {
       nodes: Object.keys(replayedState.nodes).map(id => ({
         id, name: id, dependsOn: [] as string[],
-        input: {} as Record<string, unknown>, skippable: false,
+        input: {} as Record<string, unknown>, skippable: false, priority: 0,
       })),
       edges: [],
     }

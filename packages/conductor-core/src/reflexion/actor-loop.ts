@@ -99,12 +99,17 @@ export class ReflexionActorLoop {
   onRunComplete(entry: EpisodicEntry): void {
     if (!this.config.autoReflect) return
 
-    // 阶段 1: Evaluator
-    const evaluation = this.memory.evaluate(entry)
+    try {
+      // 阶段 1: Evaluator
+      const evaluation = this.memory.evaluate(entry)
 
-    // 阶段 2: Reflector (仅在失败时)
-    if (!evaluation.success) {
-      this.memory.reflect(entry, evaluation)
+      // 阶段 2: Reflector (仅在失败时)
+      if (!evaluation.success) {
+        this.memory.reflect(entry, evaluation)
+      }
+    } catch {
+      // 三模型审计: 评估/反思失败不应阻塞 DAG 运行
+      // 静默失败, 不影响主流程
     }
   }
 

@@ -19,6 +19,7 @@
  */
 import type { PluginPermissions } from './plugin-types.js'
 import * as path from 'node:path'
+import * as fs from 'node:fs'
 
 /** 能力类型 */
 export type CapabilityType = 'fs:read' | 'fs:write' | 'network' | 'env'
@@ -48,7 +49,8 @@ export class CapabilitySandbox {
 
   constructor(pluginId: string, dataDir: string, permissions?: PluginPermissions) {
     this.pluginId = pluginId
-    this.dataDir = path.resolve(dataDir)
+    // 三模型审计: 使用 realpath 防止 symlink 绕过, 末尾加分隔符防前缀攻击
+    this.dataDir = ensureTrailingSep(resolveRealPath(dataDir))
     this.permissions = permissions ?? {}
   }
 
@@ -61,7 +63,8 @@ export class CapabilitySandbox {
    * 3. 其它路径拒绝
    */
   assertFsRead(targetPath: string): void {
-    const resolved = path.resolve(targetPath)
+    // 三模型审计: realpath 防 symlink + 末尾分隔符防前缀攻击
+    const resolved = resolveRealPath(targetPath)
 
     // 数据目录始终允许
     if (resolved.startsWith(this.dataDir)) return
@@ -69,7 +72,7 @@ export class CapabilitySandbox {
     // 检查声明的路径
     if (this.permissions.fs) {
       for (const allowedPath of this.permissions.fs) {
-        const resolvedAllowed = path.resolve(allowedPath)
+        const resolvedAllowed = ensureTrailingSep(resolveRealPath(allowedPath))
         if (resolved.startsWith(resolvedAllowed)) return
       }
     }
@@ -83,7 +86,8 @@ export class CapabilitySandbox {
    * 规则: 只允许写入插件数据目录
    */
   assertFsWrite(targetPath: string): void {
-    const resolved = path.resolve(targetPath)
+    // 三模型审计: realpath 防 symlink
+    const resolved = resolveRealPath(targetPath)
 
     if (resolved.startsWith(this.dataDir)) return
 
@@ -129,4 +133,22 @@ export class CapabilitySandbox {
   getPermissions(): Readonly<PluginPermissions> {
     return this.permissions
   }
+}
+
+// ─── 安全工具函数 ──────────────────────────────
+
+/** 三模型审计: 解析真实路径 (防 symlink 绕过) */
+function resolveRealPath(p: string): string {
+  const resolved = path.resolve(p)
+  try {
+    return fs.realpathSync(resolved)
+  } catch {
+    // 路径不存在时降级到 resolve (新文件写入场景)
+    return resolved
+  }
+}
+
+/** 三模型审计: 确保路径以分隔符结尾 (防前缀攻击: /data/plugin-evil vs /data/plugin) */
+function ensureTrailingSep(p: string): string {
+  return p.endsWith(path.sep) ? p : p + path.sep
 }

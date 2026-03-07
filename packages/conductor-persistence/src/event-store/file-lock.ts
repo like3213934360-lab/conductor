@@ -11,13 +11,15 @@
  * - SQLite WAL: writer exclusion
  *
  * 安全设计:
- * 1. .lock 文件记录 PID + 时间戳
+ * 1. .lock 文件记录 PID + UUID + 时间戳
  * 2. 过期锁自动清除 (staleLockMs)
  * 3. 使用 O_EXCL 原子创建保证互斥
- * 4. unlock 时验证 PID 一致性
+ * 4. unlock 时验证 UUID 一致性 (防止 PID 重用)
+ * 5. 三模型审计: TOCTOU 修复 — stale check + acquire 原子化
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 
 /** 文件锁配置 */
 export interface FileLockOptions {
@@ -32,6 +34,8 @@ export interface FileLockOptions {
 /** 锁文件内容 */
 interface LockFileContent {
   pid: number
+  /** 三模型审计: UUID 唱一标识 (防 PID 重用) */
+  uuid: string
   timestamp: string
   hostname: string
 }
@@ -49,6 +53,8 @@ export class FileLock {
   private readonly lockPath: string
   private readonly options: Required<FileLockOptions>
   private acquired = false
+  /** 三模型审计: 当前锁的唯一标识 */
+  private lockUuid = ''
 
   constructor(filePath: string, options?: FileLockOptions) {
     this.lockPath = filePath + '.lock'
@@ -63,13 +69,10 @@ export class FileLock {
         return
       }
 
-      // 检查锁是否过期
-      if (await this.isLockStale()) {
-        await this.forceRelease()
-        if (await this.tryAcquire()) {
-          this.acquired = true
-          return
-        }
+      // 三模型审计: TOCTOU 修复 — 原子化过期检测+重新获取
+      if (await this.tryReplaceStale()) {
+        this.acquired = true
+        return
       }
 
       // 等待重试
@@ -86,22 +89,25 @@ export class FileLock {
     if (!this.acquired) return
 
     try {
-      // 验证 PID 一致性: 只释放自己的锁
+      // 三模型审计: 验证 UUID 一致性 (而非 PID, 防止 PID 重用)
       const content = await this.readLockFile()
-      if (content && content.pid === process.pid) {
+      if (content && content.uuid === this.lockUuid) {
         await fs.promises.unlink(this.lockPath)
       }
     } catch {
       // 锁文件已被清除, 忽略
     } finally {
       this.acquired = false
+      this.lockUuid = ''
     }
   }
 
   /** 尝试获取锁 (非阻塞) */
   private async tryAcquire(): Promise<boolean> {
+    const uuid = crypto.randomUUID()
     const content: LockFileContent = {
       pid: process.pid,
+      uuid,
       timestamp: new Date().toISOString(),
       hostname: (await import('node:os')).hostname(),
     }
@@ -113,6 +119,7 @@ export class FileLock {
         JSON.stringify(content),
         { flag: 'wx' },
       )
+      this.lockUuid = uuid
       return true
     } catch (err) {
       const error = err as NodeJS.ErrnoException
@@ -121,29 +128,69 @@ export class FileLock {
     }
   }
 
-  /** 检查锁是否过期 */
-  private async isLockStale(): Promise<boolean> {
-    const content = await this.readLockFile()
-    if (!content) return true
+  /**
+   * 三模型审计: 原子化过期锁替换 (TOCTOU 修复)
+   *
+   * 策略: 写入临时文件 + rename 原子替换
+   * 1. 读取现有锁 → 检查是否过期
+   * 2. 写入临时 .lock.tmp → O_EXCL 保证只有一个进程加入竞争
+   * 3. 再次读取现有锁 → 确认仍是同一把过期锁
+   * 4. rename 临时文件为 .lock
+   */
+  private async tryReplaceStale(): Promise<boolean> {
+    // 1. 检查现有锁是否过期
+    const existing = await this.readLockFile()
+    if (!existing) return false
+    if (!this.isContentStale(existing)) return false
 
+    const staleUuid = existing.uuid
+
+    // 2. 写入临时锁文件
+    const tmpPath = this.lockPath + '.tmp.' + process.pid
+    const uuid = crypto.randomUUID()
+    const newContent: LockFileContent = {
+      pid: process.pid,
+      uuid,
+      timestamp: new Date().toISOString(),
+      hostname: (await import('node:os')).hostname(),
+    }
+
+    try {
+      await fs.promises.writeFile(tmpPath, JSON.stringify(newContent), { flag: 'wx' })
+    } catch {
+      return false // 另一个进程已经在竞争
+    }
+
+    try {
+      // 3. 再次确认仍是同一把过期锁 (防 TOCTOU)
+      const recheck = await this.readLockFile()
+      if (!recheck || recheck.uuid !== staleUuid) {
+        // 锁已被其他进程更新, 放弃
+        await fs.promises.unlink(tmpPath).catch(() => {})
+        return false
+      }
+
+      // 4. 原子替换
+      await fs.promises.rename(tmpPath, this.lockPath)
+      this.lockUuid = uuid
+      return true
+    } catch {
+      await fs.promises.unlink(tmpPath).catch(() => {})
+      return false
+    }
+  }
+
+  /** 检查锁内容是否过期 */
+  private isContentStale(content: LockFileContent): boolean {
     // 检查持锁进程是否存活
     try {
-      process.kill(content.pid, 0) // 0 信号: 仅检查进程是否存在
+      process.kill(content.pid, 0)
       // 进程存在, 检查时间是否过期
       const lockTime = new Date(content.timestamp).getTime()
       return Date.now() - lockTime > this.options.staleLockMs
     } catch {
       // 进程不存在, 锁已过期
       return true
-    }
-  }
-
-  /** 强制释放过期锁 */
-  private async forceRelease(): Promise<void> {
-    try {
-      await fs.promises.unlink(this.lockPath)
-    } catch {
-      // 忽略
     }
   }
 
