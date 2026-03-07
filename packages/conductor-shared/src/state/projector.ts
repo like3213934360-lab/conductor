@@ -121,6 +121,9 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
             status: 'completed',
             output: payload.output,
             completedAt: envelope.timestamp,
+            model: payload.model ?? nodeState.model,
+            durationMs: payload.durationMs,
+            degraded: payload.degraded,
           },
         }
       }

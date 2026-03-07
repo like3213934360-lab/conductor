@@ -98,7 +98,16 @@ export interface NodeStartedEvent {
 }
 
 /** 节点完成事件 */
-export interface NodeCompletedPayload { nodeId: string; output: Record<string, unknown> }
+export interface NodeCompletedPayload {
+  nodeId: string
+  output: Record<string, unknown>
+  /** 实际使用的模型标识 */
+  model?: string
+  /** 执行耗时(毫秒) */
+  durationMs?: number
+  /** 是否降级执行(某个模型失败) */
+  degraded?: boolean
+}
 export interface NodeCompletedEvent {
   type: 'NODE_COMPLETED'
   payload: NodeCompletedPayload
@@ -267,7 +276,13 @@ const NodeStartedPayloadSchema = z.object({
 
 const NodeCompletedPayloadSchema = z.object({
   type: z.literal('NODE_COMPLETED'),
-  payload: z.object({ nodeId: z.string(), output: z.record(z.string(), z.unknown()) }),
+  payload: z.object({
+    nodeId: z.string(),
+    output: z.record(z.string(), z.unknown()),
+    model: z.string().optional(),
+    durationMs: z.number().optional(),
+    degraded: z.boolean().optional(),
+  }),
 })
 
 const NodeFailedPayloadSchema = z.object({

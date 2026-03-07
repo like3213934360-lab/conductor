@@ -67,7 +67,9 @@ export function registerAgcAdvanceTool(server: McpServer, ctx: ServerContext): v
           runId: args.runId,
           status: finalState.status,
           stateVersion: finalState.version,
-          executionRate: `${Math.round(((completedNodes + skippedNodes) / totalNodes) * 100)}%`,
+          executionRate: totalNodes > 0
+            ? `${Math.round(((completedNodes + skippedNodes) / totalNodes) * 100)}%`
+            : '0%',
           stats: {
             total: totalNodes,
             completed: completedNodes,

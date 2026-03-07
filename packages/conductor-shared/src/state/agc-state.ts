@@ -26,6 +26,10 @@ export const NodeRuntimeStateSchema = z.object({
   completedAt: z.string().optional(),
   /** 分配的模型 */
   model: z.string().optional(),
+  /** 执行耗时(毫秒) — 复查修复 #8 */
+  durationMs: z.number().optional(),
+  /** 是否降级执行 — 复查修复 #8 */
+  degraded: z.boolean().optional(),
 })
 
 export type NodeRuntimeState = z.infer<typeof NodeRuntimeStateSchema>
