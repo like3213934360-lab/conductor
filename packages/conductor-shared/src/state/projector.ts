@@ -2,16 +2,23 @@
  * Conductor AGC — 事件投影器 (Projector)
  *
  * Event Sourcing 核心: 纯函数将事件流还原为 AGCState。
- * reduceEvent 是整个系统最关键的函数——
- * 所有状态变更的语义都在这里定义。
  *
- * Phase 3 优化:
- * - RUN_CONTEXT_CAPTURED: 使用强类型 CapturedContext
- * - RUN_VERIFIED: 不再是死契约，正确处理
- * - projectState: 纯事件驱动，不再依赖外部 nodeIds
+ * 审查修复:
+ * #5: 版本单调递增校验
+ * #6: RUN_COMPLETED 支持 cancelled/paused 终态
+ * #12: RUN_VERIFIED 投影到 verificationResult 字段
+ * #3: NODE_SKIPPED 事件处理
  */
 import type { AGCState, NodeRuntimeState, CapturedContext } from './agc-state.js'
 import type { AGCEventEnvelope } from '../schema/event.js'
+import type {
+  RunCreatedPayload, RunContextCapturedPayload,
+  NodeQueuedPayload, NodeStartedPayload, NodeCompletedPayload,
+  NodeFailedPayload, NodeSkippedPayload,
+  RiskAssessedPayload, ComplianceEvaluatedPayload,
+  CheckpointSavedPayload, RouteDecidedPayload,
+  RunVerifiedPayload, RunCompletedPayload,
+} from '../schema/event.js'
 
 /** 创建初始状态 */
 export function createInitialState(runId: string, nodeIds: string[]): AGCState {
@@ -30,15 +37,22 @@ export function createInitialState(runId: string, nodeIds: string[]): AGCState {
 /**
  * 事件归约器: 将单个事件应用到当前状态，返回新状态。
  * 纯函数，无副作用。
+ *
+ * 审查修复 #5: 校验版本单调递增
  */
 export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCState {
+  // #5: 版本单调递增校验
+  if (envelope.version <= state.version) {
+    // 重复或乱序事件，跳过不处理
+    return state
+  }
+
   const next = { ...state, version: envelope.version }
 
   switch (envelope.type) {
     case 'RUN_CREATED': {
-      const payload = envelope.payload as { nodeIds?: string[] }
+      const payload = envelope.payload as unknown as RunCreatedPayload
       next.status = 'running'
-      // Phase 3: 从事件重建 nodes，纯事件驱动
       if (payload.nodeIds) {
         const newNodes: Record<string, NodeRuntimeState> = {}
         for (const id of payload.nodeIds) {
@@ -50,31 +64,30 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'RUN_CONTEXT_CAPTURED': {
-      // Phase 3: 强类型化
-      const payload = envelope.payload as CapturedContext
+      const payload = envelope.payload as unknown as RunContextCapturedPayload
       next.capturedContext = {
         graph: payload.graph,
         metadata: payload.metadata,
         options: payload.options,
         capturedAt: payload.capturedAt ?? envelope.timestamp,
-      }
+      } as CapturedContext
       break
     }
 
     case 'NODE_QUEUED': {
-      const nodeId = (envelope.payload as { nodeId: string }).nodeId
-      const nodeState = next.nodes[nodeId]
+      const payload = envelope.payload as unknown as NodeQueuedPayload
+      const nodeState = next.nodes[payload.nodeId]
       if (nodeState) {
         next.nodes = {
           ...next.nodes,
-          [nodeId]: { ...nodeState, status: 'queued' },
+          [payload.nodeId]: { ...nodeState, status: 'queued' },
         }
       }
       break
     }
 
     case 'NODE_STARTED': {
-      const payload = envelope.payload as { nodeId: string; model?: string }
+      const payload = envelope.payload as unknown as NodeStartedPayload
       const nodeState = next.nodes[payload.nodeId]
       if (nodeState) {
         next.nodes = {
@@ -91,7 +104,7 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'NODE_COMPLETED': {
-      const payload = envelope.payload as { nodeId: string; output: Record<string, unknown> }
+      const payload = envelope.payload as unknown as NodeCompletedPayload
       const nodeState = next.nodes[payload.nodeId]
       if (nodeState) {
         next.nodes = {
@@ -108,7 +121,7 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'NODE_FAILED': {
-      const payload = envelope.payload as { nodeId: string; error: string }
+      const payload = envelope.payload as unknown as NodeFailedPayload
       const nodeState = next.nodes[payload.nodeId]
       if (nodeState) {
         next.nodes = {
@@ -124,10 +137,25 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
       break
     }
 
-    case 'RISK_ASSESSED': {
-      const payload = envelope.payload as {
-        drScore: number; level: string; factors: Record<string, number>
+    // 审查修复 #3: NODE_SKIPPED 事件处理
+    case 'NODE_SKIPPED': {
+      const payload = envelope.payload as unknown as NodeSkippedPayload
+      const nodeState = next.nodes[payload.nodeId]
+      if (nodeState) {
+        next.nodes = {
+          ...next.nodes,
+          [payload.nodeId]: {
+            ...nodeState,
+            status: 'skipped',
+            completedAt: envelope.timestamp,
+          },
+        }
       }
+      break
+    }
+
+    case 'RISK_ASSESSED': {
+      const payload = envelope.payload as unknown as RiskAssessedPayload
       next.latestRisk = {
         drScore: payload.drScore,
         level: payload.level,
@@ -138,9 +166,7 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'COMPLIANCE_EVALUATED': {
-      const payload = envelope.payload as {
-        allowed: boolean; worstStatus: string; findingCount: number
-      }
+      const payload = envelope.payload as unknown as ComplianceEvaluatedPayload
       next.latestCompliance = {
         allowed: payload.allowed,
         worstStatus: payload.worstStatus,
@@ -151,16 +177,14 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'CHECKPOINT_SAVED': {
-      const payload = envelope.payload as { checkpointId: string; version: number }
+      const payload = envelope.payload as unknown as CheckpointSavedPayload
       next.lastCheckpointId = payload.checkpointId
       next.lastCheckpointVersion = payload.version
       break
     }
 
     case 'ROUTE_DECIDED': {
-      const payload = envelope.payload as {
-        lane: string; nodePath: string[]; skippedCount: number; confidence: number
-      }
+      const payload = envelope.payload as unknown as RouteDecidedPayload
       next.routeDecision = {
         lane: payload.lane,
         nodePath: payload.nodePath,
@@ -170,15 +194,28 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
       break
     }
 
+    // 审查修复 #12: RUN_VERIFIED 投影到读模型
     case 'RUN_VERIFIED': {
-      // Phase 3: 不再是死契约，记录验证结果
-      // 验证事件保留只读语义，不改变业务状态
+      const payload = envelope.payload as unknown as RunVerifiedPayload
+      next.verificationResult = {
+        ok: payload.ok,
+        driftDetected: payload.driftDetected,
+        verifiedAt: envelope.timestamp,
+      }
       break
     }
 
+    // 审查修复 #6: 支持 cancelled/paused 终态
     case 'RUN_COMPLETED': {
-      const payload = envelope.payload as { finalStatus: string }
-      next.status = payload.finalStatus === 'completed' ? 'completed' : 'failed'
+      const payload = envelope.payload as unknown as RunCompletedPayload
+      const status = payload.finalStatus
+      if (status === 'completed' || status === 'failed' ||
+          status === 'cancelled' || status === 'paused') {
+        next.status = status
+      } else {
+        // 未知终态降级为 failed
+        next.status = 'failed'
+      }
       break
     }
 
@@ -192,10 +229,6 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
 
 /**
  * 从事件流投影完整状态。
- *
- * Phase 3 优化: 纯事件驱动的投影。
- * nodeIds 仍作为参数保留向后兼容，但 RUN_CREATED 事件
- * 内部也会重建 nodes map。
  */
 export function projectState(
   runId: string,
@@ -211,9 +244,6 @@ export function projectState(
 
 /**
  * 纯事件驱动投影 — Phase 3 新增
- *
- * 不需要外部 nodeIds，完全从事件流重建状态。
- * 用于 verifyRun() 等需要独立验证的场景。
  */
 export function projectStateFromEvents(
   runId: string,

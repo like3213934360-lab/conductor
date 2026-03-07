@@ -219,11 +219,34 @@ export class PluginManager {
 
       for (const contribution of runtime.plugin.rules) {
         // 将 ComplianceRuleContribution 适配为 ComplianceRule
-        const rule: ComplianceRule = {
-          id: `${pluginId}/${contribution.id}`,
-          name: `[${runtime.plugin.manifest.name}] ${contribution.name}`,
+        const ruleId = `${pluginId}/${contribution.id}`
+        const ruleName = `[${runtime.plugin.manifest.name}] ${contribution.name}`
+        // 审查修复 #7: 保留 enforce/order/applies 用于排序和过滤
+        const enforce = contribution.enforce ?? 'normal'
+        const order = contribution.order ?? 100
+
+        const rule: ComplianceRule & { _enforce: string; _order: number; _contribution: typeof contribution } = {
+          id: ruleId,
+          name: ruleName,
           defaultLevel: contribution.defaultLevel,
+          // 保留内部排序/过滤信息
+          _enforce: enforce,
+          _order: order,
+          _contribution: contribution,
           evaluate: async (ctx: ComplianceContext): Promise<ComplianceRuleResult> => {
+            // 审查修复 #7: applies 条件过滤
+            if (contribution.applies) {
+              const shouldApply = await contribution.applies({
+                runId: ctx.state.runId,
+                state: ctx.state,
+                graph: ctx.graph,
+                metadata: ctx.metadata,
+              })
+              if (!shouldApply) {
+                return { ruleId, ruleName, status: 'pass', message: 'skipped by applies()', nodeId: ctx.currentNodeId }
+              }
+            }
+
             // 超时保护 + clearTimeout
             const timeoutMs = contribution.timeoutMs ?? 5000
             let timer: ReturnType<typeof setTimeout> | undefined
@@ -250,8 +273,8 @@ export class PluginManager {
             // 注入 ruleId/ruleName（避免插件自报漂移）
             return {
               ...result,
-              ruleId: `${pluginId}/${contribution.id}`,
-              ruleName: `[${runtime.plugin.manifest.name}] ${contribution.name}`,
+              ruleId,
+              ruleName,
             }
           },
         }
@@ -259,10 +282,15 @@ export class PluginManager {
       }
     }
 
-    // 按 enforce + order 排序
+    // 审查修复 #7: 按 enforce (pre < normal < post) + order 排序
+    const enforceOrder: Record<string, number> = { pre: 0, normal: 1, post: 2 }
     return rules.sort((a, b) => {
-      // 简化排序：按 ID 字母序
-      return a.id.localeCompare(b.id)
+      const aEnforce = enforceOrder[(a as unknown as { _enforce: string })._enforce] ?? 1
+      const bEnforce = enforceOrder[(b as unknown as { _enforce: string })._enforce] ?? 1
+      if (aEnforce !== bEnforce) return aEnforce - bEnforce
+      const aOrder = (a as unknown as { _order: number })._order ?? 100
+      const bOrder = (b as unknown as { _order: number })._order ?? 100
+      return aOrder - bOrder
     })
   }
 

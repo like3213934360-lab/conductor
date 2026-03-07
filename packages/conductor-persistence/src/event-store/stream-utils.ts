@@ -31,7 +31,14 @@ export async function appendJsonlLines(
   // 使用文件描述符: O_WRONLY + O_APPEND + O_CREAT
   const fd = await fs.promises.open(filePath, 'a')
   try {
-    await fd.write(content)
+    // 审查修复 #10: 检查 bytesWritten 防止短写静默截断
+    const { bytesWritten } = await fd.write(content)
+    const expectedBytes = Buffer.byteLength(content, 'utf-8')
+    if (bytesWritten !== expectedBytes) {
+      throw new Error(
+        `JSONL 短写: 期望写入 ${expectedBytes} 字节, 实际 ${bytesWritten} 字节 (${filePath})`,
+      )
+    }
     // fsync 确保数据落盘（不仅仅是 OS 缓冲区）
     await fd.datasync()
   } finally {

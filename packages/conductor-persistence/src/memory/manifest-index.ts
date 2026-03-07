@@ -140,13 +140,16 @@ export class ManifestIndex {
     return results
       .map((result: SearchResult) => {
         const createdAt = new Date(result.createdAt).getTime()
-        const age = now - createdAt
-        const decay = Math.exp(-lambda * age)
+        // 审查修复 #8: 防御性 NaN + 未来时间边界
+        const age = (Number.isFinite(createdAt) && createdAt <= now)
+          ? now - createdAt
+          : 0 // 无效/未来时间不衰减
+        const decay = age > 0 ? Math.exp(-lambda * age) : 1
         const decayedScore = result.score * decay
 
         return {
           runId: result.runId,
-          score: decayedScore,
+          score: Number.isFinite(decayedScore) ? decayedScore : 0,
           goal: result.goal,
           lane: result.lane,
           riskLevel: result.riskLevel,

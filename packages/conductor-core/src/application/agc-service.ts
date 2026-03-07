@@ -199,12 +199,26 @@ export class AGCService {
       payload: {
         lane: route.lane,
         nodePath: route.nodePath,
+        skippedNodes: route.skippedNodes,
         skippedCount: route.skippedNodes.length,
         confidence: route.confidence,
       },
       timestamp: createISODateTime(),
       version,
     })
+
+    // 审查修复 #3: 为 skippedNodes 发射 NODE_SKIPPED 事件
+    for (const skippedNodeId of route.skippedNodes) {
+      version++
+      events.push({
+        eventId: createEventId(),
+        runId,
+        type: 'NODE_SKIPPED',
+        payload: { nodeId: skippedNodeId, reason: `express lane: ${route.lane}` },
+        timestamp: createISODateTime(),
+        version,
+      })
+    }
 
     // 8. 排队初始节点
     const initialNodes = this.dagEngine.queueInitialNodes(parsed.graph)
@@ -353,7 +367,8 @@ export class AGCService {
 
     return {
       ok,
-      state: checkpointState ?? replayedState,
+      // 审查修复 #11: 返回 replayedState，不是过期的 checkpointState
+      state: replayedState,
       replayedState,
       driftDetected,
       compliance,

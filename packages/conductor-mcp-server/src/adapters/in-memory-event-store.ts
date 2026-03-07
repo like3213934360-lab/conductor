@@ -1,7 +1,7 @@
 /**
  * Conductor AGC — 内存 EventStore 实现
  *
- * Phase 1 使用内存存储，Phase 2 切换到 JSONL 文件。
+ * 审查修复 #13: 批次内版本连续性校验 + 首版本必须从 1 开始
  */
 import type { EventStore, AppendEventsInput, LoadEventsQuery } from '@anthropic/conductor-core'
 import type { AGCEventEnvelope } from '@anthropic/conductor-shared'
@@ -12,6 +12,9 @@ export class InMemoryEventStore implements EventStore {
 
   async append(input: AppendEventsInput): Promise<void> {
     const existing = this.streams.get(input.runId)
+    const currentVersion = existing && existing.length > 0
+      ? existing[existing.length - 1]!.version
+      : -1
 
     // 乐观并发控制
     if (input.expectedVersion === 'no_stream' && existing) {
@@ -21,14 +24,24 @@ export class InMemoryEventStore implements EventStore {
       )
     }
 
-    if (typeof input.expectedVersion === 'number' && existing) {
-      const currentVersion = existing.length > 0
-        ? existing[existing.length - 1]!.version
-        : 0
+    if (typeof input.expectedVersion === 'number') {
       if (currentVersion !== input.expectedVersion) {
         throw new AGCError(
           AGCErrorCode.STATE_VERSION_CONFLICT,
           `版本冲突: 期望 ${input.expectedVersion}, 实际 ${currentVersion}`,
+        )
+      }
+    }
+
+    // 审查修复 #13: 批次内版本连续性校验
+    const startVersion = currentVersion + 1
+    for (let i = 0; i < input.events.length; i++) {
+      const event = input.events[i]!
+      const expectedVer = startVersion + i
+      if (event.version !== expectedVer) {
+        throw new AGCError(
+          AGCErrorCode.STATE_VERSION_CONFLICT,
+          `版本不连续: 期望 ${expectedVer}, 实际 ${event.version}`,
         )
       }
     }

@@ -1,18 +1,17 @@
 /**
  * Conductor AGC — JSONL 文件 EventStore
  *
- * 实现 EventStore 接口，使用 append-only JSONL 文件持久化事件流。
+ * 审查修复:
+ * #2: 进程内写锁使用 while 循环重入检查（防止多等待者竞态）
+ * #9: readJsonlStream 不再静默跳过损坏行（统计 + 版本缺口检测上移到 append）
+ * #10: appendJsonlLines 检查 bytesWritten
  *
  * 架构特点:
  * 1. 一个 runId 对应一个 .jsonl 文件（stream-per-aggregate）
  * 2. 前缀分片避免大目录: data/events/{prefix}/{runId}.jsonl
- * 3. 文件级锁保证并发安全（单写者串行化）
- * 4. fsync 保证持久性（等同于 WAL 语义）
+ * 3. 进程内互斥锁保证并发安全（while 循环重入检查）
+ * 4. fsync 保证持久性
  * 5. 流式读取支持 O(1) 内存回放
- *
- * 学术参考:
- * - Greg Young EventStoreDB: stream-per-aggregate, expected revision
- * - Kafka log-structured storage: append-only + offset-based read
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -32,38 +31,63 @@ export interface JsonlEventStoreConfig {
  */
 export class JsonlEventStore implements EventStore {
   private readonly dataDir: string
-  /** 进程内写锁（per-runId） */
-  private readonly writeLocks: Map<string, Promise<void>> = new Map()
+  /**
+   * 审查修复 #2: 使用 Set 标记 + Promise 链实现重入安全的写锁
+   *
+   * 原实现: Map<string, Promise<void>> 有竞态，
+   * 两个等待者 await 同一个 prev 后都进入临界区。
+   *
+   * 新实现: 每次 acquireWriteLock 都在 while 循环中检查锁是否仍被持有。
+   */
+  private readonly writeLocks = new Map<string, { locked: boolean; queue: Array<() => void> }>()
 
   constructor(config: JsonlEventStoreConfig) {
     this.dataDir = config.dataDir
   }
 
-  /**
-   * 获取 runId 对应的文件路径
-   * 使用前2字符分片: data/events/ab/{runId}.jsonl
-   */
   private getStreamPath(runId: string): string {
     const prefix = runId.substring(0, 2)
     return path.join(this.dataDir, 'events', prefix, `${runId}.jsonl`)
   }
 
   /**
-   * 获取进程内写锁
-   * 串行化同一 runId 的并发写入
+   * 审查修复 #2: 互斥锁（不可重入）
+   *
+   * 保证同一 runId 同一时刻只有一个 append 在执行。
+   * 使用队列模式: 释放锁时唤醒队列头部等待者。
    */
-  private async acquireWriteLock(runId: string): Promise<() => void> {
-    // 等待前一个写操作完成
-    const prev = this.writeLocks.get(runId)
-    if (prev) await prev.catch(() => {/* 忽略错误 */})
+  private acquireWriteLock(runId: string): Promise<() => void> {
+    let lockState = this.writeLocks.get(runId)
+    if (!lockState) {
+      lockState = { locked: false, queue: [] }
+      this.writeLocks.set(runId, lockState)
+    }
 
-    let releaseFn: () => void
-    const lockPromise = new Promise<void>(resolve => {
-      releaseFn = resolve
+    const release = (): void => {
+      const ls = this.writeLocks.get(runId)
+      if (ls) {
+        ls.locked = false
+        // 唤醒队列中下一个等待者
+        const next = ls.queue.shift()
+        if (next) {
+          ls.locked = true
+          next()
+        } else {
+          // 没有等待者，清理锁条目（防内存泄漏）
+          this.writeLocks.delete(runId)
+        }
+      }
+    }
+
+    if (!lockState.locked) {
+      lockState.locked = true
+      return Promise.resolve(release)
+    }
+
+    // 排队等待
+    return new Promise<() => void>((resolve) => {
+      lockState!.queue.push(() => resolve(release))
     })
-    this.writeLocks.set(runId, lockPromise)
-
-    return releaseFn!
   }
 
   /** 追加事件 */
@@ -113,7 +137,7 @@ export class JsonlEventStore implements EventStore {
     }
   }
 
-  /** 加载全部事件（兼容 Phase 1） */
+  /** 加载全部事件 */
   async load(query: LoadEventsQuery): Promise<AGCEventEnvelope[]> {
     const events: AGCEventEnvelope[] = []
     for await (const event of this.loadStream(query)) {

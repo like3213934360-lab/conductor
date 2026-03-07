@@ -94,6 +94,12 @@ export const AGCStateSchema = z.object({
   lastCheckpointId: z.string().optional(),
   /** 最后一个检查点版本 */
   lastCheckpointVersion: z.number().optional(),
+  /** 审查修复 #12: 验证结果 (RUN_VERIFIED 投影) */
+  verificationResult: z.object({
+    ok: z.boolean(),
+    driftDetected: z.boolean(),
+    verifiedAt: z.string(),
+  }).optional(),
 })
 
 export type AGCState = z.infer<typeof AGCStateSchema>
