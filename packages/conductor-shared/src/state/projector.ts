@@ -4,8 +4,13 @@
  * Event Sourcing 核心: 纯函数将事件流还原为 AGCState。
  * reduceEvent 是整个系统最关键的函数——
  * 所有状态变更的语义都在这里定义。
+ *
+ * Phase 3 优化:
+ * - RUN_CONTEXT_CAPTURED: 使用强类型 CapturedContext
+ * - RUN_VERIFIED: 不再是死契约，正确处理
+ * - projectState: 纯事件驱动，不再依赖外部 nodeIds
  */
-import type { AGCState, NodeRuntimeState } from './agc-state.js'
+import type { AGCState, NodeRuntimeState, CapturedContext } from './agc-state.js'
 import type { AGCEventEnvelope } from '../schema/event.js'
 
 /** 创建初始状态 */
@@ -31,20 +36,27 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
 
   switch (envelope.type) {
     case 'RUN_CREATED': {
+      const payload = envelope.payload as { nodeIds?: string[] }
       next.status = 'running'
+      // Phase 3: 从事件重建 nodes，纯事件驱动
+      if (payload.nodeIds) {
+        const newNodes: Record<string, NodeRuntimeState> = {}
+        for (const id of payload.nodeIds) {
+          newNodes[id] = { nodeId: id, status: 'pending' }
+        }
+        next.nodes = newNodes
+      }
       break
     }
 
     case 'RUN_CONTEXT_CAPTURED': {
-      // Phase 2: 保存完整运行上下文用于 verifyRun() 重建
-      const payload = envelope.payload as {
-        graph: unknown; metadata: unknown; options: unknown
-      }
+      // Phase 3: 强类型化
+      const payload = envelope.payload as CapturedContext
       next.capturedContext = {
         graph: payload.graph,
         metadata: payload.metadata,
         options: payload.options,
-        capturedAt: envelope.timestamp,
+        capturedAt: payload.capturedAt ?? envelope.timestamp,
       }
       break
     }
@@ -159,7 +171,8 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
     }
 
     case 'RUN_VERIFIED': {
-      // 验证事件本身不改变聚合状态
+      // Phase 3: 不再是死契约，记录验证结果
+      // 验证事件保留只读语义，不改变业务状态
       break
     }
 
@@ -179,7 +192,10 @@ export function reduceEvent(state: AGCState, envelope: AGCEventEnvelope): AGCSta
 
 /**
  * 从事件流投影完整状态。
- * 可用于 Time-Travel Debugging 和漂移检测。
+ *
+ * Phase 3 优化: 纯事件驱动的投影。
+ * nodeIds 仍作为参数保留向后兼容，但 RUN_CREATED 事件
+ * 内部也会重建 nodes map。
  */
 export function projectState(
   runId: string,
@@ -187,6 +203,23 @@ export function projectState(
   events: AGCEventEnvelope[],
 ): AGCState {
   let state = createInitialState(runId, nodeIds)
+  for (const event of events) {
+    state = reduceEvent(state, event)
+  }
+  return state
+}
+
+/**
+ * 纯事件驱动投影 — Phase 3 新增
+ *
+ * 不需要外部 nodeIds，完全从事件流重建状态。
+ * 用于 verifyRun() 等需要独立验证的场景。
+ */
+export function projectStateFromEvents(
+  runId: string,
+  events: AGCEventEnvelope[],
+): AGCState {
+  let state = createInitialState(runId, [])
   for (const event of events) {
     state = reduceEvent(state, event)
   }

@@ -3,11 +3,21 @@
  *
  * 编排层: 组合 DAG Engine + Risk Router + Compliance Engine，
  * 通过 Event Sourcing 管理状态。
+ *
+ * Phase 3 修复:
+ * 1. startRun() 发射 RUN_CONTEXT_CAPTURED 事件
+ * 2. verifyRun() 使用 capturedContext 重建图（不再伪造）
+ * 3. checkpoint 版本语义修正（事件后保存）
+ * 4. CHECKPOINT_SAVED 严格 expectedVersion
+ * 5. verifyRun() 发射 RUN_VERIFIED 事件
+ * 6. 增量回放优化（从 checkpoint 恢复）
+ * 7. complianceRules 依赖注入化
  */
 import type { AGCState, RunRequest, AGCEventEnvelope, CheckpointDTO,
-  RouteDecision, ComplianceDecision, DRScore } from '@anthropic/conductor-shared'
+  RouteDecision, ComplianceDecision, DRScore, RunGraph, RunMetadata,
+  CapturedContext } from '@anthropic/conductor-shared'
 import { createRunId, createEventId, createISODateTime, createCheckpointId,
-  projectState, RunRequestSchema } from '@anthropic/conductor-shared'
+  projectState, projectStateFromEvents, reduceEvent, RunRequestSchema } from '@anthropic/conductor-shared'
 import type { EventStore } from '../contracts/event-store.js'
 import type { CheckpointStore } from '../contracts/checkpoint-store.js'
 import type { CoreLogger } from '../contracts/logger.js'
@@ -16,6 +26,7 @@ import { DagEngine } from '../dag/dag-engine.js'
 import { DRCalculator } from '../risk/dr-calculator.js'
 import { RiskRouter } from '../risk/risk-router.js'
 import { ComplianceEngine } from '../compliance/compliance-engine.js'
+import type { ComplianceRule } from '../compliance/compliance-rule.js'
 import { DefaultComplianceRules } from '../compliance/default-rules.js'
 
 /** AGCService 依赖注入 */
@@ -23,6 +34,8 @@ export interface AGCServiceDeps {
   eventStore: EventStore
   checkpointStore: CheckpointStore
   logger?: CoreLogger
+  /** Phase 3: 自定义合规规则（不传则使用默认规则） */
+  complianceRules?: ComplianceRule[]
 }
 
 /** 启动运行结果 */
@@ -65,11 +78,16 @@ export class AGCService {
     this.dagEngine = new DagEngine()
     this.drCalculator = new DRCalculator()
     this.riskRouter = new RiskRouter()
-    this.complianceEngine = new ComplianceEngine(DefaultComplianceRules)
+    // Phase 3: 合规规则 DI 化
+    this.complianceEngine = new ComplianceEngine(
+      deps.complianceRules ?? DefaultComplianceRules,
+    )
   }
 
   /**
    * 启动新的 AGC 运行
+   *
+   * Phase 3 修复: 统一持久化边界，所有事件一次 append
    */
   async startRun(req: RunRequest): Promise<StartRunResult> {
     // 1. Schema 校验（Zod 强制）
@@ -88,7 +106,7 @@ export class AGCService {
       metadata: parsed.metadata,
     })
 
-    // 4. 创建初始事件
+    // 4. 构造全部事件（统一持久化边界）
     let version = 0
     const events: AGCEventEnvelope[] = []
 
@@ -105,6 +123,23 @@ export class AGCService {
         files: parsed.metadata.files,
       },
       timestamp: createISODateTime(),
+      version,
+    })
+
+    // Phase 3 修复 #1: RUN_CONTEXT_CAPTURED — 持久化完整上下文
+    const capturedAt = createISODateTime()
+    version++
+    events.push({
+      eventId: createEventId(),
+      runId,
+      type: 'RUN_CONTEXT_CAPTURED',
+      payload: {
+        graph: parsed.graph,
+        metadata: parsed.metadata,
+        options: parsed.options ?? { plugins: [], debug: false },
+        capturedAt,
+      },
+      timestamp: capturedAt,
       version,
     })
 
@@ -185,14 +220,26 @@ export class AGCService {
       })
     }
 
-    // 9. 持久化事件
+    // Phase 3 修复 #3: checkpoint 在所有业务事件之后
+    const checkpointId = createCheckpointId()
+    version++
+    events.push({
+      eventId: createEventId(),
+      runId,
+      type: 'CHECKPOINT_SAVED',
+      payload: { checkpointId, version }, // 包含自身版本
+      timestamp: createISODateTime(),
+      version,
+    })
+
+    // 9. 统一持久化: 所有事件一次原子 append
+    // Phase 3 修复 #4: 使用严格 'no_stream' 替代 'any'
     await this.eventStore.append({ runId, events, expectedVersion: 'no_stream' })
 
     // 10. 投影最终状态
     const finalState = projectState(runId, nodeIds, events)
 
     // 11. 保存检查点
-    const checkpointId = createCheckpointId()
     const checkpoint: CheckpointDTO = {
       checkpointId,
       runId,
@@ -202,18 +249,6 @@ export class AGCService {
     }
     await this.checkpointStore.save({ checkpoint })
 
-    // CHECKPOINT_SAVED
-    version++
-    const cpEvent: AGCEventEnvelope = {
-      eventId: createEventId(),
-      runId,
-      type: 'CHECKPOINT_SAVED',
-      payload: { checkpointId, version: finalState.version },
-      timestamp: createISODateTime(),
-      version,
-    }
-    await this.eventStore.append({ runId, events: [cpEvent], expectedVersion: 'any' })
-
     this.logger.info('AGC 运行已启动', { runId, lane: route.lane, drScore: drScore.score })
 
     return { runId, state: finalState, route, compliance, drScore, checkpoint }
@@ -221,6 +256,8 @@ export class AGCService {
 
   /**
    * 查询运行状态（通过事件回放）
+   *
+   * Phase 3: 使用纯事件驱动投影
    */
   async getState(runId: string): Promise<AGCState | null> {
     const exists = await this.eventStore.exists(runId)
@@ -229,44 +266,97 @@ export class AGCService {
     const events = await this.eventStore.load({ runId })
     if (events.length === 0) return null
 
-    // 从 RUN_CREATED 事件中提取 nodeIds
-    const createdEvent = events.find(e => e.type === 'RUN_CREATED')
-    const nodeIds = (createdEvent?.payload as { nodeIds?: string[] })?.nodeIds ?? []
-
-    return projectState(runId, nodeIds, events)
+    // Phase 3: 纯事件驱动投影，不依赖外部 nodeIds
+    return projectStateFromEvents(runId, events)
   }
 
   /**
    * 验证运行完整性（漂移检测）
    *
-   * 通过全量事件回放重算状态，与最新检查点对比。
+   * Phase 3 修复:
+   * - 使用 capturedContext 重建图/metadata（不再伪造）
+   * - 增量回放（从 checkpoint 恢复，仅回放尾部事件）
+   * - 发射 RUN_VERIFIED 事件
    */
   async verifyRun(runId: string): Promise<VerifyRunResult> {
-    // 1. 从事件流回放
-    const events = await this.eventStore.load({ runId })
-    const createdEvent = events.find(e => e.type === 'RUN_CREATED')
-    const nodeIds = (createdEvent?.payload as { nodeIds?: string[] })?.nodeIds ?? []
-    const replayedState = projectState(runId, nodeIds, events)
-
-    // 2. 加载最新检查点
+    // 1. Phase 3 修复 #6: 增量回放优化
     const checkpoint = await this.checkpointStore.loadLatest(runId)
-    const checkpointState = checkpoint?.state ?? replayedState
+    let replayedState: AGCState
+
+    if (checkpoint && this.eventStore.loadStream) {
+      // 从 checkpoint 恢复 + 仅回放尾部事件
+      replayedState = checkpoint.state as AGCState
+      const tailEvents: AGCEventEnvelope[] = []
+
+      for await (const event of this.eventStore.loadStream({
+        runId,
+        fromVersion: checkpoint.version + 1,
+      })) {
+        tailEvents.push(event)
+      }
+
+      // 在 checkpoint 状态之上应用尾部事件
+      for (const event of tailEvents) {
+        replayedState = reduceEvent(replayedState, event)
+      }
+    } else {
+      // 兜底: 全量回放
+      const events = await this.eventStore.load({ runId })
+      replayedState = projectStateFromEvents(runId, events)
+    }
+
+    // 2. Phase 3 修复 #2: 使用 capturedContext 重建图/metadata
+    const capturedCtx = replayedState.capturedContext as CapturedContext | undefined
+    const graph: RunGraph = capturedCtx?.graph ?? {
+      nodes: Object.keys(replayedState.nodes).map(id => ({
+        id, name: id, dependsOn: [] as string[],
+        input: {} as Record<string, unknown>, skippable: false,
+      })),
+      edges: [],
+    }
+    const metadata: RunMetadata = capturedCtx?.metadata ?? {
+      goal: '', files: [] as string[], initiator: 'system',
+    }
 
     // 3. 漂移检测
-    const driftDetected = checkpointState.version !== replayedState.version
+    const checkpointState = checkpoint?.state as AGCState | undefined
+    const driftDetected = checkpointState
+      ? checkpointState.version !== replayedState.version
+      : false
 
-    // 4. 重算合规
-    // 注意: 这里需要图定义，Phase 1 简化处理
+    // 4. 重算合规（使用完整图）
     const compliance = await this.complianceEngine.evaluate({
       state: replayedState,
-      graph: { nodes: nodeIds.map(id => ({ id, name: id, dependsOn: [] as string[], input: {} as Record<string, unknown>, skippable: false })), edges: [] },
-      metadata: { goal: '', files: [] as string[], initiator: 'system' },
+      graph,
+      metadata,
     })
 
     const ok = !driftDetected && compliance.allowed
 
+    // 5. Phase 3 修复 #5: 发射 RUN_VERIFIED 事件
+    const currentVersion = replayedState.version
+    const verifyEvent: AGCEventEnvelope = {
+      eventId: createEventId(),
+      runId,
+      type: 'RUN_VERIFIED',
+      payload: { ok, driftDetected },
+      timestamp: createISODateTime(),
+      version: currentVersion + 1,
+    }
+    await this.eventStore.append({
+      runId,
+      events: [verifyEvent],
+      expectedVersion: currentVersion,
+    })
+
     this.logger.info('运行验证完成', { runId, ok, driftDetected })
 
-    return { ok, state: checkpointState, replayedState, driftDetected, compliance }
+    return {
+      ok,
+      state: checkpointState ?? replayedState,
+      replayedState,
+      driftDetected,
+      compliance,
+    }
   }
 }

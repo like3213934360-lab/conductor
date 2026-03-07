@@ -1,5 +1,7 @@
 /**
  * Conductor AGC — conductor-core 包入口
+ *
+ * Phase 3: 新增插件系统导出
  */
 
 // 接口契约
@@ -19,6 +21,12 @@ export * from './risk/risk-router.js'
 export * from './compliance/compliance-rule.js'
 export * from './compliance/default-rules.js'
 export * from './compliance/compliance-engine.js'
+
+// 插件系统 — Phase 3 新增
+export * from './plugin/plugin-types.js'
+export * from './plugin/hook-bus.js'
+export * from './plugin/plugin-context.js'
+export * from './plugin/plugin-manager.js'
 
 // 应用服务
 export * from './application/agc-service.js'

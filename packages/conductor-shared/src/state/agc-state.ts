@@ -3,8 +3,12 @@
  *
  * Event Sourcing 的 Read Model：
  * 由 projector.ts 的 reduceEvent 从事件流投影而来。
+ *
+ * Phase 3 优化: capturedContext 从 z.unknown() 改为强类型
  */
 import { z } from 'zod'
+import { RunGraphSchema } from '../schema/graph.js'
+import { RunMetadataSchema } from '../schema/run.js'
 
 /** 节点运行时状态 */
 export const NodeRuntimeStateSchema = z.object({
@@ -25,6 +29,33 @@ export const NodeRuntimeStateSchema = z.object({
 })
 
 export type NodeRuntimeState = z.infer<typeof NodeRuntimeStateSchema>
+
+/** 运行选项 Schema（内联定义，避免循环引用） */
+const CapturedOptionsSchema = z.object({
+  plugins: z.array(z.string()).default([]),
+  debug: z.boolean().default(false),
+  riskHint: z.string().optional(),
+  tokenBudget: z.number().optional(),
+})
+
+/**
+ * 捕获的运行上下文 — Phase 3 强类型化
+ *
+ * 修复 Phase 2 缺陷: capturedContext 原为 z.unknown()，
+ * 导致插件和校验逻辑需要反复类型断言。
+ */
+export const CapturedContextSchema = z.object({
+  /** 完整 DAG 图定义（强类型） */
+  graph: RunGraphSchema,
+  /** 完整运行元数据（强类型） */
+  metadata: RunMetadataSchema,
+  /** 完整运行选项（强类型） */
+  options: CapturedOptionsSchema,
+  /** 捕获时间 */
+  capturedAt: z.string(),
+})
+
+export type CapturedContext = z.infer<typeof CapturedContextSchema>
 
 /** AGCState — 运行聚合根 */
 export const AGCStateSchema = z.object({
@@ -57,13 +88,8 @@ export const AGCStateSchema = z.object({
     skippedCount: z.number(),
     confidence: z.number(),
   }).optional(),
-  /** 捕获的完整运行上下文 — Phase 2 新增 */
-  capturedContext: z.object({
-    graph: z.unknown(),
-    metadata: z.unknown(),
-    options: z.unknown(),
-    capturedAt: z.string(),
-  }).optional(),
+  /** 捕获的完整运行上下文 — Phase 3 强类型化 */
+  capturedContext: CapturedContextSchema.optional(),
   /** 最后一个检查点 ID */
   lastCheckpointId: z.string().optional(),
   /** 最后一个检查点版本 */
