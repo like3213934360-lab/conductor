@@ -27,8 +27,12 @@ export interface PluginPermissions {
 
 // ─────────────── Hook 上下文 ───────────────
 
-/** 运行上下文（传递给 Hook） */
-export interface RunHookContext {
+/**
+ * 运行上下文（传递给 Hook）
+ *
+ * 三模型审计 P0: extends CancellableHookContext (signal 可选)
+ */
+export interface RunHookContext extends CancellableHookContext {
   runId: string
   graph: RunGraph
   metadata: RunMetadata
@@ -36,13 +40,13 @@ export interface RunHookContext {
 }
 
 /** 风险评估结果上下文 */
-export interface RiskHookContext {
+export interface RiskHookContext extends CancellableHookContext {
   runId: string
   drScore: DRScore
 }
 
 /** 合规评估上下文 */
-export interface ComplianceHookContext {
+export interface ComplianceHookContext extends CancellableHookContext {
   runId: string
   state: Readonly<AGCState>
   graph: Readonly<RunGraph>
@@ -50,14 +54,14 @@ export interface ComplianceHookContext {
 }
 
 /** 节点完成上下文 */
-export interface NodeCompleteHookContext {
+export interface NodeCompleteHookContext extends CancellableHookContext {
   runId: string
   nodeId: string
   output: Record<string, unknown>
 }
 
 /** 运行完成上下文 */
-export interface RunCompleteHookContext {
+export interface RunCompleteHookContext extends CancellableHookContext {
   runId: string
   finalState: Readonly<AGCState>
   route: RouteDecision

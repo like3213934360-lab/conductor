@@ -35,7 +35,7 @@ export class SqliteCheckpointStore implements CheckpointStore {
     `)
 
     this.stmtLoadLatest = this.db.prepare(`
-      SELECT checkpoint_id, run_id, version, state_json, created_at
+      SELECT checkpoint_id, run_id, version, state_json, state_hash, created_at
       FROM checkpoints
       WHERE run_id = ?
       ORDER BY version DESC
@@ -43,13 +43,13 @@ export class SqliteCheckpointStore implements CheckpointStore {
     `)
 
     this.stmtLoadByVersion = this.db.prepare(`
-      SELECT checkpoint_id, run_id, version, state_json, created_at
+      SELECT checkpoint_id, run_id, version, state_json, state_hash, created_at
       FROM checkpoints
       WHERE run_id = ? AND version = ?
     `)
 
     this.stmtList = this.db.prepare(`
-      SELECT checkpoint_id, run_id, version, state_json, created_at
+      SELECT checkpoint_id, run_id, version, state_json, state_hash, created_at
       FROM checkpoints
       WHERE run_id = ?
       ORDER BY version DESC
@@ -98,8 +98,27 @@ export class SqliteCheckpointStore implements CheckpointStore {
     return rows.map(row => this.rowToCheckpoint(row))
   }
 
-  /** 数据库行转 CheckpointDTO */
+  /**
+   * 数据库行转 CheckpointDTO
+   *
+   * 三模型审计修复 (P0 3/3共识):
+   * 重计算 SHA-256 hash 并校验，防止数据篡改或 corruption
+   */
   private rowToCheckpoint(row: DatabaseRow): CheckpointDTO {
+    // P0 共识修复: 重计算 hash 并校验
+    if (row.state_hash) {
+      const computedHash = crypto
+        .createHash('sha256')
+        .update(row.state_json)
+        .digest('hex')
+      if (computedHash !== row.state_hash) {
+        throw new Error(
+          `[STATE_CORRUPTED] Checkpoint ${row.checkpoint_id} hash mismatch: ` +
+          `expected ${row.state_hash}, got ${computedHash}`,
+        )
+      }
+    }
+
     return {
       checkpointId: row.checkpoint_id,
       runId: row.run_id,
@@ -116,5 +135,6 @@ interface DatabaseRow {
   run_id: string
   version: number
   state_json: string
+  state_hash: string | null
   created_at: string
 }

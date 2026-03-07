@@ -48,9 +48,9 @@ export class SemanticMemory {
 
     this.stmtInsert = this.db.prepare(`
       INSERT INTO semantic_facts
-        (subject, predicate, object, confidence, source_run_id, valid_from, valid_to, created_at)
+        (subject, predicate, object, confidence, importance, pinned, source_run_id, valid_from, valid_to, created_at)
       VALUES
-        (@subject, @predicate, @object, @confidence, @sourceRunId, @validFrom, @validTo, @createdAt)
+        (@subject, @predicate, @object, @confidence, @importance, @pinned, @sourceRunId, @validFrom, @validTo, @createdAt)
     `)
 
     this.stmtInvalidate = this.db.prepare(`
@@ -68,8 +68,12 @@ export class SemanticMemory {
     ]) {
       try {
         this.db.exec(`ALTER TABLE semantic_facts ADD COLUMN ${col}`)
-      } catch {
-        // 列已存在，忽略
+      } catch (err: unknown) {
+        // 三模型审计: 只忽略 duplicate column 错误，其他错误重新抛出
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!msg.includes('duplicate column')) {
+          throw err
+        }
       }
     }
   }
@@ -90,12 +94,14 @@ export class SemanticMemory {
         validTo: fact.validFrom,
       })
 
-      // 插入新版本
+      // 插入新版本 (三模型审计: 含 importance + pinned)
       this.stmtInsert.run({
         subject: fact.subject,
         predicate: fact.predicate,
         object: fact.object,
         confidence: fact.confidence,
+        importance: fact.importance ?? 0.5,
+        pinned: fact.pinned ? 1 : 0,
         sourceRunId: fact.sourceRunId ?? null,
         validFrom: fact.validFrom,
         validTo: fact.validTo ?? null,
