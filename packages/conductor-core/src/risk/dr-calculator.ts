@@ -159,17 +159,29 @@ export class DRCalculator {
   private computeMaxDepth(graph: RunGraph): number {
     if (graph.nodes.length === 0) return 0
 
-    // 构建邻接 + 入度
+    // 构建邻接 + 入度 (三模型审计 P1: 合并 edges + dependsOn)
     const adj = new Map<string, string[]>()
     const inDegree = new Map<string, number>()
     for (const node of graph.nodes) {
       adj.set(node.id, [])
       inDegree.set(node.id, 0)
     }
+    // 路 1: 显式 edges
     for (const edge of graph.edges) {
       const neighbors = adj.get(edge.from)
       if (neighbors) neighbors.push(edge.to)
       inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1)
+    }
+    // 路 2: node.dependsOn (如果 edge 中未覆盖)
+    for (const node of graph.nodes) {
+      for (const dep of node.dependsOn) {
+        if (!adj.has(dep)) continue // 忽略无效依赖
+        const neighbors = adj.get(dep)!
+        if (!neighbors.includes(node.id)) {
+          neighbors.push(node.id)
+          inDegree.set(node.id, (inDegree.get(node.id) ?? 0) + 1)
+        }
+      }
     }
 
     // BFS 拓扑排序 → 层级计算

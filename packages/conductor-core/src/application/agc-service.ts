@@ -100,10 +100,11 @@ export class AGCService {
     // 2. DAG 校验（环检测 + 拓扑排序）
     this.dagEngine.validate(parsed.graph)
 
-    // 3. DR 分歧率计算
+    // 3. DR 分歧率计算 (三模型审计 P1: 传入 options 确保 Discoverability 维度生效)
     const drScore = this.drCalculator.calculate({
       graph: parsed.graph,
       metadata: parsed.metadata,
+      options: parsed.options,
     })
 
     // 4. 构造全部事件（统一持久化边界）
@@ -183,7 +184,51 @@ export class AGCService {
       version,
     })
 
-    // 7. 路由决策
+    // 三模型审计 P0: compliance BLOCK 短路 — 合规拒绝时立即终止运行
+    if (!compliance.allowed) {
+      // 只持久化到合规评估为止的事件 + RUN_COMPLETED(failed)
+      version++
+      events.push({
+        eventId: createEventId(),
+        runId,
+        type: 'RUN_COMPLETED',
+        payload: { finalStatus: 'failed' },
+        timestamp: createISODateTime(),
+        version,
+      })
+
+      await this.eventStore.append({ runId, events, expectedVersion: 'no_stream' })
+      const blockedState = projectState(runId, nodeIds, events)
+
+      // 保存 checkpoint
+      const blockedCheckpointId = createCheckpointId()
+      const blockedCheckpoint: CheckpointDTO = {
+        checkpointId: blockedCheckpointId,
+        runId,
+        version: blockedState.version,
+        state: blockedState,
+        createdAt: createISODateTime(),
+      }
+      await this.checkpointStore.save({ checkpoint: blockedCheckpoint })
+
+      this.logger.warn('AGC 运行被合规拒绝', { runId, worstStatus: compliance.worstStatus })
+
+      return {
+        runId,
+        state: blockedState,
+        route: {
+          lane: 'escalated' as const,
+          nodePath: [],
+          skippedNodes: nodeIds.map(id => ({ nodeId: id, reason: 'compliance_blocked' })),
+          confidence: 0,
+        },
+        compliance,
+        drScore,
+        checkpoint: blockedCheckpoint,
+      }
+    }
+
+    // 7. 路由决策 (仅在合规通过后)
     const route = this.riskRouter.decide({
       score: drScore,
       findings: compliance.findings,
