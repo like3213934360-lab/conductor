@@ -388,6 +388,21 @@ export class EpisodicMemory {
     `).all(params) as ReflectionRow[]
   }
 
+  /**
+   * Phase 4: 更新反思应用计数 (Actor Loop 调用)
+   *
+   * 每次 recall() 注入反思时, applied_count++。
+   * 衰减依据: applied_count 越高, reinforcement_strength 越低。
+   */
+  incrementAppliedCount(runId: string): void {
+    this.db.prepare(`
+      UPDATE reflexion_reflections
+      SET applied_count = applied_count + 1,
+          reinforcement_strength = MAX(0.1, reinforcement_strength * 0.9)
+      WHERE run_id = ?
+    `).run(runId)
+  }
+
   /** 将搜索结果转为 Reflexion 提示 */
   private matchToPrompt(match: ManifestSearchResult): ReflexionPrompt {
     const isHighRisk = match.riskLevel === 'high' || match.riskLevel === 'critical'

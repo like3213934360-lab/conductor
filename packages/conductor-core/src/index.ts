@@ -27,6 +27,13 @@ export * from './plugin/plugin-types.js'
 export * from './plugin/hook-bus.js'
 export * from './plugin/plugin-context.js'
 export * from './plugin/plugin-manager.js'
+export * from './plugin/capability-sandbox.js'
+
+// Event Sourcing — Phase 4 新增
+export * from './event-sourcing/upcasting.js'
+
+// Reflexion Actor — Phase 4 新增
+export * from './reflexion/actor-loop.js'
 
 // 应用服务
 export * from './application/agc-service.js'
