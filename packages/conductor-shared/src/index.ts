@@ -22,3 +22,6 @@ export * from './state/projector.js'
 // 错误处理
 export * from './errors/error-codes.js'
 export * from './errors/agc-error.js'
+
+// Reflexion 类型 — 架构优化: 消除 core→persistence 循环依赖
+export * from './schema/reflexion.js'

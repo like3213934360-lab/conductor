@@ -14,7 +14,7 @@
  * 4. 新运行开始 → Actor recall() 注入反思记忆到 DAG 上下文
  * 5. DAG 使用增强上下文执行 → 回到步骤 1
  */
-import type { EpisodicMemory, ReflexionPrompt, EpisodicEntry } from '@anthropic/conductor-persistence'
+import type { IEpisodicMemory, ReflexionPrompt, EpisodicEntry } from '@anthropic/conductor-shared'
 
 /** Actor 闭环配置 */
 export interface ActorLoopConfig {
@@ -51,10 +51,10 @@ export interface EnrichedRunContext {
  * 3. 跟踪反思的应用次数 (衰减依据)
  */
 export class ReflexionActorLoop {
-  private readonly memory: EpisodicMemory
+  private readonly memory: IEpisodicMemory
   private readonly config: ActorLoopConfig
 
-  constructor(memory: EpisodicMemory, config?: Partial<ActorLoopConfig>) {
+  constructor(memory: IEpisodicMemory, config?: Partial<ActorLoopConfig>) {
     this.memory = memory
     this.config = { ...DEFAULT_CONFIG, ...config }
   }

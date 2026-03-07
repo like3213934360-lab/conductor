@@ -124,8 +124,9 @@ export class ManifestIndex {
 
   /** 索引新条目 */
   index(entry: ManifestEntry): void {
-    // 三模型审计: 容量检查 — 超限时淘汰最旧条目
-    this.enforceCapacity()
+    // 架构优化: 仅在新增条目 (非更新) 时检查容量
+    // 避免 INSERT OR REPLACE 更新已有记录时不必要地淘汰旧条目
+    this.enforceCapacity(entry.runId)
 
     this.stmtInsert.run({
       runId: entry.runId,
@@ -252,12 +253,19 @@ export class ManifestIndex {
   }
 
   /**
-   * 三模型审计: 容量保护 — 超限时淘汰最旧条目
+   * 架构优化: 容量保护 — 仅在新增条目时淘汰
    *
+   * INSERT OR REPLACE 更新已有记录时不增加净容量, 跳过淘汰
    * 策略: 当索引 >= maxIndexSize 时, 删除最旧的 10% 条目
    */
-  private enforceCapacity(): void {
+  private enforceCapacity(runId: string): void {
     if (this.miniSearch.documentCount < this.maxIndexSize) return
+
+    // 架构优化: 如果 runId 已存在, 是更新操作, 不增加净容量
+    const existing = this.db.prepare(
+      'SELECT 1 FROM manifest WHERE run_id = @runId LIMIT 1'
+    ).get({ runId }) as Record<string, unknown> | undefined
+    if (existing) return
 
     const evictCount = Math.max(1, Math.floor(this.maxIndexSize * 0.1))
     const oldest = this.db.prepare(`
