@@ -124,15 +124,20 @@ export class PluginManager {
 
       // 2. 激活插件
       if (plugin.activate) {
-        await Promise.race([
-          plugin.activate(ctx),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`插件 [${pluginId}] 激活超时`)),
-              10000,
-            ),
-          ),
-        ])
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          await Promise.race([
+            plugin.activate(ctx),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`插件 [${pluginId}] 激活超时`)),
+                10000,
+              )
+            }),
+          ])
+        } finally {
+          if (timer !== undefined) clearTimeout(timer)
+        }
       }
 
       // 3. 注册 hooks
@@ -219,22 +224,28 @@ export class PluginManager {
           name: `[${runtime.plugin.manifest.name}] ${contribution.name}`,
           defaultLevel: contribution.defaultLevel,
           evaluate: async (ctx: ComplianceContext): Promise<ComplianceRuleResult> => {
-            // 超时保护
+            // 超时保护 + clearTimeout
             const timeoutMs = contribution.timeoutMs ?? 5000
-            const result = await Promise.race([
-              contribution.evaluate({
-                runId: ctx.state.runId,
-                state: ctx.state,
-                graph: ctx.graph,
-                metadata: ctx.metadata,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error(`规则 [${contribution.id}] 超时 (${timeoutMs}ms)`)),
-                  timeoutMs,
-                ),
-              ),
-            ])
+            let timer: ReturnType<typeof setTimeout> | undefined
+            let result: Omit<ComplianceRuleResult, 'ruleId' | 'ruleName'>
+            try {
+              result = await Promise.race([
+                contribution.evaluate({
+                  runId: ctx.state.runId,
+                  state: ctx.state,
+                  graph: ctx.graph,
+                  metadata: ctx.metadata,
+                }),
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(
+                    () => reject(new Error(`规则 [${contribution.id}] 超时 (${timeoutMs}ms)`)),
+                    timeoutMs,
+                  )
+                }),
+              ])
+            } finally {
+              if (timer !== undefined) clearTimeout(timer)
+            }
 
             // 注入 ruleId/ruleName（避免插件自报漂移）
             return {

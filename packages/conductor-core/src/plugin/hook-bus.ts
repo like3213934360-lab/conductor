@@ -142,10 +142,14 @@ export class HookBus {
     for (const entry of entries) {
       const start = Date.now()
       try {
+        // 深拷贝输入，防止插件半修改后抛错导致状态污染
+        const frozenInput = typeof current === 'object' && current !== null
+          ? structuredClone(current)
+          : current
         const result = await this.runWithTimeout(
           entry.pluginName,
           hookName,
-          () => entry.fn(current, ...restArgs),
+          () => entry.fn(frozenInput, ...restArgs),
           entry.timeoutMs,
         )
         // waterfall: 非 undefined 返回值覆盖 current
@@ -254,7 +258,9 @@ export class HookBus {
 
   /**
    * 超时保护执行器
-   * 使用 Promise.race 实现超时，一个插件超时不影响其他
+   *
+   * P0 修复: 使用 clearTimeout 防止 timer 泄漏
+   * Promise.race 后立即清理 timer，避免高频调用下的内存滞留。
    */
   private async runWithTimeout(
     pluginName: string,
@@ -262,17 +268,26 @@ export class HookBus {
     fn: () => unknown | Promise<unknown>,
     timeoutMs: number,
   ): Promise<unknown> {
-    return Promise.race([
-      Promise.resolve(fn()),
-      new Promise((_resolve, reject) => {
-        setTimeout(
-          () => reject(new Error(
-            `插件 [${pluginName}] hook [${hookName}] 超时 (${timeoutMs}ms)`,
-          )),
-          timeoutMs,
-        )
-      }),
-    ])
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    try {
+      return await Promise.race([
+        Promise.resolve(fn()),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(
+              `插件 [${pluginName}] hook [${hookName}] 超时 (${timeoutMs}ms)`,
+            )),
+            timeoutMs,
+          )
+        }),
+      ])
+    } finally {
+      // 无论成功/超时/异常，都清理 timer
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+    }
   }
 
   /** Hook 执行审计日志 */

@@ -1,7 +1,10 @@
 /**
  * Conductor AGC — DR 分歧率计算器
+ *
+ * Phase 3 修复: externalHint 不再硬编码，
+ * 正确消费 RunOptions.riskHint 参数。
  */
-import type { RunGraph, RunMetadata, DRScore } from '@anthropic/conductor-shared'
+import type { RunGraph, RunMetadata, DRScore, RunOptions } from '@anthropic/conductor-shared'
 
 /** DR 计算因子 */
 export interface DRFactors {
@@ -13,6 +16,13 @@ export interface DRFactors {
   goalComplexity: number
   /** 外部风险提示 */
   externalHint: number
+}
+
+/** DR 计算输入 */
+export interface DRCalculatorInput {
+  graph: RunGraph
+  metadata: RunMetadata
+  options?: RunOptions
 }
 
 /**
@@ -30,11 +40,16 @@ export class DRCalculator {
     externalHint: 0.20,
   }
 
+  /** riskHint 字符串到数值映射 */
+  private static readonly HINT_MAP: Record<string, number> = {
+    low: 10, medium: 40, high: 70, critical: 95,
+  }
+
   /**
    * 计算 DR 分歧率
    */
-  calculate(input: { graph: RunGraph; metadata: RunMetadata }): DRScore {
-    const factors = this.extractFactors(input.graph, input.metadata)
+  calculate(input: DRCalculatorInput): DRScore {
+    const factors = this.extractFactors(input.graph, input.metadata, input.options)
     const score = this.computeWeightedScore(factors)
     const level = this.scoreToLevel(score)
 
@@ -45,7 +60,11 @@ export class DRCalculator {
     }
   }
 
-  private extractFactors(graph: RunGraph, metadata: RunMetadata): DRFactors {
+  private extractFactors(
+    graph: RunGraph,
+    metadata: RunMetadata,
+    options?: RunOptions,
+  ): DRFactors {
     // 节点复杂度: 节点越多越复杂
     const nodeComplexity = Math.min(graph.nodes.length * 12, 100)
 
@@ -56,11 +75,11 @@ export class DRCalculator {
     const goalLen = metadata.goal.length
     const goalComplexity = Math.min(goalLen / 5, 100)
 
-    // 外部提示: 如果有预设风险等级
-    const hintMap: Record<string, number> = {
-      low: 10, medium: 40, high: 70, critical: 95,
-    }
-    const externalHint = 30 // 默认中等
+    // P1 修复: 从 RunOptions.riskHint 动态获取外部提示
+    const hint = options?.riskHint
+    const externalHint = hint
+      ? (DRCalculator.HINT_MAP[hint] ?? 30)
+      : 30
 
     return { nodeComplexity, fileScope, goalComplexity, externalHint }
   }

@@ -79,16 +79,21 @@ export class ComplianceEngine {
       let result: ComplianceRuleResult
 
       try {
-        // Phase 3: 超时保护
-        result = await Promise.race([
-          Promise.resolve(rule.evaluate(ctx)),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`合规规则 [${rule.id}] 超时 (${this.options.ruleTimeoutMs}ms)`)),
-              this.options.ruleTimeoutMs,
-            ),
-          ),
-        ])
+        // Phase 3: 超时保护 + clearTimeout 防止 timer 泄漏
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          result = await Promise.race([
+            Promise.resolve(rule.evaluate(ctx)),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`合规规则 [${rule.id}] 超时 (${this.options.ruleTimeoutMs}ms)`)),
+                this.options.ruleTimeoutMs,
+              )
+            }),
+          ])
+        } finally {
+          if (timer !== undefined) clearTimeout(timer)
+        }
       } catch (err) {
         // Phase 3: 异常不炸出引擎，降级为 warn
         result = {

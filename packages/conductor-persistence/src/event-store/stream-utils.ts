@@ -94,6 +94,10 @@ export async function* readJsonlStream<T>(
  *
  * 用于快速获取当前版本号，无需读取整个文件。
  * 从文件尾部反向搜索最后一个有效 JSON 行。
+ *
+ * P1 修复: 缓冲区从 8KB 扩大到 64KB，
+ * 超过 64KB 时回退到全文件逐行扫描，
+ * 避免 RUN_CONTEXT_CAPTURED 超过缓冲区导致版本号误判。
  */
 export async function readLastJsonlLine<T>(filePath: string): Promise<T | null> {
   try {
@@ -105,8 +109,9 @@ export async function readLastJsonlLine<T>(filePath: string): Promise<T | null> 
   const stat = await fs.promises.stat(filePath)
   if (stat.size === 0) return null
 
-  // 读取最后 8KB（足以包含大多数事件 JSON）
-  const bufSize = Math.min(8192, stat.size)
+  // 策略: 先尝试尾部 64KB，失败则回退到全文件扫描
+  const TAIL_SIZE = 65536
+  const bufSize = Math.min(TAIL_SIZE, stat.size)
   const buffer = Buffer.alloc(bufSize)
 
   const fd = await fs.promises.open(filePath, 'r')
@@ -118,13 +123,41 @@ export async function readLastJsonlLine<T>(filePath: string): Promise<T | null> 
     const lines = content.split('\n').filter(l => l.trim() !== '')
     if (lines.length === 0) return null
 
-    const lastLine = lines[lines.length - 1]!
-    return JSON.parse(lastLine) as T
-  } catch {
+    // 尝试从尾部解析（最后 3 行，容忍截断写入）
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i--) {
+      try {
+        return JSON.parse(lines[i]!) as T
+      } catch {
+        // 截断行，尝试前一行
+      }
+    }
+
+    // 尾部 64KB 内没有有效 JSON 行，回退全文件扫描
+    if (stat.size > TAIL_SIZE) {
+      return await fallbackFullScan<T>(filePath)
+    }
+
     return null
   } finally {
     await fd.close()
   }
+}
+
+/** 全文件扫描回退（仅在尾部快速读取失败时使用） */
+async function fallbackFullScan<T>(filePath: string): Promise<T | null> {
+  let last: T | null = null
+  const stream = fs.createReadStream(filePath, { encoding: 'utf-8' })
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity })
+
+  for await (const line of rl) {
+    if (line.trim() === '') continue
+    try {
+      last = JSON.parse(line) as T
+    } catch {
+      // 跳过损坏行
+    }
+  }
+  return last
 }
 
 /**
