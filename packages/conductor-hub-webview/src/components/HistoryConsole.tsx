@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { vscode } from '../vscode-api';
-import { VSCodeTag, VSCodeDivider } from '@vscode/webview-ui-toolkit/react';
 import { Lang } from './Dashboard';
-import { s, colors, radius, shadow } from '../theme';
+import { s, colors, radius, shadow, glass } from '../theme';
+import Icon from './Icon';
 
 interface RequestRecord {
     id: string;
@@ -25,8 +25,22 @@ const HistoryConsole: React.FC<{ lang: Lang }> = ({ lang }) => {
     const [search, setSearch] = useState('');
 
     const T = {
-        en: { title: '📡 Request History', clear: 'Clear', empty: 'No requests yet. Make an ai_ask call to see history.', search: '🔍 Search method, model, prompt…', model: 'Model', tokens: 'Tokens', duration: 'Duration', status: 'Status', request: 'Request', response: 'Response' },
-        zh: { title: '📡 调用历史', clear: '清空', empty: '暂无记录，调用 ai_ask 后将显示在这里。', search: '🔍 搜索 method / 模型 / prompt…', model: '模型', tokens: 'Token', duration: '耗时', status: '状态', request: '请求内容', response: '响应内容' },
+        en: {
+            title: 'Request History', clear: 'Clear',
+            empty: 'No requests yet. Make an ai_ask call to see history.',
+            search: 'Search method, model, prompt…',
+            model: 'Model', tokens: 'Tokens', duration: 'Duration',
+            status: 'Status', request: 'Request', response: 'Response',
+            selectHint: 'Select a request from the sidebar',
+        },
+        zh: {
+            title: '调用历史', clear: '清空',
+            empty: '暂无记录，调用 ai_ask 后将显示在这里。',
+            search: '搜索 method / 模型 / prompt…',
+            model: '模型', tokens: 'Token', duration: '耗时',
+            status: '状态', request: '请求内容', response: '响应内容',
+            selectHint: '选择左侧请求查看详情',
+        },
     }[lang];
 
     const filtered = search.trim()
@@ -59,17 +73,28 @@ const HistoryConsole: React.FC<{ lang: Lang }> = ({ lang }) => {
     const selectedRecord = records.find(r => r.id === selectedId);
 
     return (
-        <div style={{ display: 'flex', height: '100%', gap: '0', borderRadius: radius.md, overflow: 'hidden', boxShadow: shadow.card, border: '1px solid var(--vscode-panel-border)' }}>
-            {/* ── Sidebar ──────────────────────────────────────────────── */}
+        <div style={{
+            display: 'flex', height: '100%', gap: '0',
+            borderRadius: radius.md, overflow: 'hidden',
+            ...glass.panel,
+        }}>
+            {/* ── Sidebar ────────────────────────────────────── */}
             <div style={{
                 width: '300px',
-                borderRight: '1px solid var(--vscode-panel-border)',
+                borderRight: `1px solid ${colors.glassBorder}`,
                 overflowY: 'auto',
-                backgroundColor: 'var(--vscode-sideBar-background)',
+                background: 'rgba(255,255,255,0.015)',
+                backdropFilter: 'blur(24px)',
                 display: 'flex', flexDirection: 'column',
             }}>
                 {/* Search box */}
-                <div style={{ padding: '10px', borderBottom: '1px solid var(--vscode-panel-border)' }}>
+                <div style={{
+                    padding: '12px', borderBottom: `1px solid ${colors.glassBorder}`,
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                }}>
+                    <span style={{ opacity: 0.4, flexShrink: 0 }}>
+                        <Icon name="search" size={14} color="var(--vscode-descriptionForeground)" />
+                    </span>
                     <input
                         type="text"
                         placeholder={T.search}
@@ -79,6 +104,8 @@ const HistoryConsole: React.FC<{ lang: Lang }> = ({ lang }) => {
                             ...s.input,
                             fontSize: '12px',
                             padding: '7px 10px',
+                            background: 'rgba(255,255,255,0.03)',
+                            border: `1px solid ${colors.glassBorder}`,
                         }}
                     />
                 </div>
@@ -90,105 +117,199 @@ const HistoryConsole: React.FC<{ lang: Lang }> = ({ lang }) => {
                             style={{
                                 padding: '12px 14px',
                                 cursor: 'pointer',
-                                borderBottom: '1px solid var(--vscode-panel-border)',
-                                backgroundColor: selectedId === record.id ? 'var(--vscode-list-activeSelectionBackground)' : 'transparent',
-                                color: selectedId === record.id ? 'var(--vscode-list-activeSelectionForeground)' : 'inherit',
-                                transition: 'background 0.15s',
+                                borderBottom: `1px solid rgba(255,255,255,0.04)`,
+                                backgroundColor: selectedId === record.id
+                                    ? 'rgba(6,182,212,0.08)'
+                                    : 'transparent',
+                                transition: 'all 0.2s ease',
                                 borderLeft: `3px solid ${record.status === 'success' ? colors.success : colors.error}`,
                             }}
+                            onMouseEnter={e => {
+                                if (selectedId !== record.id) e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.03)';
+                            }}
+                            onMouseLeave={e => {
+                                if (selectedId !== record.id) e.currentTarget.style.backgroundColor = 'transparent';
+                            }}
                         >
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--vscode-descriptionForeground)', marginBottom: '4px' }}>
-                                <span>{new Date(record.timestamp).toLocaleTimeString()}</span>
-                                <span style={{ color: record.status === 'success' ? colors.success : colors.error, fontWeight: 500 }}>
+                            <div style={{
+                                display: 'flex', justifyContent: 'space-between',
+                                fontSize: '10px', color: 'var(--vscode-descriptionForeground)',
+                                marginBottom: '4px', opacity: 0.7,
+                            }}>
+                                <span style={{ fontFamily: "'SF Mono', monospace" }}>
+                                    {new Date(record.timestamp).toLocaleTimeString()}
+                                </span>
+                                <span style={{
+                                    color: record.status === 'success' ? colors.success : colors.error,
+                                    fontWeight: 600,
+                                    display: 'inline-flex', alignItems: 'center', gap: '3px',
+                                }}>
+                                    <Icon
+                                        name={record.status === 'success' ? 'check-circle' : 'x-circle'}
+                                        size={10}
+                                        color={record.status === 'success' ? colors.success : colors.error}
+                                    />
                                     {record.duration}ms
                                 </span>
                             </div>
-                            <div style={{ fontWeight: '600', fontSize: '13px', fontFamily: 'monospace', marginBottom: '4px' }}>{record.method}</div>
-                            {record.model && <div style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', marginBottom: '2px' }}>{record.model}</div>}
+                            <div style={{
+                                fontWeight: 600, fontSize: '12px',
+                                fontFamily: "'SF Mono', 'JetBrains Mono', monospace",
+                                marginBottom: '3px',
+                                color: 'var(--vscode-editor-foreground)',
+                            }}>
+                                {record.method}
+                            </div>
+                            {record.model && (
+                                <div style={{
+                                    fontSize: '11px', color: 'var(--vscode-descriptionForeground)',
+                                    marginBottom: '2px', opacity: 0.8,
+                                }}>
+                                    {record.model}
+                                </div>
+                            )}
                             {(record.inputTokens || record.outputTokens) ? (
-                                <div style={{ fontSize: '11px', color: 'var(--vscode-textPreformat-foreground)', opacity: 0.8 }}>
-                                    Tokens: {record.totalTokens || ((record.inputTokens || 0) + (record.outputTokens || 0))}
+                                <div style={{
+                                    fontSize: '10px', opacity: 0.6,
+                                    color: 'var(--vscode-descriptionForeground)',
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                }}>
+                                    <Icon name="gem" size={10} color="var(--vscode-descriptionForeground)" />
+                                    {record.totalTokens || ((record.inputTokens || 0) + (record.outputTokens || 0))} tokens
                                 </div>
                             ) : null}
                         </div>
                     ))}
                     {filtered.length === 0 && (
                         <div style={{
-                            padding: '40px 20px', textAlign: 'center',
-                            fontSize: '13px', color: 'var(--vscode-descriptionForeground)',
+                            padding: '50px 20px', textAlign: 'center',
+                            color: 'var(--vscode-descriptionForeground)',
                         }}>
-                            <div style={{ fontSize: '32px', marginBottom: '12px', opacity: 0.5 }}>📭</div>
-                            {search ? `No results for "${search}"` : T.empty}
+                            <div style={{ marginBottom: '12px', opacity: 0.25 }}>
+                                <Icon name="inbox" size={40} color="var(--vscode-descriptionForeground)" />
+                            </div>
+                            <div style={{ fontSize: '12px', opacity: 0.6 }}>
+                                {search ? `No results for "${search}"` : T.empty}
+                            </div>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* ── Detail Panel ─────────────────────────────────────────── */}
-            <div style={{ flex: 1, padding: '20px', overflowY: 'auto' }}>
+            {/* ── Detail Panel ───────────────────────────────── */}
+            <div style={{ flex: 1, padding: '24px', overflowY: 'auto', background: 'transparent' }}>
                 {selectedRecord ? (
                     <div style={{ maxWidth: '800px' }}>
-                        <h2 style={{ marginTop: 0, marginBottom: '12px', fontFamily: 'monospace', fontSize: '16px' }}>{selectedRecord.method}</h2>
-                        <div style={{ marginBottom: '16px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {/* Method title */}
+                        <h2 style={{
+                            marginTop: 0, marginBottom: '14px',
+                            fontFamily: "'SF Mono', 'JetBrains Mono', monospace",
+                            fontSize: '16px', fontWeight: 700,
+                            letterSpacing: '-0.3px',
+                        }}>
+                            {selectedRecord.method}
+                        </h2>
+
+                        {/* Status badges */}
+                        <div style={{
+                            marginBottom: '18px', display: 'flex',
+                            gap: '8px', alignItems: 'center', flexWrap: 'wrap',
+                        }}>
                             <span style={{
-                                display: 'inline-block', padding: '2px 10px', borderRadius: radius.pill,
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                padding: '4px 12px', borderRadius: radius.pill,
                                 fontSize: '11px', fontWeight: 600,
-                                background: selectedRecord.status === 'success' ? colors.success : colors.error,
-                                color: '#fff',
+                                background: selectedRecord.status === 'success'
+                                    ? 'rgba(52,211,153,0.12)' : 'rgba(248,113,113,0.12)',
+                                color: selectedRecord.status === 'success' ? colors.success : colors.error,
+                                backdropFilter: 'blur(8px)',
                             }}>
+                                <Icon
+                                    name={selectedRecord.status === 'success' ? 'check-circle' : 'x-circle'}
+                                    size={12}
+                                    color={selectedRecord.status === 'success' ? colors.success : colors.error}
+                                />
                                 {selectedRecord.status.toUpperCase()}
                             </span>
 
                             {selectedRecord.model && selectedRecord.model !== 'unknown' && (
                                 <span style={{
-                                    display: 'inline-block', padding: '2px 10px', borderRadius: radius.pill,
-                                    fontSize: '11px', background: 'var(--vscode-badge-background)', color: 'var(--vscode-badge-foreground)',
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                    padding: '4px 12px', borderRadius: radius.pill,
+                                    fontSize: '11px', fontWeight: 500,
+                                    background: 'rgba(139,92,246,0.1)',
+                                    color: '#A78BFA',
+                                    backdropFilter: 'blur(8px)',
                                 }}>
+                                    <Icon name="cpu" size={11} color="#A78BFA" />
                                     {selectedRecord.model}
                                 </span>
                             )}
 
                             <span style={{
-                                display: 'inline-block', padding: '2px 10px', borderRadius: radius.pill,
-                                fontSize: '11px', border: '1px solid var(--vscode-input-border)',
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                padding: '4px 12px', borderRadius: radius.pill,
+                                fontSize: '11px',
+                                background: 'rgba(255,255,255,0.04)',
+                                border: `1px solid ${colors.glassBorder}`,
                                 color: 'var(--vscode-foreground)',
+                                backdropFilter: 'blur(8px)',
                             }}>
-                                ⏱ {selectedRecord.duration}ms
+                                <Icon name="clock" size={11} />
+                                {selectedRecord.duration}ms
                             </span>
 
                             {(selectedRecord.inputTokens || selectedRecord.outputTokens) ? (
                                 <span style={{
-                                    display: 'inline-block', padding: '2px 10px', borderRadius: radius.pill,
-                                    fontSize: '11px', border: '1px solid var(--vscode-input-border)',
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                    padding: '4px 12px', borderRadius: radius.pill,
+                                    fontSize: '11px',
+                                    background: 'rgba(255,255,255,0.04)',
+                                    border: `1px solid ${colors.glassBorder}`,
                                     color: 'var(--vscode-foreground)',
+                                    backdropFilter: 'blur(8px)',
                                 }}>
-                                    ⬆ {selectedRecord.inputTokens || 0} / ⬇ {selectedRecord.outputTokens || 0}
+                                    <Icon name="upload" size={11} /> {selectedRecord.inputTokens || 0}
+                                    <span style={{ opacity: 0.3 }}>/</span>
+                                    <Icon name="download" size={11} /> {selectedRecord.outputTokens || 0}
                                 </span>
                             ) : null}
                         </div>
 
-                        <div style={{ height: '1px', background: 'var(--vscode-panel-border)', margin: '16px 0' }} />
+                        <div style={{ height: '1px', background: colors.glassBorder, margin: '0 0 20px' }} />
 
-                        <h3 style={{ marginTop: '16px', color: 'var(--vscode-editor-foreground)', fontSize: '13px', fontWeight: 'bold' }}>📤 Request</h3>
+                        {/* Request section */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                            <Icon name="upload" size={14} color={colors.brand} />
+                            <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 600 }}>
+                                {T.request}
+                            </h3>
+                        </div>
                         <pre style={{
-                            background: 'var(--vscode-textCodeBlock-background)',
-                            padding: '14px', borderRadius: radius.md,
-                            overflowX: 'auto', fontSize: '12px', whiteSpace: 'pre-wrap',
-                            fontFamily: 'var(--vscode-editor-font-family)',
-                            border: '1px solid var(--vscode-panel-border)',
-                            boxShadow: shadow.card,
+                            ...glass.panel,
+                            padding: '14px', fontSize: '12px',
+                            whiteSpace: 'pre-wrap', overflow: 'auto',
+                            fontFamily: "'SF Mono', 'JetBrains Mono', var(--vscode-editor-font-family)",
+                            color: 'var(--vscode-editor-foreground)',
+                            lineHeight: 1.6,
                         }}>
                             {selectedRecord.requestPreview}
                         </pre>
 
-                        <h3 style={{ marginTop: '24px', color: 'var(--vscode-editor-foreground)', fontSize: '13px', fontWeight: 'bold' }}>📥 Response</h3>
+                        {/* Response section */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '24px 0 10px' }}>
+                            <Icon name="download" size={14} color={colors.success} />
+                            <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 600 }}>
+                                {T.response}
+                            </h3>
+                        </div>
                         <pre style={{
-                            background: 'var(--vscode-textCodeBlock-background)',
-                            padding: '14px', borderRadius: radius.md,
-                            overflowX: 'auto', fontSize: '12px', whiteSpace: 'pre-wrap',
-                            fontFamily: 'var(--vscode-editor-font-family)',
-                            border: '1px solid var(--vscode-panel-border)',
-                            boxShadow: shadow.card,
+                            ...glass.panel,
+                            padding: '14px', fontSize: '12px',
+                            whiteSpace: 'pre-wrap', overflow: 'auto',
+                            fontFamily: "'SF Mono', 'JetBrains Mono', var(--vscode-editor-font-family)",
+                            color: 'var(--vscode-editor-foreground)',
+                            lineHeight: 1.6,
                         }}>
                             {selectedRecord.responsePreview}
                         </pre>
@@ -196,11 +317,13 @@ const HistoryConsole: React.FC<{ lang: Lang }> = ({ lang }) => {
                 ) : (
                     <div style={{
                         display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center',
-                        flexDirection: 'column', gap: '8px',
+                        flexDirection: 'column', gap: '12px',
                         color: 'var(--vscode-descriptionForeground)',
                     }}>
-                        <span style={{ fontSize: '36px', opacity: 0.4 }}>📋</span>
-                        <span style={{ fontSize: '13px' }}>{lang === 'zh' ? '选择左侧请求查看详情' : 'Select a request from the sidebar'}</span>
+                        <div style={{ opacity: 0.15 }}>
+                            <Icon name="clipboard" size={48} color="var(--vscode-descriptionForeground)" />
+                        </div>
+                        <span style={{ fontSize: '13px', opacity: 0.5 }}>{T.selectHint}</span>
                     </div>
                 )}
             </div>

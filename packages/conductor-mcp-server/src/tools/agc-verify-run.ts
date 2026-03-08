@@ -8,7 +8,7 @@ import { jsonContent, errorContent } from '../presentation/tool-response.js'
 
 export function registerAgcVerifyRunTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.verify_run',
+    'agc-verify_run',
     '验证 AGC 运行完整性 — 事件回放漂移检测 + 合规重算',
     {
       runId: z.string().describe('运行 ID'),

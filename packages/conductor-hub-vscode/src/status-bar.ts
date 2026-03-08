@@ -60,11 +60,11 @@ export class ConductorStatusBar {
 
             // 文本
             if (readyCount === 0) {
-                this.item.text = `${icon} ArkTS: 未配置`;
+                this.item.text = `${icon} Conductor Hub: 未配置`;
             } else if (readyCount < total) {
-                this.item.text = `${icon} ArkTS: ${readyCount}/${total} 就绪`;
+                this.item.text = `${icon} Conductor Hub: ${readyCount}/${total} 就绪`;
             } else {
-                this.item.text = `${icon} ArkTS: ${readyCount} 模型就绪`;
+                this.item.text = `${icon} Conductor Hub: ${readyCount} 模型就绪`;
             }
             this.item.backgroundColor = color;
 

@@ -1,8 +1,8 @@
 {
-  "name": "arkts-language-support",
-  "displayName": "ArkTS Language Support",
-  "description": "HarmonyOS ArkTS 语言智能支持 — 基于 DevEco Studio ace-server",
-  "version": "0.2.0",
+  "name": "conductor-hub",
+  "displayName": "Conductor Hub",
+  "description": "多模型 AI 协作引擎 — Dashboard / AGC 工作流 / MCP 自动注册",
+  "version": "0.3.0",
   "publisher": "like3213934360-lab",
   "license": "MIT",
   "engines": {
@@ -11,21 +11,34 @@
   "categories": [
     "Programming Languages",
     "Linters",
-    "Formatters"
+    "Formatters",
+    "Machine Learning"
   ],
   "keywords": [
     "arkts",
     "harmonyos",
     "ets",
     "huawei",
-    "openharmony"
+    "openharmony",
+    "conductor",
+    "multi-agent",
+    "ai",
+    "mcp"
   ],
   "activationEvents": [
     "onLanguage:arkts",
-    "workspaceContains:**/*.ets"
+    "workspaceContains:**/*.ets",
+    "onCommand:conductor-hub.openPanel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "conductor-hub.openPanel",
+        "title": "Conductor Hub: 打开 Dashboard",
+        "category": "Conductor Hub"
+      }
+    ],
     "languages": [
       {
         "id": "arkts",
@@ -124,10 +137,10 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "build": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify && esbuild ../conductor-hub-mcp/src/main.ts --bundle --outfile=dist/mcp-server.js --format=cjs --platform=node --minify && esbuild ../conductor-mcp-server/src/main.ts --bundle --outfile=dist/conductor-mcp-server.js --format=cjs --platform=node --minify",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "package": "npx vsce package --no-dependencies",
-    "install-ext": "npx vsce package --no-dependencies -o arkts.vsix && code --install-extension arkts.vsix && rm arkts.vsix"
+    "install-ext": "npx vsce package --no-dependencies -o conductor-hub.vsix && code --install-extension conductor-hub.vsix && rm conductor-hub.vsix"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.0",

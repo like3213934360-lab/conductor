@@ -35,28 +35,32 @@ export async function activateConductorHub(
     // ── STEP 1: 注册 Dashboard 命令 ──────────────────────────────────────────
     const openPanelCmd = vscode.commands.registerCommand('conductor-hub.openPanel', () => {
         if (!storage) {
-            vscode.window.showWarningMessage('Conductor Hub: History storage unavailable. Dashboard will still work.');
+            console.log('[Conductor Hub] History storage not provided — history features disabled.');
         }
         DashboardPanel.createOrShow(extensionUri, storage || null, settings, () => statusBar?.refresh());
     });
     context.subscriptions.push(openPanelCmd);
     console.log('[Conductor Hub] Command conductor-hub.openPanel registered ✅');
 
-    // ── STEP 2: 同步密钥 + 自动配置 ─────────────────────────────────────────
+    // ── STEP 2: 状态栏（最优先，确保始终可见）──────────────────────────────
+    statusBar = new ConductorStatusBar(settings);
+    context.subscriptions.push(statusBar.getItem());
+    try {
+        await statusBar.initialize();
+    } catch (e) {
+        console.error('[Conductor Hub] StatusBar initialize failed (bar still visible):', e);
+    }
+    console.log('[Conductor Hub] StatusBar created ✅');
+
+    // ── STEP 3: 同步密钥 + 自动配置（每步独立 try-catch，不影响核心功能）──
     const dbFilePath = storage
         ? (storage as any).getDbPath?.() || ''
         : path.join(context.globalStorageUri.fsPath, 'history.db');
-    await syncKeysToFile(settings, dbFilePath);
-    autoRegisterMcpConfig(context.extensionPath);
-    autoInstallSkill(context.extensionPath);
-    autoInstallAgcWorkflow(context.extensionPath);
-    await autoInjectRoutingRules(settings);
-
-    // ── STEP 3: 状态栏 ─────────────────────────────────────────────────────
-    statusBar = new ConductorStatusBar(settings);
-    context.subscriptions.push(statusBar.getItem());
-    await statusBar.initialize();
-    console.log('[Conductor Hub] StatusBar created ✅');
+    try { await syncKeysToFile(settings, dbFilePath); } catch (e) { console.error('[Conductor Hub] syncKeysToFile failed:', e); }
+    try { autoRegisterMcpConfig(context.extensionPath); } catch (e) { console.error('[Conductor Hub] autoRegisterMcpConfig failed:', e); }
+    try { autoInstallSkill(context.extensionPath); } catch (e) { console.error('[Conductor Hub] autoInstallSkill failed:', e); }
+    try { autoInstallAgcWorkflow(context.extensionPath); } catch (e) { console.error('[Conductor Hub] autoInstallAgcWorkflow failed:', e); }
+    try { await autoInjectRoutingRules(settings); } catch (e) { console.error('[Conductor Hub] autoInjectRoutingRules failed:', e); }
 
     // ── STEP 4: WebSocket MCP Server (非关键) ───────────────────────────────
     try {

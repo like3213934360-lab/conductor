@@ -6,7 +6,7 @@ module.exports = {
     target: 'web',
     entry: { webview: './src/index.tsx' },
     output: {
-        path: path.resolve(__dirname, 'dist'),
+        path: path.resolve(__dirname, '..', '..', 'dist'),
         filename: '[name].js',
     },
     resolve: {

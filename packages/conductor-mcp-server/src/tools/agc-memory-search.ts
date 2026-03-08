@@ -11,7 +11,7 @@ import { jsonContent, errorContent } from '../presentation/tool-response.js'
 
 export function registerAgcMemorySearchTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.memory_search',
+    'agc-memory_search',
     '搜索 AGC 历史记忆 — Reflexion 提示 + 语义知识图',
     {
       query: z.string().describe('搜索查询（目标描述或关键词）'),

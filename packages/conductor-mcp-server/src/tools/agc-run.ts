@@ -10,7 +10,7 @@ import { jsonContent, errorContent } from '../presentation/tool-response.js'
 
 export function registerAgcRunTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.run',
+    'agc-run',
     '启动 AGC 多模型治理流程 — 自动执行 DAG 编排、风险评估、合规检查',
     {
       goal: z.string().describe('任务描述/目标'),

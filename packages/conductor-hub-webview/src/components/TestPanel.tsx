@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { colors, radius, s } from '../theme';
+import { colors, radius, s, glass, shadow } from '../theme';
 import { Lang } from './Dashboard';
 import { vscode } from '../vscode-api';
+import Icon from './Icon';
 
 const TestPanel: React.FC<{ lang: Lang }> = ({ lang }) => {
     const isEN = lang === 'en';
-    const [copied, setCopied] = useState(false);
+    const [copied, setCopied] = useState<string | null>(null);
 
     const title = isEN ? 'Standard Test & Diagnostics' : '标准测试 & 诊断';
     const desc = isEN
@@ -48,10 +49,10 @@ If any failed, suggest pasting the report to: https://github.com/like3213934360-
         ? 'Call mcp_conductor_hub_ai_list_providers() to list all available models, then send "Conductor Hub test OK" to the first available model via mcp_conductor_hub_ai_ask.'
         : '调用 mcp_conductor_hub_ai_list_providers() 列出所有可用模型，然后用 mcp_conductor_hub_ai_ask 向第一个可用模型发送 "Conductor Hub 测试成功"。';
 
-    const handleCopy = (text: string) => {
+    const handleCopy = (text: string, id: string) => {
         vscode.postMessage({ command: 'copyToClipboard', text });
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
+        setCopied(id);
+        setTimeout(() => setCopied(null), 2000);
     };
 
     const handleDiagnostic = () => {
@@ -63,65 +64,131 @@ If any failed, suggest pasting the report to: https://github.com/like3213934360-
         ? ['Install Conductor Hub and reload Antigravity', 'Open a chat window', 'Copy the test prompt below', 'Paste into chat and send', 'The AI will auto-test all 8 items (7 MCP tools + Skill) and generate a report']
         : ['安装 Conductor Hub 并重启 Antigravity', '打开聊天窗口', '复制下方测试 Prompt', '粘贴到聊天中发送', '主模型自动测试全部 8 项（7 个 MCP 工具 + Skill）并生成报告'];
 
+    const copyBtn = (text: string, id: string, primary?: boolean) => (
+        <button
+            onClick={() => handleCopy(text, id)}
+            style={{
+                padding: '5px 14px', borderRadius: radius.pill,
+                fontSize: '11px', cursor: 'pointer',
+                background: copied === id ? 'rgba(52,211,153,0.15)'
+                    : primary ? colors.brandGradient
+                    : 'rgba(255,255,255,0.04)',
+                color: copied === id ? colors.success
+                    : primary ? '#fff'
+                    : 'var(--vscode-editor-foreground)',
+                border: copied === id ? `1px solid ${colors.success}40`
+                    : primary ? 'none'
+                    : `1px solid ${colors.glassBorder}`,
+                fontWeight: 600, transition: 'all 0.2s',
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                boxShadow: primary && copied !== id ? '0 2px 10px rgba(6,182,212,0.25)' : 'none',
+                backdropFilter: 'blur(8px)',
+            }}
+        >
+            <Icon
+                name={copied === id ? 'check' : 'copy'}
+                size={12}
+                color={copied === id ? colors.success : primary ? '#fff' : 'var(--vscode-editor-foreground)'}
+            />
+            {copied === id ? (isEN ? 'Copied!' : '已复制！') : (isEN ? 'Copy' : '复制')}
+        </button>
+    );
+
     return (
         <div className="animate-in" style={{ maxWidth: '860px', paddingBottom: '20px' }}>
-            <div style={{ marginBottom: '16px' }}>
-                <h2 style={{ margin: '0 0 6px 0', fontSize: '18px', fontWeight: 700, letterSpacing: '-0.3px' }}>
-                    {title}
-                </h2>
-                <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', lineHeight: 1.5 }}>
+            {/* Header */}
+            <div style={{ marginBottom: '20px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <Icon name="flask" size={20} color={colors.brand} />
+                    <h2 style={{
+                        margin: 0, fontSize: '18px', fontWeight: 700,
+                        letterSpacing: '-0.3px',
+                        background: colors.brandGradient,
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text',
+                    }}>
+                        {title}
+                    </h2>
+                </div>
+                <div style={{
+                    fontSize: '12px', color: 'var(--vscode-descriptionForeground)',
+                    lineHeight: 1.6, paddingLeft: '30px',
+                }}>
                     {desc}
                 </div>
             </div>
 
             {/* Steps */}
             <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: radius.md,
-                padding: '14px 16px',
-                marginBottom: '12px'
+                ...glass.panel,
+                padding: '18px 20px',
+                marginBottom: '14px',
             }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--vscode-editor-foreground)' }}>
-                    📋 {stepsTitle}
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    marginBottom: '12px',
+                }}>
+                    <Icon name="clipboard" size={15} color={colors.brand} />
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
+                        {stepsTitle}
+                    </span>
                 </div>
-                <ol style={{ margin: 0, paddingLeft: '20px' }}>
+                <div style={{ paddingLeft: '4px' }}>
                     {steps.map((step, i) => (
-                        <li key={i} style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', lineHeight: 1.8 }}>
-                            {step}
-                        </li>
+                        <div key={i} style={{
+                            display: 'flex', alignItems: 'baseline', gap: '10px',
+                            marginBottom: '6px',
+                        }}>
+                            <span style={{
+                                width: '20px', height: '20px',
+                                borderRadius: '50%',
+                                background: `${colors.brand}15`,
+                                color: colors.brand,
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '10px', fontWeight: 700, flexShrink: 0,
+                            }}>
+                                {i + 1}
+                            </span>
+                            <span style={{
+                                fontSize: '12px', color: 'var(--vscode-descriptionForeground)',
+                                lineHeight: 1.7,
+                            }}>
+                                {step}
+                            </span>
+                        </div>
                     ))}
-                </ol>
+                </div>
             </div>
 
             {/* Full Test Prompt */}
             <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: radius.md,
-                padding: '14px 16px',
-                marginBottom: '12px'
+                ...glass.panel,
+                padding: '18px 20px',
+                marginBottom: '14px',
             }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
-                        🧪 {isEN ? 'Full Test Prompt (7 items)' : '完整测试 Prompt（7 项）'}
-                    </span>
-                    <button
-                        onClick={() => handleCopy(testPrompt)}
-                        style={{
-                            padding: '4px 12px', borderRadius: radius.pill, fontSize: '11px', cursor: 'pointer',
-                            background: copied ? '#22c55e' : colors.brand, color: '#fff', border: 'none',
-                            fontWeight: 600, transition: 'background 0.2s'
-                        }}
-                    >
-                        {copied ? (isEN ? '✓ Copied!' : '✓ 已复制！') : (isEN ? '📋 Copy' : '📋 复制')}
-                    </button>
+                <div style={{
+                    display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'center', marginBottom: '12px',
+                }}>
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                    }}>
+                        <Icon name="flask" size={15} color="#E879F9" />
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
+                            {isEN ? 'Full Test Prompt (8 items)' : '完整测试 Prompt（8 项）'}
+                        </span>
+                    </div>
+                    {copyBtn(testPrompt, 'full', true)}
                 </div>
                 <pre style={{
-                    background: 'rgba(0,0,0,0.15)', borderRadius: '6px', padding: '12px',
-                    fontSize: '11px', lineHeight: 1.6, color: 'var(--vscode-descriptionForeground)',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto',
-                    margin: 0,
+                    ...glass.panel,
+                    background: 'rgba(0,0,0,0.2)',
+                    padding: '14px', fontSize: '11px', lineHeight: 1.6,
+                    color: 'var(--vscode-descriptionForeground)',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    maxHeight: '200px', overflow: 'auto', margin: 0,
+                    fontFamily: "'SF Mono', 'JetBrains Mono', monospace",
                 }}>
                     {testPrompt}
                 </pre>
@@ -129,31 +196,31 @@ If any failed, suggest pasting the report to: https://github.com/like3213934360-
 
             {/* Quick Test */}
             <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: radius.md,
-                padding: '14px 16px',
-                marginBottom: '12px'
+                ...glass.panel,
+                padding: '18px 20px',
+                marginBottom: '14px',
             }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
-                        ⚡ {isEN ? 'Quick Connectivity Test (1 line)' : '快速连通性测试（1 行）'}
-                    </span>
-                    <button
-                        onClick={() => handleCopy(quickTest)}
-                        style={{
-                            padding: '4px 12px', borderRadius: radius.pill, fontSize: '11px', cursor: 'pointer',
-                            background: 'var(--vscode-badge-background)', color: 'var(--vscode-badge-foreground)',
-                            border: 'none', fontWeight: 600,
-                        }}
-                    >
-                        {isEN ? '📋 Copy' : '📋 复制'}
-                    </button>
+                <div style={{
+                    display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'center', marginBottom: '12px',
+                }}>
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                    }}>
+                        <Icon name="zap" size={15} color="#FBBF24" />
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
+                            {isEN ? 'Quick Connectivity Test (1 line)' : '快速连通性测试（1 行）'}
+                        </span>
+                    </div>
+                    {copyBtn(quickTest, 'quick')}
                 </div>
                 <pre style={{
-                    background: 'rgba(0,0,0,0.15)', borderRadius: '6px', padding: '10px',
-                    fontSize: '11px', lineHeight: 1.5, color: 'var(--vscode-descriptionForeground)',
+                    ...glass.panel,
+                    background: 'rgba(0,0,0,0.2)',
+                    padding: '12px', fontSize: '11px', lineHeight: 1.5,
+                    color: 'var(--vscode-descriptionForeground)',
                     whiteSpace: 'pre-wrap', margin: 0,
+                    fontFamily: "'SF Mono', 'JetBrains Mono', monospace",
                 }}>
                     {quickTest}
                 </pre>
@@ -161,15 +228,22 @@ If any failed, suggest pasting the report to: https://github.com/like3213934360-
 
             {/* Diagnostics */}
             <div style={{
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: radius.md,
-                padding: '14px 16px',
+                ...glass.panel,
+                padding: '18px 20px',
             }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--vscode-editor-foreground)' }}>
-                    🔍 {isEN ? 'One-Click Diagnostics' : '一键诊断'}
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    marginBottom: '10px',
+                }}>
+                    <Icon name="settings" size={15} color="#60A5FA" />
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--vscode-editor-foreground)' }}>
+                        {isEN ? 'One-Click Diagnostics' : '一键诊断'}
+                    </span>
                 </div>
-                <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)', marginBottom: '10px', lineHeight: 1.5 }}>
+                <div style={{
+                    fontSize: '12px', color: 'var(--vscode-descriptionForeground)',
+                    marginBottom: '14px', lineHeight: 1.6,
+                }}>
                     {isEN
                         ? 'Generate a diagnostic report with your configuration, model status, and error logs. You can paste the report into a GitHub Issue for support.'
                         : '生成包含配置状态、模型连通性、错误日志的诊断报告。可直接粘贴到 GitHub Issue 获取支持。'}
@@ -177,12 +251,19 @@ If any failed, suggest pasting the report to: https://github.com/like3213934360-
                 <button
                     onClick={handleDiagnostic}
                     style={{
-                        padding: '8px 20px', borderRadius: radius.pill, fontSize: '12px', cursor: 'pointer',
-                        background: 'var(--vscode-button-background)', color: 'var(--vscode-button-foreground)',
-                        border: 'none', fontWeight: 600,
+                        padding: '10px 24px', borderRadius: radius.pill,
+                        fontSize: '12px', cursor: 'pointer',
+                        background: colors.brandGradient,
+                        color: '#fff', border: 'none', fontWeight: 600,
+                        boxShadow: '0 4px 16px rgba(6,182,212,0.3)',
+                        transition: 'all 0.2s',
+                        display: 'inline-flex', alignItems: 'center', gap: '6px',
                     }}
+                    onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-1px)'}
+                    onMouseLeave={e => e.currentTarget.style.transform = ''}
                 >
-                    {isEN ? '📊 Generate Diagnostic Report' : '📊 生成诊断报告'}
+                    <Icon name="activity" size={13} color="#fff" />
+                    {isEN ? 'Generate Diagnostic Report' : '生成诊断报告'}
                 </button>
             </div>
         </div>

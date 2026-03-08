@@ -6,6 +6,7 @@ import RoutingGuidePanel from './RoutingGuidePanel';
 import SkillPanel from './SkillPanel';
 import TestPanel from './TestPanel';
 import { colors, radius, s, glass } from '../theme';
+import Icon from './Icon';
 import { vscode } from '../vscode-api';
 
 export type Lang = 'en' | 'zh';
@@ -37,18 +38,14 @@ const t = {
     }
 };
 
-// Tab 图标映射 (Lucide-style SVG inline — 避免额外依赖)
-const TabIcon: React.FC<{ name: string; size?: number }> = ({ name, size = 14 }) => {
-    const svgProps = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
-    switch (name) {
-        case 'overview': return <svg {...svgProps}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>;
-        case 'settings': return <svg {...svgProps}><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>;
-        case 'history': return <svg {...svgProps}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
-        case 'guide': return <svg {...svgProps}><circle cx="12" cy="12" r="10"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49"/><line x1="12" y1="12" x2="12" y2="12.01"/></svg>;
-        case 'skill': return <svg {...svgProps}><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>;
-        case 'test': return <svg {...svgProps}><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>;
-        default: return null;
-    }
+// Tab 图标映射 — 使用共享 Icon 组件
+const TAB_ICON_MAP: Record<string, string> = {
+    overview: 'grid',
+    settings: 'settings',
+    history: 'clock',
+    guide: 'compass',
+    skill: 'layers',
+    test: 'flask',
 };
 
 const Dashboard: React.FC = () => {
@@ -112,7 +109,7 @@ const Dashboard: React.FC = () => {
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         {logoUri && (
-                            <img src={logoUri} alt="ArkTS" style={{
+                            <img src={logoUri} alt="Conductor Hub" style={{
                                 width: '30px', height: '30px', objectFit: 'contain',
                                 filter: 'drop-shadow(0 2px 8px rgba(6,182,212,0.3))',
                             }} />
@@ -158,7 +155,7 @@ const Dashboard: React.FC = () => {
                                 gap: '6px',
                             }}
                         >
-                            <TabIcon name={tab.icon} size={13} />
+                            <Icon name={TAB_ICON_MAP[tab.icon] || tab.icon} size={13} />
                             {tab.label}
                         </span>
                     ))}
@@ -184,7 +181,7 @@ const Dashboard: React.FC = () => {
                 backdropFilter: 'blur(16px)',
             }}>
                 <span style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', marginRight: '4px', opacity: 0.6 }}>
-                    ArkTS Language Support
+                    Conductor Hub
                 </span>
                 <button
                     style={{ ...footerBtnStyle, background: colors.brandGradient, color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(6,182,212,0.2)' }}

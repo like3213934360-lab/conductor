@@ -8,7 +8,7 @@ import { jsonContent, errorContent } from '../presentation/tool-response.js'
 
 export function registerAgcGetStateTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.get_state',
+    'agc-get_state',
     '查询 AGC 运行状态 — 通过事件回放还原完整状态快照',
     {
       runId: z.string().describe('运行 ID'),

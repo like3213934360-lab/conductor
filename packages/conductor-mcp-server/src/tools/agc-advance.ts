@@ -15,10 +15,10 @@ import type { NodeExecutionResult, NodeRuntimeState } from '@anthropic/conductor
 
 export function registerAgcAdvanceTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.advance',
+    'agc-advance',
     '驱动 AGC 运行的所有节点执行到完成 — 保证 100% 工作流执行率',
     {
-      runId: z.string().describe('AGC 运行 ID（来自 agc.run 的返回值）'),
+      runId: z.string().describe('AGC 运行 ID（来自 agc-run 的返回值）'),
       maxTicks: z.number().int().min(1).max(50).optional()
         .describe('最大推进轮次（默认 20，防止死循环）'),
     },

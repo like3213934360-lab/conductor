@@ -177,7 +177,7 @@ export class DashboardPanel {
                         vscode.env.clipboard.writeText(message.text || '');
                         break;
                     case 'openTerminalWithCmd': {
-                        const terminal = vscode.window.createTerminal('ArkTS Setup');
+                        const terminal = vscode.window.createTerminal('Conductor Hub Setup');
                         terminal.show();
                         terminal.sendText(message.cmd);
                         break;
@@ -513,7 +513,9 @@ export class DashboardPanel {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
-        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js'));
+        const scriptPath = vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js');
+        // Add cache busting query to bypass VS Code's aggressive webview caching
+        const scriptUri = webview.asWebviewUri(vscode.Uri.parse(`${scriptPath.toString()}?t=${Date.now()}`));
         const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'images', 'logo.png'));
 
         return `<!DOCTYPE html>

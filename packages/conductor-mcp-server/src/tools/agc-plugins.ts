@@ -10,7 +10,7 @@ import { jsonContent } from '../presentation/tool-response.js'
 
 export function registerAgcPluginsTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.plugins',
+    'agc-plugins',
     '查询已加载的 Conductor 插件列表、状态和 Hook 统计',
     {
       status: z.enum(['all', 'active', 'failed', 'discovered']).optional()

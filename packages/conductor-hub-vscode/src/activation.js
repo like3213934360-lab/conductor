@@ -62,7 +62,7 @@ async function activateConductorHub(context, extensionUri, storage) {
     // ── STEP 1: 注册 Dashboard 命令 ──────────────────────────────────────────
     const openPanelCmd = vscode.commands.registerCommand('conductor-hub.openPanel', () => {
         if (!storage) {
-            vscode.window.showWarningMessage('Conductor Hub: History storage unavailable. Dashboard will still work.');
+            console.log('[Conductor Hub] History storage not provided — history features disabled.');
         }
         dashboard_panel_js_1.DashboardPanel.createOrShow(extensionUri, storage || null, settings, () => statusBar?.refresh());
     });

@@ -18,6 +18,7 @@ import { getAceLanguageId, nextRequestId, sendAceRequest, registerAceResponseLis
 import { registerLanguageProviders } from './language-providers'
 import { applyDevEcoColors } from './deveco-theme'
 import { DiagnosticsAccumulator } from './diagnostics'
+import { activateConductorHub, deactivateConductorHub } from '../../conductor-hub-vscode/src/activation'
 
 let client: LanguageClient | undefined
 let currentLaunch: LaunchResult | undefined
@@ -36,7 +37,12 @@ function log(msg: string): void {
 // ── 插件激活 ────────────────────────────────────────────────────────────────
 
 export function activate(context: ExtensionContext): void {
-  log('ArkTS 插件激活开始')
+  log('ArkTS + Conductor Hub 插件激活开始')
+
+  // ── Conductor Hub 激活 (Dashboard / StatusBar / MCP 自动注册) ──────────
+  activateConductorHub(context, context.extensionUri).catch((err) => {
+    log(`Conductor Hub 激活失败 (非关键): ${err}`)
+  })
   applyDevEcoColors()
 
   context.subscriptions.push(
@@ -257,6 +263,7 @@ export function activate(context: ExtensionContext): void {
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  deactivateConductorHub()
   if (!client) return undefined
   return client.stop()
 }

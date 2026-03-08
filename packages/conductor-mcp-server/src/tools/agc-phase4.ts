@@ -23,7 +23,7 @@ export function registerPhase4Tools(server: McpServer, ctx: ServerContext): void
 
 function registerReflexionPreviewTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.reflexion.preview',
+    'agc-reflexion-preview',
     '预览 Reflexion 反思记忆 — 查看将注入到新运行的反思提示',
     {
       goal: z.string().describe('运行目标 (用于相关性匹配)'),
@@ -54,7 +54,7 @@ function registerReflexionPreviewTool(server: McpServer, ctx: ServerContext): vo
 
 function registerGraphSimulateTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.graph.simulate',
+    'agc-graph-simulate',
     'DAG 图条件边模拟 — 预测给定状态下的就绪节点和边评估结果',
     {
       graph: z.object({
@@ -93,7 +93,7 @@ function registerGraphSimulateTool(server: McpServer, ctx: ServerContext): void 
 
 function registerSandboxValidateTool(server: McpServer, ctx: ServerContext): void {
   server.tool(
-    'agc.sandbox.validate',
+    'agc-sandbox-validate',
     '沙箱权限验证 — 检查操作是否被能力沙箱允许',
     {
       operations: z.array(z.object({

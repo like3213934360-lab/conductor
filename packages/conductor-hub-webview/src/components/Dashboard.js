@@ -138,7 +138,7 @@ const Dashboard = () => {
             alignItems: 'center', marginBottom: '6px',
         }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        {logoUri && (<img src={logoUri} alt="ArkTS" style={{
+                        {logoUri && (<img src={logoUri} alt="Conductor Hub" style={{
                 width: '30px', height: '30px', objectFit: 'contain',
                 filter: 'drop-shadow(0 2px 8px rgba(6,182,212,0.3))',
             }}/>)}
@@ -203,7 +203,7 @@ const Dashboard = () => {
             backdropFilter: 'blur(16px)',
         }}>
                 <span style={{ fontSize: '11px', color: 'var(--vscode-descriptionForeground)', marginRight: '4px', opacity: 0.6 }}>
-                    ArkTS Language Support
+                    Conductor Hub
                 </span>
                 <button style={{ ...footerBtnStyle, background: theme_1.colors.brandGradient, color: '#fff', border: 'none', boxShadow: '0 2px 8px rgba(6,182,212,0.2)' }} onClick={() => vscode_api_1.vscode.postMessage({ command: 'openUrl', url: 'https://github.com/like3213934360-lab/conductor' })}>
                     {t[lang].github}

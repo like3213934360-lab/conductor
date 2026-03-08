@@ -163,7 +163,7 @@ class DashboardPanel {
                     vscode.env.clipboard.writeText(message.text || '');
                     break;
                 case 'openTerminalWithCmd': {
-                    const terminal = vscode.window.createTerminal('ArkTS Setup');
+                    const terminal = vscode.window.createTerminal('Conductor Hub Setup');
                     terminal.show();
                     terminal.sendText(message.cmd);
                     break;
