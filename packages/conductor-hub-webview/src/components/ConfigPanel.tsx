@@ -308,6 +308,38 @@ const TaskBadge: React.FC<{ id: string; lang: string }> = ({ id, lang }) => {
     );
 };
 
+// ── SourceBadge ───────────────────────────────────────────────────────────────
+
+const SOURCE_META: Record<string, { label: string; color: string }> = {
+    builtin: { label: '内置', color: '#06B6D4' },
+    local:   { label: '本地', color: '#94A3B8' },
+    npm:     { label: 'npm',  color: '#CB3837' },
+    pypi:    { label: 'PyPI', color: '#3B82F6' },
+    ai:      { label: 'AI',   color: '#8B5CF6' },
+};
+
+const SourceBadge: React.FC<{ source?: string }> = ({ source }) => {
+    const meta = SOURCE_META[source || ''];
+    if (!meta) return null;
+    return (
+        <span style={{
+            display: 'inline-block',
+            padding: '1px 6px',
+            borderRadius: radius.pill,
+            fontSize: '9px',
+            fontWeight: 600,
+            letterSpacing: '0.03em',
+            background: `${meta.color}18`,
+            color: meta.color,
+            border: `1px solid ${meta.color}30`,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+        }}>
+            {meta.label}
+        </span>
+    );
+};
+
 // ─── ModelCard ────────────────────────────────────────────────────────────────
 
 const ModelCard: React.FC<{
@@ -999,6 +1031,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ lang }) => {
     const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
     const [codexStatus, setCodexStatus] = useState<{ installed: boolean; version?: string; loggedIn?: boolean } | null>(null);
     const [geminiStatus, setGeminiStatus] = useState<{ installed: boolean; version?: string; loggedIn?: boolean } | null>(null);
+    const [ecosystem, setEcosystem] = useState<{ codex?: { mcpServers: { name: string; description: string; source?: 'builtin' | 'local' | 'npm' | 'pypi' | 'ai' }[] }; gemini?: { mcpServers: { name: string; description: string; source?: 'builtin' | 'local' | 'npm' | 'pypi' | 'ai' }[]; extensions: { name: string; description: string; source?: 'builtin' | 'local' | 'npm' | 'pypi' | 'ai' }[] } } | null>(null);
     const hasAutoTested = React.useRef(false);
 
     useEffect(() => {
@@ -1034,11 +1067,15 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ lang }) => {
             if (ev.data.command === 'geminiStatus') {
                 setGeminiStatus({ installed: ev.data.installed, version: ev.data.version, loggedIn: ev.data.loggedIn });
             }
+            if (ev.data.command === 'ecosystemData' && ev.data.data) {
+                setEcosystem(ev.data.data);
+            }
         };
         window.addEventListener('message', handler);
         vscode.postMessage({ command: 'getModelsV2' });
         vscode.postMessage({ command: 'getCodexStatus' });
         vscode.postMessage({ command: 'getGeminiStatus' });
+        vscode.postMessage({ command: 'getEcosystem' });
         return () => window.removeEventListener('message', handler);
     }, []);
 
@@ -1178,6 +1215,23 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ lang }) => {
                         已连通
                     </div>
                 )}
+                {/* Codex MCP Servers */}
+                {ecosystem?.codex?.mcpServers && ecosystem.codex.mcpServers.length > 0 && codexStatus?.installed && (
+                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${colors.glassBorder}` }}>
+                        <div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)', opacity: 0.5, marginBottom: '8px', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                            MCP Servers ({ecosystem.codex.mcpServers.length})
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {ecosystem.codex.mcpServers.map(s => (
+                                <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                                    <span style={{ fontWeight: 600, color: '#10A37F', flexShrink: 0, minWidth: '80px' }}>{s.name}</span>
+                                    <span style={{ color: 'var(--vscode-descriptionForeground)', opacity: 0.7, flex: 1 }}>{s.description}</span>
+                                    <SourceBadge source={s.source} />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Gemini CLI Card */}
@@ -1237,6 +1291,43 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ lang }) => {
                         已连通
                     </div>
                 )}
+                {/* Gemini MCP Servers + Extensions */}
+                {ecosystem?.gemini && geminiStatus?.installed && (
+                    <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${colors.glassBorder}` }}>
+                        {ecosystem.gemini.mcpServers.length > 0 && (
+                            <>
+                                <div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)', opacity: 0.5, marginBottom: '8px', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                                    MCP Servers ({ecosystem.gemini.mcpServers.length})
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {ecosystem.gemini.mcpServers.map(s => (
+                                        <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                                            <span style={{ fontWeight: 600, color: '#4285F4', flexShrink: 0, minWidth: '80px' }}>{s.name}</span>
+                                            <span style={{ color: 'var(--vscode-descriptionForeground)', opacity: 0.7, flex: 1 }}>{s.description}</span>
+                                            <SourceBadge source={s.source} />
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                        {ecosystem.gemini.extensions.length > 0 && (
+                            <>
+                                <div style={{ fontSize: '10px', color: 'var(--vscode-descriptionForeground)', opacity: 0.5, marginBottom: '8px', marginTop: '10px', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                                    Extensions ({ecosystem.gemini.extensions.length})
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {ecosystem.gemini.extensions.map(e => (
+                                        <div key={e.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                                            <span style={{ fontWeight: 600, color: '#8B5CF6', flexShrink: 0, minWidth: '80px' }}>{e.name}</span>
+                                            <span style={{ color: 'var(--vscode-descriptionForeground)', opacity: 0.7, flex: 1 }}>{e.description}</span>
+                                            <SourceBadge source={e.source} />
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                )}
             </div>
 
 
@@ -1251,7 +1342,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ lang }) => {
                 fontSize: '11px', color: 'var(--vscode-descriptionForeground)', lineHeight: '1.6',
                 opacity: 0.7,
             }}>
-                💡 {lang === 'zh'
+                {lang === 'zh'
                     ? '路由规则：按任务类型匹配已启用的模型，选优先级最高的（列表靠上）。可随时添加新模型、自定义任务分配。'
                     : 'Routing: matches task type to enabled models → picks highest-priority (top of list). Add any OpenAI-compatible model.'}
             </div>

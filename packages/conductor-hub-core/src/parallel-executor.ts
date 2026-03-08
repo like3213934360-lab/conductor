@@ -29,6 +29,16 @@ export interface SubTask {
     system_prompt?: string;
     /** 超时毫秒数, 默认 300000 = 5 分钟 */
     timeout_ms?: number;
+    /** 文件路径, 注入为上下文 (ask/multi_ask/consensus) */
+    file_paths?: string[];
+}
+
+/** 执行器可配置参数 (均有合理默认值) */
+export interface ExecutorConfig {
+    maxTasks?: number;
+    maxConcurrency?: number;
+    cliDefaultTimeoutMs?: number;
+    apiDefaultTimeoutMs?: number;
 }
 
 export interface SubTaskResult {
@@ -49,12 +59,32 @@ export interface ParallelExecutionSummary {
     results: SubTaskResult[];
 }
 
-// ── 常量 ─────────────────────────────────────────────────────────────────────
+// ── 常量 (默认值, 可通过 ExecutorConfig 覆盖) ──────────────────────────────
 
-const MAX_TASKS = 8;
-const MAX_CONCURRENCY = 4;
-const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_MAX_TASKS = 8;
+const DEFAULT_MAX_CONCURRENCY = 4;
 const MAX_OUTPUT_CHARS = 50_000;
+
+/**
+ * 四层超时策略常量 (与 cli-runners.ts 对齐)
+ *
+ * ① 不活跃超时: 进程已死且无输出 → 立即终止
+ * ② 进程心跳: 由 cli-runners 内部处理 (kill(0) 探测)
+ * ③ 无真实数据超时: 进程虽活但无新输出 → 判定卡死
+ * ④ 绝对上限: 无条件终止 (安全网)
+ *
+ * CLI 任务 (codex/gemini):
+ *   - 内层 cli-runners.ts 已有完整四层策略 (3min/60s/10min/30min)
+ *   - 外层仅保留「绝对上限」作为安全网, 不提前干预
+ *   - 用户可通过 timeout_ms 覆盖绝对上限, 但不得低于 CLI_MIN_TIMEOUT_MS
+ *
+ * API 任务 (ask/multi_ask/consensus):
+ *   - 无 CLI 进程, 仅 HTTP 调用
+ *   - 使用简单 setTimeout + AbortSignal
+ */
+const CLI_MIN_TIMEOUT_MS = 300_000;         // CLI 任务最小超时: 5 分钟
+const CLI_DEFAULT_TIMEOUT_MS = 1_800_000;   // CLI 任务默认超时: 30 分钟 (= 绝对上限, 与 cli-runners.ts 对齐)
+const API_DEFAULT_TIMEOUT_MS = 300_000;     // API 任务默认超时: 5 分钟
 
 // ── 核心函数 ─────────────────────────────────────────────────────────────────
 
@@ -65,13 +95,17 @@ export async function runParallelTasks(
     tasks: SubTask[],
     service: ConductorHubService,
     maxConcurrency?: number,
+    config?: ExecutorConfig,
 ): Promise<ParallelExecutionSummary> {
+    const maxTasks = config?.maxTasks ?? DEFAULT_MAX_TASKS;
+    const maxConc = config?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+
     if (tasks.length === 0) throw new Error('tasks 不能为空');
-    if (tasks.length > MAX_TASKS) throw new Error(`最多 ${MAX_TASKS} 个任务, 当前 ${tasks.length}`);
+    if (tasks.length > maxTasks) throw new Error(`最多 ${maxTasks} 个任务, 当前 ${tasks.length}`);
 
     const concurrency = Math.min(
         Math.max(maxConcurrency ?? 2, 1),
-        MAX_CONCURRENCY,
+        maxConc,
         tasks.length,
     );
     const startedAt = Date.now();
@@ -111,13 +145,38 @@ class TimeoutError extends Error {
     }
 }
 
+/**
+ * 判断是否为 CLI 类型任务
+ * CLI 任务由 cli-runners.ts 内部管理四层超时, 外层仅做安全网
+ */
+function isCliTask(type: SubTaskType): boolean {
+    return type === 'codex' || type === 'gemini';
+}
+
+/**
+ * 计算任务的实际超时毫秒数
+ *
+ * CLI 任务: max(用户配置, CLI_MIN_TIMEOUT_MS), 默认 CLI_DEFAULT_TIMEOUT_MS
+ * API 任务: 用户配置 || API_DEFAULT_TIMEOUT_MS
+ */
+function resolveTimeout(task: SubTask, config?: ExecutorConfig): number {
+    if (isCliTask(task.type)) {
+        const userTimeout = task.timeout_ms;
+        if (userTimeout != null) {
+            return Math.max(userTimeout, CLI_MIN_TIMEOUT_MS);
+        }
+        return config?.cliDefaultTimeoutMs ?? CLI_DEFAULT_TIMEOUT_MS;
+    }
+    return task.timeout_ms ?? config?.apiDefaultTimeoutMs ?? API_DEFAULT_TIMEOUT_MS;
+}
+
 async function executeOneSafely(
     task: SubTask,
     index: number,
     service: ConductorHubService,
 ): Promise<SubTaskResult> {
     const id = task.id?.trim() || `task-${index + 1}`;
-    const timeoutMs = task.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = resolveTimeout(task);
     const startedAt = Date.now();
     const controller = new AbortController();
 
@@ -144,15 +203,15 @@ async function dispatchTask(task: SubTask, service: ConductorHubService, signal?
         case 'gemini':
             return service.geminiTask(task.prompt, task.model, task.working_dir, signal);
         case 'ask': {
-            const r = await service.ask({ message: task.prompt, provider: task.provider, systemPrompt: task.system_prompt, signal });
+            const r = await service.ask({ message: task.prompt, provider: task.provider, systemPrompt: task.system_prompt, filePaths: task.file_paths, signal });
             return r.text;
         }
         case 'multi_ask': {
-            const r = await service.multiAsk({ message: task.prompt, systemPrompt: task.system_prompt, signal });
+            const r = await service.multiAsk({ message: task.prompt, systemPrompt: task.system_prompt, filePaths: task.file_paths, signal });
             return r.formatted;
         }
         case 'consensus': {
-            const r = await service.consensus({ message: task.prompt, systemPrompt: task.system_prompt });
+            const r = await service.consensus({ message: task.prompt, systemPrompt: task.system_prompt, filePaths: task.file_paths });
             return r.judgeText;
         }
         default:

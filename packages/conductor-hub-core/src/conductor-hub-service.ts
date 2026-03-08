@@ -19,29 +19,51 @@ import { consensus } from './consensus.js';
 
 const KEYS_FILE = path.join(os.homedir(), '.conductor-hub-keys.json');
 
+// ── DI: ConfigLoader 接口 ─────────────────────────────────────────────────
+
+/** 配置加载器接口 — 支持 DI 和测试 Mock */
+export interface ConfigLoader {
+    load(): ConductorHubConfig;
+}
+
+/** 默认实现: 从 JSON 文件读取 */
+export class FileConfigLoader implements ConfigLoader {
+    constructor(private filePath: string = KEYS_FILE) {}
+    load(): ConductorHubConfig {
+        try {
+            if (fs.existsSync(this.filePath)) {
+                return JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as ConductorHubConfig;
+            }
+        } catch { /* file missing or malformed */ }
+        return {};
+    }
+}
+
 /**
  * Conductor Hub 服务门面 — 无 VS Code 依赖的纯 Node 运行时
  */
 export class ConductorHubService {
     private config: ConductorHubConfig;
+    private configLoader: ConfigLoader;
 
-    constructor(config?: ConductorHubConfig) {
-        this.config = config || ConductorHubService.readConfig();
+    constructor(configOrLoader?: ConductorHubConfig | ConfigLoader) {
+        if (configOrLoader && 'load' in configOrLoader) {
+            this.configLoader = configOrLoader;
+            this.config = configOrLoader.load();
+        } else {
+            this.configLoader = new FileConfigLoader();
+            this.config = configOrLoader || this.configLoader.load();
+        }
     }
 
-    /** 从 ~/.conductor-hub-keys.json 读取配置 */
+    /** @deprecated 使用 new FileConfigLoader().load() 代替 */
     static readConfig(): ConductorHubConfig {
-        try {
-            if (fs.existsSync(KEYS_FILE)) {
-                return JSON.parse(fs.readFileSync(KEYS_FILE, 'utf8')) as ConductorHubConfig;
-            }
-        } catch { /* file missing or malformed */ }
-        return {};
+        return new FileConfigLoader().load();
     }
 
     /** 热重载配置 */
     reloadConfig(): void {
-        this.config = ConductorHubService.readConfig();
+        this.config = this.configLoader.load();
     }
 
     /** 获取当前配置 */

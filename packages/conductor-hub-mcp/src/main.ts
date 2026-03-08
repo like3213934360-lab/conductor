@@ -9,8 +9,17 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { ConductorHubService, runParallelTasks, formatParallelResults } from '@anthropic/conductor-hub-core';
-import type { SubTask, SubTaskType } from '@anthropic/conductor-hub-core';
+import {
+    ConductorHubService,
+    runParallelTasks,
+    formatParallelResults,
+    discoverCliEcosystem,
+    formatEcosystem,
+    ProgressReporter,
+    AsyncJobManager,
+    formatJobStatus,
+} from '@anthropic/conductor-hub-core';
+import type { SubTask, SubTaskType, StartJobOptions, JobType } from '@anthropic/conductor-hub-core';
 
 // ── 工具 Schema 定义 ─────────────────────────────────────────────────────────
 
@@ -114,6 +123,7 @@ const TOOL_DEFINITIONS = [
                             provider: { type: 'string', description: 'Force provider (ask type only)' },
                             system_prompt: { type: 'string', description: 'System prompt (ask/multi_ask/consensus)' },
                             timeout_ms: { type: 'number', description: 'Per-task timeout in ms (default: 300000)' },
+                            file_paths: { type: 'array', items: { type: 'string' }, description: 'Local file paths for context injection (ask/multi_ask/consensus)' },
                         },
                         required: ['type', 'prompt'],
                     },
@@ -123,17 +133,74 @@ const TOOL_DEFINITIONS = [
             required: ['tasks'],
         },
     },
+    {
+        name: 'ai_start_job',
+        description: 'Start a long-running CLI task asynchronously. Returns a jobId immediately without blocking. Use ai_poll_job to check status. Best for: large refactoring, full codebase analysis, tasks expected to take >2 minutes.',
+        inputSchema: {
+            type: 'object' as const,
+            properties: {
+                type: { type: 'string', enum: ['codex', 'gemini'], description: 'CLI agent to use.' },
+                prompt: { type: 'string', description: 'Task description or prompt.' },
+                model: { type: 'string', description: 'Gemini model (gemini type only).' },
+                working_dir: { type: 'string', description: 'Working directory.' },
+            },
+            required: ['type', 'prompt'],
+        },
+    },
+    {
+        name: 'ai_poll_job',
+        description: 'Poll the status of an async job started with ai_start_job. Returns current status, progress, and result when completed.',
+        inputSchema: {
+            type: 'object' as const,
+            properties: {
+                job_id: { type: 'string', description: 'Job ID returned by ai_start_job.' },
+                action: { type: 'string', enum: ['poll', 'cancel', 'list'], description: 'Action: poll (default), cancel, or list all jobs.' },
+            },
+            required: ['job_id'],
+        },
+    },
+    {
+        name: 'ai_list_ecosystem',
+        description: 'Discover all MCP servers and extensions installed in Codex CLI and Gemini CLI. Shows name, description, and configuration for each. No arguments needed.',
+        inputSchema: {
+            type: 'object' as const,
+            properties: {},
+        },
+    },
 ];
 
 // ── MCP Server Main ──────────────────────────────────────────────────────────
 
 async function main() {
     const server = new Server(
-        { name: 'conductor-hub', version: '0.3.0' },
+        { name: 'conductor-hub', version: '0.4.0' },
         { capabilities: { tools: {} } }
     );
 
     const service = new ConductorHubService();
+
+    // 进度报告器: CLI 事件 → MCP Progress 通知
+    const progressReporter = new ProgressReporter();
+    let progressCounter = 0;
+    progressReporter.on((event) => {
+        progressCounter++;
+        try {
+            server.notification({
+                method: 'notifications/progress',
+                params: {
+                    progressToken: event.taskId,
+                    progress: progressCounter,
+                    total: event.progress >= 0 ? Math.ceil(event.progress * 100) : undefined,
+                    message: `[${event.phase}] ${event.message}`,
+                },
+            });
+        } catch {
+            // 通知发送失败不影响主流程
+        }
+    });
+
+    // 异步作业管理器
+    const jobManager = new AsyncJobManager(service, progressReporter);
 
     // 注册工具列表
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -168,6 +235,11 @@ async function main() {
 
                 case 'ai_list_providers': {
                     return { content: [{ type: 'text', text: service.listProviders() }] };
+                }
+
+                case 'ai_list_ecosystem': {
+                    const eco = await discoverCliEcosystem();
+                    return { content: [{ type: 'text', text: formatEcosystem(eco) }] };
                 }
 
                 case 'ai_codex_task': {
@@ -229,6 +301,7 @@ async function main() {
                         provider: t.provider,
                         system_prompt: t.system_prompt,
                         timeout_ms: t.timeout_ms,
+                        file_paths: t.file_paths as string[] | undefined,
                     }));
                     const summary = await runParallelTasks(
                         subTasks,
@@ -236,6 +309,47 @@ async function main() {
                         max_concurrency,
                     );
                     return { content: [{ type: 'text', text: formatParallelResults(summary) }] };
+                }
+
+                case 'ai_start_job': {
+                    const jobType = args.type as JobType;
+                    if (jobType !== 'codex' && jobType !== 'gemini') {
+                        return { content: [{ type: 'text', text: `不支持的作业类型: ${jobType}, 仅支持 codex/gemini` }], isError: true };
+                    }
+                    const opts: StartJobOptions = {
+                        type: jobType,
+                        prompt: args.prompt as string,
+                        model: args.model as string | undefined,
+                        workingDir: args.working_dir as string | undefined,
+                    };
+                    const jobId = jobManager.start(opts);
+                    return { content: [{ type: 'text', text: `🚀 异步作业已启动\n\n**Job ID**: \`${jobId}\`\n**类型**: ${jobType}\n\n使用 \`ai_poll_job\` 查询进度和结果。` }] };
+                }
+
+                case 'ai_poll_job': {
+                    const action = (args.action as string | undefined) ?? 'poll';
+                    const jobId = args.job_id as string;
+
+                    if (action === 'list') {
+                        const allJobs = jobManager.list();
+                        if (allJobs.length === 0) {
+                            return { content: [{ type: 'text', text: '暂无作业。' }] };
+                        }
+                        const formatted = allJobs.map(j => formatJobStatus(j)).join('\n\n---\n\n');
+                        return { content: [{ type: 'text', text: `📋 **作业列表** (${allJobs.length} 个)\n\n${formatted}` }] };
+                    }
+
+                    if (action === 'cancel') {
+                        const cancelled = jobManager.cancel(jobId);
+                        return { content: [{ type: 'text', text: cancelled ? `🚫 作业 ${jobId} 已取消` : `❌ 无法取消作业 ${jobId} (可能已完成或不存在)` }] };
+                    }
+
+                    // poll
+                    const job = jobManager.poll(jobId);
+                    if (!job) {
+                        return { content: [{ type: 'text', text: `❌ 作业 ${jobId} 不存在` }], isError: true };
+                    }
+                    return { content: [{ type: 'text', text: formatJobStatus(job) }] };
                 }
 
                 default:

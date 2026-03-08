@@ -11,27 +11,53 @@ import { LEGACY_PROVIDERS, TASK_KEYWORDS } from '@anthropic/conductor-hub-shared
 // ── 任务类型检测 ──────────────────────────────────────────────────────────────
 
 /**
- * 基于消息内容和长度的任务类型检测。
+ * 基于消息内容的任务类型检测 — 权重评分模型
  *
- * 优先级: 长度规则 > 关键字匹配 > 默认 code_gen
+ * 策略:
+ * 1. 长度规则 (最高优先级, 直接返回)
+ * 2. 多关键字权重累加: 每个命中的关键字贡献权重分
+ * 3. 取最高分的 taskType
+ * 4. 无匹配时默认 code_gen
  */
 export function detectTaskType(message: string): string {
     const msg = message.toLowerCase();
 
-    // 长度感知路由（优先于关键字）
+    // ── 长度感知路由 (最高优先级) ────────────────────────────────────────────
     if (message.length > 3000) {
-        return 'long_context'; // GLM 长文本连贯性前 3
+        return 'long_context';
     }
     if (message.length < 100 && (msg.includes('code') || msg.includes('代码') || msg.includes('function') || msg.includes('函数'))) {
-        return 'code_gen'; // DeepSeek 短代码任务
+        return 'code_gen';
     }
 
+    // ── 关键字权重评分 ──────────────────────────────────────────────────────
+    const scores = new Map<string, number>();
+
     for (const [taskId, keywords] of Object.entries(TASK_KEYWORDS)) {
-        if (keywords.some(k => msg.includes(k))) {
-            return taskId;
+        let score = 0;
+        for (const keyword of keywords) {
+            if (msg.includes(keyword)) {
+                // 长关键字权重更高 (更精确), 短关键字权重低
+                score += keyword.length >= 4 ? 2 : 1;
+            }
+        }
+        if (score > 0) {
+            scores.set(taskId, score);
         }
     }
-    return 'code_gen'; // 安全默认
+
+    if (scores.size === 0) return 'code_gen';
+
+    // 取最高分的 taskType
+    let bestTask = 'code_gen';
+    let bestScore = 0;
+    for (const [taskId, score] of scores) {
+        if (score > bestScore) {
+            bestScore = score;
+            bestTask = taskId;
+        }
+    }
+    return bestTask;
 }
 
 // ── 路由解析 ──────────────────────────────────────────────────────────────────

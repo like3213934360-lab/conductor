@@ -225,6 +225,536 @@ export class DashboardPanel {
                         break;
                     }
 
+                    // ── CLI Ecosystem Discovery (two-phase) ─────────────────
+                    case 'getEcosystem': {
+                        try {
+                            const home = os.homedir();
+                            // ── Built-in description registry ──
+                            const DESC: Record<string, string> = {
+                                // ── 文件 & 系统 ──
+                                'filesystem': '文件系统操作 — 安全读写、搜索、目录遍历，智能限制大文件和深层目录',
+                                'everything': '桌面文件搜索引擎集成（Everything / Spotlight）',
+                                // ── 知识 & 文档 ──
+                                'context7': '实时查询任意编程库的最新文档和代码示例',
+                                'memory': '知识图谱持久化记忆 — 跨会话存储实体和关系',
+                                'rag': '检索增强生成 — 向量数据库文档检索与问答',
+                                // ── 浏览器 & 测试 ──
+                                'playwright': '浏览器自动化 — Playwright 驱动的 Web 测试、截图、表单填写',
+                                'chrome': 'Chrome DevTools 控制 — DOM 检查、网络监控、性能分析、控制台',
+                                'puppeteer': 'Puppeteer 浏览器自动化 — 页面操控、截图、PDF 生成',
+                                'browserbase': '云端浏览器基础设施 — 远程浏览器会话和自动化',
+                                // ── 设计 ──
+                                'pencil': '.pen 可视化设计文件编辑器 — UI 原型设计与组件管理',
+                                'figma': 'Figma 设计文件读取 — 组件、样式、布局信息提取',
+                                // ── 代码 & 开发 ──
+                                'github': 'GitHub API — 仓库管理、Issue、PR、代码搜索、文件读写',
+                                'gitlab': 'GitLab API — 仓库、合并请求、CI/CD 管道管理',
+                                'git': 'Git 版本控制操作 — 提交、分支、日志、差异对比',
+                                'code-review': 'AI 代码审查 — 通过外部 LLM 进行代码质量分析和缺陷检测',
+                                'linear': 'Linear 项目管理 — Issue 跟踪、Sprint 规划、团队协作',
+                                // ── 编排 & 推理 ──
+                                'conductor': '多模型编排引擎 — Deno 沙盒中安全执行代码，可调用所有 MCP 工具',
+                                'antigravity-swarm': '多 Agent 蜂群执行 — 并行任务分发与协调',
+                                'criticalthink': '批判性思维与深度分析 — 结构化论证和反思',
+                                'skill-porter': '技能迁移与移植 — 跨平台技能文件转换工具',
+                                'sequential-thinking': '动态推理链 — 逐步思考，支持修正、分支和回溯',
+                                'reasoning': '深度推理引擎 — 复杂问题分解与逻辑推理',
+                                // ── 网络 & API ──
+                                'fetch': 'HTTP 请求工具 — 网页抓取与 API 调用，兼容 robots.txt',
+                                'brave-search': 'Brave 搜索引擎 — 网页搜索和本地搜索',
+                                'tavily': 'Tavily AI 搜索 — 针对 AI 优化的实时网络搜索',
+                                'exa': 'Exa 语义搜索 — 基于含义的网页和内容搜索',
+                                // ── 数据库 ──
+                                'postgres': 'PostgreSQL 数据库 — SQL 查询、Schema 检查、数据管理',
+                                'sqlite': 'SQLite 数据库 — 轻量级本地数据库读写和查询',
+                                'supabase': 'Supabase 后端服务 — 数据库、认证、存储管理',
+                                'redis': 'Redis 缓存与数据结构 — 键值存储、发布订阅',
+                                // ── 云服务 ──
+                                'aws': 'AWS 云服务 — S3、Lambda、EC2 等 AWS 资源管理',
+                                'cloudflare': 'Cloudflare 服务 — Workers、KV、D1、R2 资源管理',
+                                'vercel': 'Vercel 部署平台 — 项目部署、环境变量、域名管理',
+                                // ── 通讯 & 协作 ──
+                                'slack': 'Slack 团队通讯 — 消息发送、频道管理、搜索',
+                                'discord': 'Discord 社区管理 — 消息、频道、服务器操作',
+                                'notion': 'Notion 知识库 — 页面、数据库、内容管理',
+                                'google-drive': 'Google Drive 文件管理 — 搜索、读写、共享',
+                                'google-maps': 'Google 地图 — 地理编码、路线规划、地点搜索',
+                                // ── 其他工具 ──
+                                'time': '时间工具 — 时区转换、时间计算',
+                                'docker': 'Docker 容器管理 — 镜像、容器、网络操作',
+                                'kubernetes': 'Kubernetes 集群管理 — Pod、Service、部署操作',
+                                'sentry': 'Sentry 错误监控 — 异常追踪、性能监控',
+                            };
+
+                            type EcoItem = { name: string; description: string; source: 'builtin' | 'local' | 'npm' | 'pypi' | 'ai'; npmPkg?: string; pypiPkg?: string };
+
+                            // ── Extract package name from command/args ──
+                            const extractPkg = (cmd: string, args: string[]): { name: string; type: 'npm' | 'pypi' } | null => {
+                                // npx -y @scope/pkg → @scope/pkg (npm)
+                                if (cmd === 'npx' || cmd === 'npx.cmd') {
+                                    for (const a of args) {
+                                        if (a.startsWith('@') || (!a.startsWith('-') && !a.startsWith('/') && a.includes('-'))) {
+                                            return { name: a, type: 'npm' };
+                                        }
+                                    }
+                                }
+                                // uvx mcp-server-xxx → mcp-server-xxx (PyPI)
+                                if (cmd === 'uvx' || cmd === 'uv') {
+                                    for (const a of args) {
+                                        if (!a.startsWith('-') && a.includes('-')) return { name: a, type: 'pypi' };
+                                    }
+                                }
+                                // python -m module_name → module_name (PyPI)
+                                if (cmd === 'python' || cmd === 'python3') {
+                                    const mIdx = args.indexOf('-m');
+                                    if (mIdx >= 0 && args[mIdx + 1]) return { name: args[mIdx + 1], type: 'pypi' };
+                                }
+                                // .bin/context7-mcp → try the base name (npm)
+                                if (cmd.includes('.bin/')) {
+                                    const base = cmd.split('.bin/').pop();
+                                    return base ? { name: base, type: 'npm' } : null;
+                                }
+                                // direct command like mcp-server-filesystem
+                                if (!cmd.startsWith('/') && cmd.includes('-')) {
+                                    return { name: cmd, type: 'npm' };
+                                }
+                                return null;
+                            };
+
+                            // ── Resolve package.json from command/args paths ──
+                            const findLocalPkgJson = (cmd: string, args: string[]): { name?: string; description?: string } | null => {
+                                try {
+                                    const candidates: string[] = [];
+                                    // Check args for .js/.mjs/.cjs file paths
+                                    for (const a of args) {
+                                        if (/\.[cm]?js$/.test(a) && (a.startsWith('/') || a.startsWith('.'))) {
+                                            candidates.push(path.dirname(a));
+                                        }
+                                    }
+                                    // Check command if it's a full path (not npx/node)
+                                    if (cmd.startsWith('/') && !cmd.endsWith('/node') && !cmd.endsWith('/npx')) {
+                                        candidates.push(path.dirname(cmd));
+                                    }
+                                    // Walk up max 3 levels from each candidate looking for package.json
+                                    for (const start of candidates) {
+                                        let dir = start;
+                                        for (let i = 0; i < 3; i++) {
+                                            const pj = path.join(dir, 'package.json');
+                                            if (fs.existsSync(pj)) {
+                                                return JSON.parse(fs.readFileSync(pj, 'utf8'));
+                                            }
+                                            const parent = path.dirname(dir);
+                                            if (parent === dir) break;
+                                            dir = parent;
+                                        }
+                                    }
+                                } catch { /* ignore */ }
+                                return null;
+                            };
+
+                            // ── Parse Codex config.toml ──
+                            const codexMcp: EcoItem[] = [];
+                            try {
+                                const tomlPath = path.join(home, '.codex', 'config.toml');
+                                if (fs.existsSync(tomlPath)) {
+                                    const content = fs.readFileSync(tomlPath, 'utf8');
+                                    const mcpSections = content.match(/\[mcp_servers\.([\s\S]*?)(?=\n\[|$)/g);
+                                    if (mcpSections) {
+                                        for (const section of mcpSections) {
+                                            const nameMatch = section.match(/\[mcp_servers\.([^\]]+)\]/);
+                                            if (!nameMatch) continue;
+                                            const name = nameMatch[1];
+                                            const cmdMatch = section.match(/command\s*=\s*"([^"]+)"/);
+                                            const argsMatch = section.match(/args\s*=\s*\[(.*?)\]/s);
+                                            const cmd = cmdMatch?.[1] || '';
+                                            const args = argsMatch ? (argsMatch[1].match(/"([^"]+)"/g) || []).map(s => s.replace(/"/g, '')) : [];
+                                            let pkgInfo = extractPkg(cmd, args);
+                                            let localDesc: string | undefined;
+                                            // If no package name, try to find package.json locally
+                                            if (!pkgInfo) {
+                                                const pkgJson = findLocalPkgJson(cmd, args);
+                                                if (pkgJson) {
+                                                    pkgInfo = pkgJson.name ? { name: pkgJson.name, type: 'npm' as const } : null;
+                                                    localDesc = pkgJson.description;
+                                                }
+                                            }
+                                            codexMcp.push({
+                                                name, description: DESC[name] || localDesc || '加载中…',
+                                                source: DESC[name] ? 'builtin' : 'local',
+                                                npmPkg: pkgInfo?.type === 'npm' ? pkgInfo.name : undefined,
+                                                pypiPkg: pkgInfo?.type === 'pypi' ? pkgInfo.name : undefined,
+                                            });
+                                        }
+                                    }
+                                }
+                            } catch { /* ignore */ }
+
+                            // ── Parse Gemini settings.json ──
+                            const geminiMcp: EcoItem[] = [];
+                            const geminiExt: EcoItem[] = [];
+                            try {
+                                const settingsPath = path.join(home, '.gemini', 'settings.json');
+                                if (fs.existsSync(settingsPath)) {
+                                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+                                    if (settings.mcpServers) {
+                                        for (const [key, val] of Object.entries(settings.mcpServers) as [string, any][]) {
+                                            const cmd = val.command || '';
+                                            const args: string[] = val.args || [];
+                                            let gPkgInfo = extractPkg(cmd, args);
+                                            let localDesc: string | undefined;
+                                            if (!gPkgInfo) {
+                                                const pkgJson = findLocalPkgJson(cmd, args);
+                                                if (pkgJson) {
+                                                    gPkgInfo = pkgJson.name ? { name: pkgJson.name, type: 'npm' as const } : null;
+                                                    localDesc = pkgJson.description;
+                                                }
+                                            }
+                                            geminiMcp.push({
+                                                name: key, description: DESC[key] || localDesc || '加载中…',
+                                                source: DESC[key] ? 'builtin' : 'local',
+                                                npmPkg: gPkgInfo?.type === 'npm' ? gPkgInfo.name : undefined,
+                                                pypiPkg: gPkgInfo?.type === 'pypi' ? gPkgInfo.name : undefined,
+                                            });
+                                        }
+                                    }
+                                }
+                                // Scan extensions directory — read package.json for npmPkg + description
+                                const extDir = path.join(home, '.gemini', 'extensions');
+                                if (fs.existsSync(extDir)) {
+                                    for (const entry of fs.readdirSync(extDir)) {
+                                        const entryPath = path.join(extDir, entry);
+                                        if (fs.statSync(entryPath).isDirectory()) {
+                                            let extNpmPkg: string | undefined;
+                                            let extLocalDesc: string | undefined;
+                                            // Read package.json from extension directory
+                                            const extPkgJsonPath = path.join(entryPath, 'package.json');
+                                            if (fs.existsSync(extPkgJsonPath)) {
+                                                try {
+                                                    const pkgJson = JSON.parse(fs.readFileSync(extPkgJsonPath, 'utf8'));
+                                                    extNpmPkg = pkgJson.name || undefined;
+                                                    extLocalDesc = pkgJson.description;
+                                                } catch { /* ignore */ }
+                                            }
+                                            geminiExt.push({
+                                                name: entry, description: DESC[entry] || extLocalDesc || '加载中…',
+                                                source: DESC[entry] ? 'builtin' : 'local',
+                                                npmPkg: extNpmPkg,
+                                            });
+                                        }
+                                    }
+                                }
+                            } catch { /* ignore */ }
+
+                            // ── Phase 1: Send local data immediately (preserve actual source) ──
+                            const localData = {
+                                codex: { mcpServers: codexMcp.map(i => ({ name: i.name, description: i.description, source: i.source })) },
+                                gemini: {
+                                    mcpServers: geminiMcp.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                    extensions: geminiExt.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                },
+                            };
+                            this._panel.webview.postMessage({ command: 'ecosystemData', data: localData });
+
+                            // ── Phase 2: Fetch descriptions from network for ALL items ──
+                            const allItems = [...codexMcp, ...geminiMcp, ...geminiExt];
+                            (async () => {
+                                const descCache: Record<string, string> = {};
+
+                                // Strategy 1: Exact npm registry lookup by package name
+                                const fetchNpmExact = async (pkg: string): Promise<string | null> => {
+                                    if (descCache[pkg]) return descCache[pkg];
+                                    try {
+                                        const res = await fetch(`https://registry.npmjs.org/${encodeURIComponent(pkg)}`, {
+                                            headers: { Accept: 'application/json' },
+                                            signal: AbortSignal.timeout(5000),
+                                        });
+                                        if (res.ok) {
+                                            const json = await res.json() as any;
+                                            const desc = json.description || null;
+                                            if (desc) descCache[pkg] = desc;
+                                            return desc;
+                                        }
+                                    } catch { /* network error */ }
+                                    return null;
+                                };
+
+                                // Strategy 2: PyPI exact lookup by package name
+                                const fetchPypiExact = async (pkg: string): Promise<string | null> => {
+                                    const cacheKey = `__pypi__${pkg}`;
+                                    if (descCache[cacheKey]) return descCache[cacheKey];
+                                    try {
+                                        const res = await fetch(`https://pypi.org/pypi/${encodeURIComponent(pkg)}/json`, {
+                                            headers: { Accept: 'application/json' },
+                                            signal: AbortSignal.timeout(5000),
+                                        });
+                                        if (res.ok) {
+                                            const json = await res.json() as any;
+                                            const desc = json.info?.summary || null;
+                                            if (desc) descCache[cacheKey] = desc;
+                                            return desc;
+                                        }
+                                    } catch { /* network error */ }
+                                    return null;
+                                };
+
+                                // Strategy 3: npm search API — fuzzy search by name keyword
+                                const fetchNpmSearch = async (name: string): Promise<string | null> => {
+                                    const cacheKey = `__search__${name}`;
+                                    if (descCache[cacheKey]) return descCache[cacheKey];
+                                    try {
+                                        const query = encodeURIComponent(`mcp ${name}`);
+                                        const res = await fetch(`https://registry.npmjs.org/-/v1/search?text=${query}&size=3`, {
+                                            headers: { Accept: 'application/json' },
+                                            signal: AbortSignal.timeout(5000),
+                                        });
+                                        if (res.ok) {
+                                            const json = await res.json() as any;
+                                            const results = json.objects || [];
+                                            // Find the best match: package name contains the item name
+                                            const nameLower = name.toLowerCase().replace(/-/g, '');
+                                            for (const obj of results) {
+                                                const pkg = obj.package;
+                                                const pkgName = (pkg.name || '').toLowerCase().replace(/-/g, '').replace(/@[^/]+\//, '');
+                                                if (pkgName.includes(nameLower) || nameLower.includes(pkgName)) {
+                                                    const desc = pkg.description || null;
+                                                    if (desc) descCache[cacheKey] = desc;
+                                                    return desc;
+                                                }
+                                            }
+                                            // No name match, but if there's exactly 1 result, use it
+                                            if (results.length === 1 && results[0].package?.description) {
+                                                const desc = results[0].package.description;
+                                                descCache[cacheKey] = desc;
+                                                return desc;
+                                            }
+                                        }
+                                    } catch { /* network error */ }
+                                    return null;
+                                };
+
+                                // Resolve description for each item: DESC dict → npm → pypi → search → keep local
+                                await Promise.all(allItems.map(async (item) => {
+                                    // Skip items already resolved by DESC dict (Chinese descriptions)
+                                    if (item.description !== '加载中…') return;
+
+                                    // Try exact npm lookup first
+                                    if (item.npmPkg) {
+                                        const desc = await fetchNpmExact(item.npmPkg);
+                                        if (desc) {
+                                            item.description = desc;
+                                            item.source = 'npm';
+                                            return;
+                                        }
+                                    }
+                                    // Try PyPI lookup for Python packages
+                                    if (item.pypiPkg) {
+                                        const desc = await fetchPypiExact(item.pypiPkg);
+                                        if (desc) {
+                                            item.description = desc;
+                                            item.source = 'pypi';
+                                            return;
+                                        }
+                                    }
+                                    // Fallback: npm search by name
+                                    const desc = await fetchNpmSearch(item.name);
+                                    if (desc) {
+                                        item.description = desc;
+                                        item.source = 'npm';
+                                        return;
+                                    }
+                                    // Nothing found — generic fallback
+                                    item.description = 'MCP server';
+                                }));
+
+                                // ── Phase 2: Send registry-resolved data ──
+                                const phase2Data = {
+                                    codex: { mcpServers: codexMcp.map(i => ({ name: i.name, description: i.description, source: i.source })) },
+                                    gemini: {
+                                        mcpServers: geminiMcp.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                        extensions: geminiExt.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                    },
+                                };
+                                this._panel.webview.postMessage({ command: 'ecosystemData', data: phase2Data });
+
+                                // ── Phase 3: AI-powered Chinese description via vscode.lm ──
+                                try {
+                                    // Collect items that still need descriptions (still '加载中…' or 'MCP server' or English text from registries)
+                                    const needsAI = allItems.filter(i =>
+                                        i.description === 'MCP server' ||
+                                        i.description === '加载中…' ||
+                                        ((i.source === 'npm' || i.source === 'pypi') && /^[a-zA-Z]/.test(i.description)) // English from registry
+                                    );
+
+                                    if (needsAI.length > 0) {
+                                        // Try to get an AI model from the editor
+                                        const models = await vscode.lm.selectChatModels({});
+                                        if (models.length > 0) {
+                                            const model = models[0]; // Use the first available model
+
+                                            // Build prompt: include English descriptions as context for translation
+                                            const lines = needsAI.map(i => {
+                                                const hint = ((i.source === 'npm' || i.source === 'pypi') && i.description !== 'MCP server')
+                                                    ? ` (English: ${i.description})`
+                                                    : '';
+                                                return `- ${i.name}${hint}`;
+                                            }).join('\n');
+
+                                            const prompt = `请用中文简短描述以下 MCP Server / Extension 的功能。每个不超过30字，格式为 "名称: 描述"。如果有英文描述则翻译为中文，如果没有则根据名称推断功能。\n\n${lines}`;
+
+                                            const messages = [
+                                                vscode.LanguageModelChatMessage.User(prompt),
+                                            ];
+
+                                            const response = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
+
+                                            // Collect streamed response
+                                            let fullText = '';
+                                            for await (const chunk of response.text) {
+                                                fullText += chunk;
+                                            }
+
+                                            // Parse response: each line should be "name: description"
+                                            const descMap = new Map<string, string>();
+                                            for (const line of fullText.split('\n')) {
+                                                const cleaned = line.replace(/^[-*•\d.)\s]+/, '').trim();
+                                                const colonIdx = cleaned.indexOf(':');
+                                                const cnColonIdx = cleaned.indexOf('：');
+                                                const idx = (colonIdx >= 0 && cnColonIdx >= 0)
+                                                    ? Math.min(colonIdx, cnColonIdx)
+                                                    : Math.max(colonIdx, cnColonIdx);
+                                                if (idx > 0) {
+                                                    const name = cleaned.substring(0, idx).trim().toLowerCase();
+                                                    const desc = cleaned.substring(idx + 1).trim();
+                                                    if (name && desc) descMap.set(name, desc);
+                                                }
+                                            }
+
+                                            // Apply AI descriptions
+                                            for (const item of needsAI) {
+                                                const aiDesc = descMap.get(item.name.toLowerCase());
+                                                if (aiDesc) {
+                                                    item.description = aiDesc;
+                                                    item.source = 'ai'; // Mark as AI-resolved (editor LM)
+                                                }
+                                            }
+
+                                            // ── Phase 3: Send AI-resolved data ──
+                                            const phase3Data = {
+                                                codex: { mcpServers: codexMcp.map(i => ({ name: i.name, description: i.description, source: i.source })) },
+                                                gemini: {
+                                                    mcpServers: geminiMcp.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                                    extensions: geminiExt.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                                },
+                                            };
+                                            this._panel.webview.postMessage({ command: 'ecosystemData', data: phase3Data });
+                                        }
+                                    }
+                                } catch (e) {
+                                    // AI not available (no model, user declined, etc.) — silently continue
+                                    console.log('[Conductor Hub] vscode.lm AI lookup skipped:', (e as Error).message);
+                                }
+
+                                // ── Phase 4: User-configured API model fallback ──
+                                try {
+                                    const stillNeeds = allItems.filter(i =>
+                                        i.description === 'MCP server' ||
+                                        i.description === '加载中…' ||
+                                        ((i.source === 'npm' || i.source === 'pypi') && /^[a-zA-Z]/.test(i.description))
+                                    );
+
+                                    if (stillNeeds.length > 0) {
+                                        // Pick the cheapest enabled model with an API key
+                                        const cfgModels = await this.settings.getModels();
+                                        const enabled = cfgModels.filter(m => m.enabled !== false && m.baseUrl);
+                                        // Sort by priority (lower = higher priority)
+                                        enabled.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+
+                                        let picked: { model: typeof enabled[0]; key: string } | null = null;
+                                        for (const m of enabled) {
+                                            const k = await this.settings.getApiKey(`model.${m.id}`);
+                                            if (k) { picked = { model: m, key: k }; break; }
+                                        }
+
+                                        if (picked) {
+                                            const lines = stillNeeds.map(i => {
+                                                const hint = ((i.source === 'npm' || i.source === 'pypi') && i.description !== 'MCP server')
+                                                    ? ` (English: ${i.description})`
+                                                    : '';
+                                                return `- ${i.name}${hint}`;
+                                            }).join('\n');
+
+                                            const prompt = `请用中文简短描述以下 MCP Server / Extension 的功能。每个不超过30字，格式为 "名称: 描述"。如果有英文描述则翻译为中文，如果没有则根据名称推断功能。\n\n${lines}`;
+
+                                            const url = picked.model.baseUrl.replace(/\/$/, '') + '/chat/completions';
+                                            const res = await fetch(url, {
+                                                method: 'POST',
+                                                headers: {
+                                                    'Content-Type': 'application/json',
+                                                    'Authorization': 'Bearer ' + picked.key,
+                                                },
+                                                body: JSON.stringify({
+                                                    model: picked.model.modelId,
+                                                    messages: [{ role: 'user', content: prompt }],
+                                                    max_tokens: 500,
+                                                    temperature: 0.3,
+                                                }),
+                                                signal: AbortSignal.timeout(15000),
+                                            });
+
+                                            if (res.ok) {
+                                                const json = await res.json() as any;
+                                                const text = json.choices?.[0]?.message?.content || '';
+
+                                                // Parse "name: description" lines
+                                                const descMap = new Map<string, string>();
+                                                for (const line of text.split('\n')) {
+                                                    const cleaned = line.replace(/^[-*•\d.)\s]+/, '').trim();
+                                                    const colonIdx = cleaned.indexOf(':');
+                                                    const cnColonIdx = cleaned.indexOf('：');
+                                                    const idx = (colonIdx >= 0 && cnColonIdx >= 0)
+                                                        ? Math.min(colonIdx, cnColonIdx)
+                                                        : Math.max(colonIdx, cnColonIdx);
+                                                    if (idx > 0) {
+                                                        const name = cleaned.substring(0, idx).trim().toLowerCase();
+                                                        const desc = cleaned.substring(idx + 1).trim();
+                                                        if (name && desc) descMap.set(name, desc);
+                                                    }
+                                                }
+
+                                                // Apply descriptions
+                                                let updated = false;
+                                                for (const item of stillNeeds) {
+                                                    const aiDesc = descMap.get(item.name.toLowerCase());
+                                                    if (aiDesc) {
+                                                        item.description = aiDesc;
+                                                        item.source = 'ai'; // Mark as AI-resolved (user API model)
+                                                        updated = true;
+                                                    }
+                                                }
+
+                                                if (updated) {
+                                                    const phase4Data = {
+                                                        codex: { mcpServers: codexMcp.map(i => ({ name: i.name, description: i.description, source: i.source })) },
+                                                        gemini: {
+                                                            mcpServers: geminiMcp.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                                            extensions: geminiExt.map(i => ({ name: i.name, description: i.description, source: i.source })),
+                                                        },
+                                                    };
+                                                    this._panel.webview.postMessage({ command: 'ecosystemData', data: phase4Data });
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.log('[Conductor Hub] Configured model lookup skipped:', (e as Error).message);
+                                }
+                            })();
+                        } catch (e: any) {
+                            this._panel.webview.postMessage({ command: 'ecosystemData', data: null, error: e.message });
+                        }
+                        break;
+                    }
+
                     // ── Overview Stats ────────────────────────────────────────
                     case 'getOverviewStats': {
                         await this._handleOverviewStats();

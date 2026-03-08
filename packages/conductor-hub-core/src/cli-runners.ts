@@ -1,31 +1,45 @@
 /**
  * Conductor Hub Core — CLI Agent 运行器
  *
- * Codex CLI + Gemini CLI 4 层超时策略
- * 从 Conductor Hub mcp-server.ts L394-678 直接复制
+ * Codex CLI + Gemini CLI 五层超时策略
  *
- * 四层超时策略:
+ * 超时策略:
  * ① 不活跃超时 (3 分钟): 进程已死且无输出 → 立即终止
- * ② 进程心跳 (60 秒): kill(0) 探测存活性，存活则抑制不活跃超时
- * ③ 无真实数据超时 (10 分钟): 进程虽活但无任何 stdout/stderr → 判定卡死
+ * ② 进程心跳 (30 秒): kill(0) 探测存活性
+ *    - 存活 → 抑制不活跃超时 + 重置无数据计时器 (Heartbeat-Aware)
+ *    - 死亡 → 等待不活跃超时触发
+ * ③ 无真实数据超时: 进程虽活但无任何 stdout/stderr
+ *    - 进程存活 → 20 分钟 (Codex 思考阶段可能无输出)
+ *    - 进程已死 → 10 分钟 (快速清理)
  * ④ 绝对上限 (30 分钟): 无条件终止 (安全网)
+ * ⑤ 外层安全网: parallel-executor 的 resolveTimeout() 保护
+ *
+ * 关键改进 (v2): Heartbeat-Aware No-Data Timeout
+ * 当 kill(0) 确认进程存活时，自动重置无数据计时器。
+ * 这解决了 Codex CLI 在大重构任务中「思考阶段 5-15 分钟无 stdout
+ * 但进程活着」被误杀的问题。
+ *
+ * 参考: Temporal.io heartbeat timeout, LangGraph checkpointer
  */
 
 import { spawn } from 'child_process';
+import type { ProgressCallback } from './progress-reporter.js';
 
 // ── 共享超时常量 ──────────────────────────────────────────────────────────────
 
-const INACTIVITY_MS = 180_000;      // ① 3 分钟
-const HEARTBEAT_MS = 60_000;        // ② 每 60 秒
-const NO_DATA_MS = 600_000;         // ③ 10 分钟
-const ABSOLUTE_MAX_MS = 1_800_000;  // ④ 30 分钟
+const INACTIVITY_MS = 180_000;          // ① 3 分钟
+const HEARTBEAT_MS = 30_000;            // ② 每 30 秒 (从 60s 加密到 30s, 更快探测)
+const NO_DATA_MS = 600_000;             // ③ 10 分钟 (进程已死时使用)
+const NO_DATA_ALIVE_MS = 1_200_000;     // ③' 20 分钟 (进程存活时使用, 容纳 Codex 思考)
+const ABSOLUTE_MAX_MS = 1_800_000;      // ④ 30 分钟
 
 // ── Codex CLI ─────────────────────────────────────────────────────────────────
 
 /**
  * 异步调用 Codex CLI。使用 spawn 避免阻塞事件循环。
+ * @param onProgress 可选进度回调，心跳时发射 thinking 事件，有输出时发射 working 事件
  */
-export async function callCodex(task: string, workingDir?: string, signal?: AbortSignal): Promise<string> {
+export async function callCodex(task: string, workingDir?: string, signal?: AbortSignal, onProgress?: ProgressCallback): Promise<string> {
     const cwd = workingDir || process.cwd();
 
     return new Promise<string>((resolve, reject) => {
@@ -82,30 +96,36 @@ export async function callCodex(task: string, workingDir?: string, signal?: Abor
             });
         }
 
-        // ② 进程心跳
+        // ② 进程心跳 (Heartbeat-Aware)
         const heartbeat = setInterval(() => {
             if (settled) { clearInterval(heartbeat); return; }
             try {
                 child.kill(0);
                 processAlive = true;
+                // 进程存活 → 重置无数据计时器 + 发射 thinking 进度
+                resetNoDataTimer(NO_DATA_ALIVE_MS);
+                onProgress?.({ taskId: 'codex', progress: -1, message: 'Codex thinking (process alive)', phase: 'thinking', timestamp: Date.now() });
             } catch {
                 processAlive = false;
+                resetNoDataTimer(NO_DATA_MS);
                 clearInterval(heartbeat);
             }
         }, HEARTBEAT_MS);
 
-        // ③ 无真实数据超时
-        let noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_MS);
-        function resetNoDataTimer() {
+        // ③ 无真实数据超时 (初始使用存活超时, 心跳会动态调整)
+        let noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_ALIVE_MS);
+        function resetNoDataTimer(timeoutMs?: number) {
             clearTimeout(noDataTimer);
             if (!settled) {
-                noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_MS);
+                const ms = timeoutMs ?? (processAlive ? NO_DATA_ALIVE_MS : NO_DATA_MS);
+                noDataTimer = setTimeout(onNoDataTimeout, ms);
             }
         }
         function onNoDataTimeout() {
+            const effectiveMs = processAlive ? NO_DATA_ALIVE_MS : NO_DATA_MS;
             settle(() => {
                 child.kill('SIGTERM');
-                reject(new Error(`Codex CLI timed out: no real output for ${NO_DATA_MS / 60000}min (process may be stuck despite being alive)`));
+                reject(new Error(`Codex CLI timed out: no real output for ${effectiveMs / 60000}min (processAlive=${processAlive})`));
             });
         }
 
@@ -122,6 +142,7 @@ export async function callCodex(task: string, workingDir?: string, signal?: Abor
             stdoutChunks.push(chunk);
             resetInactivityTimer();
             resetNoDataTimer();
+            onProgress?.({ taskId: 'codex', progress: -1, message: 'Codex producing output', phase: 'working', timestamp: Date.now() });
         });
         child.stderr.on('data', (chunk: Buffer) => {
             stderrChunks.push(chunk);
@@ -157,8 +178,9 @@ export async function callCodex(task: string, workingDir?: string, signal?: Abor
 
 /**
  * 异步调用 Gemini CLI。自动去除 ANSI 转义码。
+ * @param onProgress 可选进度回调，心跳时发射 thinking 事件，有输出时发射 working 事件
  */
-export async function callGemini(prompt: string, model?: string, workingDir?: string, signal?: AbortSignal): Promise<string> {
+export async function callGemini(prompt: string, model?: string, workingDir?: string, signal?: AbortSignal, onProgress?: ProgressCallback): Promise<string> {
     const cwd = workingDir || process.cwd();
 
     const cliArgs: string[] = ['-p', prompt, '--yolo'];
@@ -218,30 +240,36 @@ export async function callGemini(prompt: string, model?: string, workingDir?: st
             });
         }
 
-        // ② 进程心跳
+        // ② 进程心跳 (Heartbeat-Aware)
         const heartbeat = setInterval(() => {
             if (settled) { clearInterval(heartbeat); return; }
             try {
                 child.kill(0);
                 processAlive = true;
+                // 进程存活 → 重置无数据计时器 + 发射 thinking 进度
+                resetNoDataTimer(NO_DATA_ALIVE_MS);
+                onProgress?.({ taskId: 'gemini', progress: -1, message: 'Gemini thinking (process alive)', phase: 'thinking', timestamp: Date.now() });
             } catch {
                 processAlive = false;
+                resetNoDataTimer(NO_DATA_MS);
                 clearInterval(heartbeat);
             }
         }, HEARTBEAT_MS);
 
-        // ③ 无真实数据超时
-        let noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_MS);
-        function resetNoDataTimer() {
+        // ③ 无真实数据超时 (初始使用存活超时)
+        let noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_ALIVE_MS);
+        function resetNoDataTimer(timeoutMs?: number) {
             clearTimeout(noDataTimer);
             if (!settled) {
-                noDataTimer = setTimeout(onNoDataTimeout, NO_DATA_MS);
+                const ms = timeoutMs ?? (processAlive ? NO_DATA_ALIVE_MS : NO_DATA_MS);
+                noDataTimer = setTimeout(onNoDataTimeout, ms);
             }
         }
         function onNoDataTimeout() {
+            const effectiveMs = processAlive ? NO_DATA_ALIVE_MS : NO_DATA_MS;
             settle(() => {
                 child.kill('SIGTERM');
-                reject(new Error(`Gemini CLI timed out: no real output for ${NO_DATA_MS / 60000}min (process may be stuck despite being alive)`));
+                reject(new Error(`Gemini CLI timed out: no real output for ${effectiveMs / 60000}min (processAlive=${processAlive})`));
             });
         }
 
@@ -258,6 +286,7 @@ export async function callGemini(prompt: string, model?: string, workingDir?: st
             stdoutChunks.push(chunk);
             resetInactivityTimer();
             resetNoDataTimer();
+            onProgress?.({ taskId: 'gemini', progress: -1, message: 'Gemini producing output', phase: 'working', timestamp: Date.now() });
         });
         child.stderr.on('data', (chunk: Buffer) => {
             stderrChunks.push(chunk);

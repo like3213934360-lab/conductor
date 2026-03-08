@@ -1,0 +1,33 @@
+{
+  "run_id": "desc-source-label-20260309",
+  "goal": "MCP 工具和插件的描述信息标注来源（builtin/local/npm/pypi/ai）",
+  "started_at": "2026-03-09T01:05:00+08:00",
+  "completed_at": "2026-03-09T01:25:00+08:00",
+  "checkpoints": {
+    "CP-ANALYZE": {
+      "task_type": "实现",
+      "risk_level": "low",
+      "route_path": "fast_track",
+      "token_budget": "M"
+    },
+    "CP-PARALLEL": { "skipped": true, "reason": "fast_track route" },
+    "CP-SYNTHESIZE": {
+      "final_answer": "扩展 source 类型为 5 种 + 添加 SourceBadge 组件",
+      "final_confidence": 95,
+      "template_used": "T002"
+    },
+    "CP-PERSIST": {
+      "written_files": [
+        "packages/conductor-hub-vscode/src/dashboard-panel.ts",
+        "packages/conductor-hub-webview/src/components/ConfigPanel.tsx"
+      ],
+      "manifest_updated": false,
+      "read_after_write": true
+    },
+    "CP-VERIFY": {
+      "backend_tsc": "PASS",
+      "webview_webpack": "PASS",
+      "compliance_check": "PASS"
+    }
+  }
+}

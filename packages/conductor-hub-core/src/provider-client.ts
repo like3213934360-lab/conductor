@@ -6,6 +6,13 @@
  */
 
 import type { RouteResult, ProviderCallResult, ProviderCallResultWithFallback, ConductorHubConfig } from '@anthropic/conductor-hub-shared';
+import { CircuitBreakerRegistry } from './circuit-breaker.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('provider-client');
+
+// 全局 Circuit Breaker 注册表 (按 modelId 独立管理)
+const circuitBreakers = new CircuitBreakerRegistry();
 
 // ── 单厂商调用 ────────────────────────────────────────────────────────────────
 
@@ -28,6 +35,7 @@ export async function callProvider(
     if (systemPrompt) { messages.push({ role: 'system', content: systemPrompt }); }
     messages.push({ role: 'user', content: message });
 
+    const start = Date.now();
     const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -40,12 +48,15 @@ export async function callProvider(
 
     if (!res.ok) {
         const errText = await res.text();
+        log.warn('API error', { model: route.modelId, status: res.status, ms: Date.now() - start });
         throw new Error(`${route.label} API ${res.status}: ${errText.slice(0, 300)}`);
     }
 
     const data = await res.json() as Record<string, unknown>;
     const choices = data.choices as Array<{ message: { content: string } }> | undefined;
     const usage = data.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+
+    log.info('API success', { model: route.modelId, ms: Date.now() - start, tokens: (usage?.prompt_tokens ?? 0) + (usage?.completion_tokens ?? 0) });
 
     return {
         text: choices?.[0]?.message?.content || 'No response',
@@ -106,8 +117,18 @@ export async function callProviderWithFallback(
 
     for (let i = 0; i < attemptQueue.length; i++) {
         const route = attemptQueue[i]!;
+
+        // Circuit Breaker: OPEN 状态直接跳过, 参考 Netflix Hystrix
+        if (!circuitBreakers.canCall(route.modelId)) {
+            const state = circuitBreakers.getState(route.modelId);
+            log.info('Circuit OPEN, skipping', { model: route.modelId, failures: state.failures });
+            errors.push(`[${route.label}] Circuit breaker OPEN (${state.failures} failures)`);
+            continue;
+        }
+
         try {
             const result = await callProvider(route, message, systemPrompt, signal);
+            circuitBreakers.onSuccess(route.modelId);
             return {
                 ...result,
                 usedModel: route.modelId,
@@ -116,12 +137,19 @@ export async function callProviderWithFallback(
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             errors.push(`[${route.label}] ${msg}`);
+            circuitBreakers.onFailure(route.modelId);
 
             if (!isRetryableError(msg)) {
                 throw new Error(msg);
             }
+            log.warn('Fallback triggered', { from: route.modelId, attempt: i + 1, total: attemptQueue.length });
         }
     }
 
     throw new Error(`All models failed:\n${errors.join('\n')}`);
+}
+
+/** 获取 Circuit Breaker 注册表 (供测试/诊断用) */
+export function getCircuitBreakers(): CircuitBreakerRegistry {
+    return circuitBreakers;
 }
