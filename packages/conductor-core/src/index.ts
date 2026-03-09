@@ -18,10 +18,13 @@ export * from './dag/dag-engine.js'
 export * from './risk/dr-calculator.js'
 export * from './risk/risk-router.js'
 
-// 合规引擎
-export * from './compliance/compliance-rule.js'
-export * from './compliance/default-rules.js'
-export * from './compliance/compliance-engine.js'
+// 治理引擎 — AGC v8.0 GaaS (Governance-as-a-Service)
+export * from './governance/index.js'
+
+// 策略引擎 (基于 DSL 的策略编译/执行)
+export * from './compliance/policy-types.js'
+export * from './compliance/policy-compiler.js'
+export * from './compliance/policy-runtime.js'
 
 // 插件系统 — Phase 3 新增
 export * from './plugin/plugin-types.js'

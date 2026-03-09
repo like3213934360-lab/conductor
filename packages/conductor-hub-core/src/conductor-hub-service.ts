@@ -133,14 +133,26 @@ export class ConductorHubService {
 
     // ── ai_codex_task ─────────────────────────────────────────────────────────
 
-    async codexTask(task: string, workingDir?: string, signal?: AbortSignal): Promise<string> {
-        return callCodex(task, workingDir, signal);
+    async codexTask(task: string, workingDir?: string, signal?: AbortSignal, filePaths?: string[]): Promise<string> {
+        return callCodex(this._enrichWithFiles(task, filePaths), workingDir, signal);
     }
 
     // ── ai_gemini_task ────────────────────────────────────────────────────────
 
-    async geminiTask(prompt: string, model?: string, workingDir?: string, signal?: AbortSignal): Promise<string> {
-        return callGemini(prompt, model, workingDir, signal);
+    async geminiTask(prompt: string, model?: string, workingDir?: string, signal?: AbortSignal, filePaths?: string[]): Promise<string> {
+        return callGemini(this._enrichWithFiles(prompt, filePaths), model, workingDir, signal);
+    }
+
+    /** 文件上下文注入: 预读文件 → 拼入 prompt → 消除 CLI 串行 tool call */
+    private _enrichWithFiles(prompt: string, filePaths?: string[]): string {
+        if (!filePaths || filePaths.length === 0) return prompt;
+        const { context, warnings } = buildFileContext(filePaths);
+        if (!context) return prompt;
+        const parts = [prompt, '\n\n' + context];
+        if (warnings.length > 0) {
+            parts.push(`\n\n> ⚠️ File context warnings: ${warnings.join('; ')}`);
+        }
+        return parts.join('');
     }
 
     // ── ai_multi_ask ──────────────────────────────────────────────────────────

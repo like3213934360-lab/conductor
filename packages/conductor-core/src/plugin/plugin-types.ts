@@ -10,8 +10,8 @@
  * 4. 强类型，Zod 校验
  */
 import type { AGCState, RunGraph, RunMetadata, RunOptions,
-  ComplianceDecision, RouteDecision, DRScore } from '@anthropic/conductor-shared'
-import type { ComplianceRuleResult } from '../compliance/compliance-rule.js'
+  GovernanceDecisionRecord, RouteDecision, DRScore } from '@anthropic/conductor-shared'
+import type { GovernanceControlResult } from '../governance/governance-types.js'
 
 // ─────────────── 插件权限 ───────────────
 
@@ -45,8 +45,8 @@ export interface RiskHookContext extends CancellableHookContext {
   drScore: DRScore
 }
 
-/** 合规评估上下文 */
-export interface ComplianceHookContext extends CancellableHookContext {
+/** 治理评估上下文 */
+export interface GovernanceHookContext extends CancellableHookContext {
   runId: string
   state: Readonly<AGCState>
   graph: Readonly<RunGraph>
@@ -122,11 +122,11 @@ export interface ConductorHooks {
   /** parallel: 风险评估后通知 */
   afterRisk: (ctx: RiskHookContext) => void | Promise<void>
 
-  // ─── 合规检查 ───
-  /** bail: 合规检查前，任一插件返回决策即跳过 */
-  beforeCompliance: (ctx: ComplianceHookContext) => ComplianceDecision | Promise<ComplianceDecision> | void | Promise<void>
-  /** waterfall: 合规检查后，可修改决策 */
-  afterCompliance: (decision: ComplianceDecision, ctx: ComplianceHookContext) => ComplianceDecision | Promise<ComplianceDecision> | void | Promise<void>
+  // ─── 治理检查 ───
+  /** bail: 治理检查前，任一插件返回决策即跳过 */
+  beforeGovernance: (ctx: GovernanceHookContext) => GovernanceDecisionRecord | Promise<GovernanceDecisionRecord> | void | Promise<void>
+  /** waterfall: 治理检查后，可修改决策 */
+  afterGovernance: (decision: GovernanceDecisionRecord, ctx: GovernanceHookContext) => GovernanceDecisionRecord | Promise<GovernanceDecisionRecord> | void | Promise<void>
 
   // ─── 路由 ───
   /** waterfall: 路由决策后，可修改路由 */
@@ -158,8 +158,8 @@ export const HookModes: Record<HookName, HookMode> = {
   afterDagValidate: 'series',
   beforeRisk: 'waterfall',
   afterRisk: 'parallel',
-  beforeCompliance: 'bail',
-  afterCompliance: 'waterfall',
+  beforeGovernance: 'bail',
+  afterGovernance: 'waterfall',
   afterRoute: 'waterfall',
   onNodeComplete: 'parallel',
   beforeEventAppend: 'series',
@@ -167,36 +167,34 @@ export const HookModes: Record<HookName, HookMode> = {
   onRunComplete: 'series',
 }
 
-// ─────────────── 合规规则贡献 ───────────────
+// ─────────────── 治理控制贡献 ───────────────
 
 /**
- * ComplianceRuleContribution — 插件贡献的合规规则
+ * GovernanceControlContribution — 插件贡献的治理控制
  *
- * 与 ComplianceRule 的区别:
- * 1. ruleId/ruleName 由引擎从插件 manifest 注入（避免漂移）
- * 2. 增加 stage/enforce/order 支持优先级排序
+ * v8.0: 从 ComplianceRuleContribution 进化
+ * 1. controlId/controlName 由引擎从插件 manifest 注入（避免漂移）
+ * 2. 使用 GaaS 5 阶段模型 (input/execution/output/assurance/routing)
  * 3. 增加 applies() 条件过滤
  * 4. 增加 timeoutMs 超时保护
  */
-export interface ComplianceRuleContribution {
-  /** 规则 ID (由插件自定义的短 ID) */
+export interface GovernanceControlContribution {
+  /** 控制 ID (由插件自定义的短 ID) */
   id: string
-  /** 规则名称 */
+  /** 控制名称 */
   name: string
-  /** 执行阶段 */
-  stage: 'preflight' | 'runtime' | 'verify'
+  /** 执行阶段 (GaaS 5 阶段) */
+  stage: 'input' | 'execution' | 'output' | 'assurance' | 'routing'
   /** 默认级别 */
   defaultLevel: 'block' | 'warn' | 'degrade'
-  /** 执行顺序层 */
-  enforce?: 'pre' | 'normal' | 'post'
-  /** 同层内排序（越小越先） */
-  order?: number
+  /** 优先级（越大越先执行） */
+  priority?: number
   /** 超时毫秒数 */
   timeoutMs?: number
-  /** 条件过滤: 返回 false 则跳过此规则 */
-  applies?(ctx: Readonly<ComplianceHookContext>): boolean | Promise<boolean>
-  /** 评估（不含 ruleId/ruleName，引擎注入） */
-  evaluate(ctx: Readonly<ComplianceHookContext>): Promise<Omit<ComplianceRuleResult, 'ruleId' | 'ruleName'>>
+  /** 条件过滤: 返回 false 则跳过此控制 */
+  applies?(ctx: Readonly<GovernanceHookContext>): boolean | Promise<boolean>
+  /** 评估函数，返回 status + message */
+  evaluate(ctx: Readonly<GovernanceHookContext>): Promise<Omit<GovernanceControlResult, 'controlId' | 'controlName'>>
 }
 
 // ─────────────── 插件定义 ───────────────
@@ -237,8 +235,8 @@ export interface ConductorPlugin {
   priority?: number
   /** 生命周期钩子 */
   hooks?: Partial<ConductorHooks>
-  /** 合规规则贡献 */
-  rules?: ComplianceRuleContribution[]
+  /** 治理控制贡献 */
+  rules?: GovernanceControlContribution[]
   /** 激活插件（接收受限上下文） */
   activate?(ctx: PluginActivationContext): Promise<void>
   /** 停用插件（释放资源） */

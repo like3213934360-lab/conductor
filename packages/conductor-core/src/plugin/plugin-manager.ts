@@ -7,20 +7,17 @@
  * 3. 隔离: 超时保护 + try/catch + Capability-based API
  * 4. 审计: 每个生命周期操作记录到 logger
  *
- * 参考:
- * - VSCode Extension Host: 发现/激活/沙箱
- * - Webpack Plugin System: tapable hooks
- * - Rollup PluginDriver: hook 管道
+ * v8.0: ComplianceRule → GovernanceControl 迁移
  */
 import type {
   ConductorPlugin, PluginStatus, HookName, ConductorHooks,
-  ComplianceRuleContribution,
+  GovernanceControlContribution,
 } from './plugin-types.js'
 import { HookBus, type HookBusOptions } from './hook-bus.js'
 import { createPluginContext } from './plugin-context.js'
 import type { CoreLogger } from '../contracts/logger.js'
 import { consoleLogger } from '../contracts/logger.js'
-import type { ComplianceRule, ComplianceRuleResult, ComplianceContext } from '../compliance/compliance-rule.js'
+import type { GovernanceControl, GovernanceControlResult, GovernanceContext } from '../governance/governance-types.js'
 
 /** 插件运行时信息 */
 interface PluginRuntime {
@@ -92,7 +89,7 @@ export class PluginManager {
    * 1. 创建受限 PluginContext
    * 2. 调用 plugin.activate()
    * 3. 注册 hooks 到 HookBus
-   * 4. 收集 ComplianceRuleContribution
+   * 4. 收集 GovernanceControlContribution
    */
   async activateAll(): Promise<void> {
     // 按 priority 排序（数值越小越先激活）
@@ -205,63 +202,58 @@ export class PluginManager {
   }
 
   /**
-   * 收集所有活跃插件贡献的合规规则
+   * 收集所有活跃插件贡献的治理控制
    *
-   * 将 ComplianceRuleContribution 转换为标准 ComplianceRule 接口，
+   * v8.0: 从 ComplianceRule 迁移到 GovernanceControl。
+   * 将 GovernanceControlContribution 转换为标准 GovernanceControl 接口，
    * 支持超时保护和条件过滤。
    */
-  collectComplianceRules(): ComplianceRule[] {
-    const rules: ComplianceRule[] = []
+  collectGovernanceControls(): GovernanceControl[] {
+    const controls: GovernanceControl[] = []
 
     for (const [pluginId, runtime] of this.plugins.entries()) {
       if (runtime.status !== 'active') continue
       if (!runtime.plugin.rules) continue
 
       for (const contribution of runtime.plugin.rules) {
-        // 将 ComplianceRuleContribution 适配为 ComplianceRule
-        const ruleId = `${pluginId}/${contribution.id}`
-        const ruleName = `[${runtime.plugin.manifest.name}] ${contribution.name}`
-        // 审查修复 #7: 保留 enforce/order/applies 用于排序和过滤
-        const enforce = contribution.enforce ?? 'normal'
-        const order = contribution.order ?? 100
+        const controlId = `${pluginId}/${contribution.id}`
+        const controlName = `[${runtime.plugin.manifest.name}] ${contribution.name}`
 
-        const rule: ComplianceRule & { _enforce: string; _order: number; _contribution: typeof contribution } = {
-          id: ruleId,
-          name: ruleName,
+        const control: GovernanceControl = {
+          id: controlId,
+          name: controlName,
+          stage: contribution.stage,
           defaultLevel: contribution.defaultLevel,
-          // 保留内部排序/过滤信息
-          _enforce: enforce,
-          _order: order,
-          _contribution: contribution,
-          evaluate: async (ctx: ComplianceContext): Promise<ComplianceRuleResult> => {
-            // 审查修复 #7: applies 条件过滤
+          priority: contribution.priority ?? 50,
+          evaluate: async (ctx: GovernanceContext): Promise<GovernanceControlResult> => {
+            // applies 条件过滤
             if (contribution.applies) {
               const shouldApply = await contribution.applies({
-                runId: ctx.state.runId,
+                runId: ctx.runId,
                 state: ctx.state,
                 graph: ctx.graph,
                 metadata: ctx.metadata,
               })
               if (!shouldApply) {
-                return { ruleId, ruleName, status: 'pass', message: 'skipped by applies()', nodeId: ctx.currentNodeId }
+                return { controlId, controlName, status: 'pass', message: 'skipped by applies()' }
               }
             }
 
             // 超时保护 + clearTimeout
             const timeoutMs = contribution.timeoutMs ?? 5000
             let timer: ReturnType<typeof setTimeout> | undefined
-            let result: Omit<ComplianceRuleResult, 'ruleId' | 'ruleName'>
+            let result: Omit<GovernanceControlResult, 'controlId' | 'controlName'>
             try {
               result = await Promise.race([
                 contribution.evaluate({
-                  runId: ctx.state.runId,
+                  runId: ctx.runId,
                   state: ctx.state,
                   graph: ctx.graph,
                   metadata: ctx.metadata,
                 }),
                 new Promise<never>((_, reject) => {
                   timer = setTimeout(
-                    () => reject(new Error(`规则 [${contribution.id}] 超时 (${timeoutMs}ms)`)),
+                    () => reject(new Error(`控制 [${contribution.id}] 超时 (${timeoutMs}ms)`)),
                     timeoutMs,
                   )
                 }),
@@ -270,28 +262,20 @@ export class PluginManager {
               if (timer !== undefined) clearTimeout(timer)
             }
 
-            // 注入 ruleId/ruleName（避免插件自报漂移）
+            // 注入 controlId/controlName
             return {
               ...result,
-              ruleId,
-              ruleName,
+              controlId,
+              controlName,
             }
           },
         }
-        rules.push(rule)
+        controls.push(control)
       }
     }
 
-    // 审查修复 #7: 按 enforce (pre < normal < post) + order 排序
-    const enforceOrder: Record<string, number> = { pre: 0, normal: 1, post: 2 }
-    return rules.sort((a, b) => {
-      const aEnforce = enforceOrder[(a as unknown as { _enforce: string })._enforce] ?? 1
-      const bEnforce = enforceOrder[(b as unknown as { _enforce: string })._enforce] ?? 1
-      if (aEnforce !== bEnforce) return aEnforce - bEnforce
-      const aOrder = (a as unknown as { _order: number })._order ?? 100
-      const bOrder = (b as unknown as { _order: number })._order ?? 100
-      return aOrder - bOrder
-    })
+    // 按 priority 排序（越大越先执行）
+    return controls.sort((a, b) => (b.priority ?? 50) - (a.priority ?? 50))
   }
 
   /**

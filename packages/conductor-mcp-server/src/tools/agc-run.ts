@@ -54,7 +54,7 @@ export function registerAgcRunTool(server: McpServer, ctx: ServerContext): void 
           lane: result.route.lane,
           drScore: result.drScore.score,
           riskLevel: result.drScore.level,
-          complianceAllowed: result.compliance.allowed,
+          complianceAllowed: result.governance.allowed,
           nodePath: result.route.nodePath,
           skippedNodes: result.route.skippedNodes,
           checkpointId: result.checkpoint?.checkpointId,

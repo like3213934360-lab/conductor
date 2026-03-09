@@ -20,9 +20,9 @@ export function registerAgcVerifyRunTool(server: McpServer, ctx: ServerContext):
         return jsonContent({
           ok: result.ok,
           driftDetected: result.driftDetected,
-          complianceAllowed: result.compliance.allowed,
-          complianceWorstStatus: result.compliance.worstStatus,
-          findingCount: result.compliance.findings.length,
+          complianceAllowed: result.governance.allowed,
+          complianceWorstStatus: result.governance.worstStatus,
+          findingCount: result.governance.findings.length,
           stateVersion: result.state.version,
           replayedVersion: result.replayedState.version,
         })

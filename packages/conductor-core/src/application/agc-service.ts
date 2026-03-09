@@ -1,20 +1,13 @@
 /**
  * Conductor AGC — 应用服务 (AGCService)
  *
- * 编排层: 组合 DAG Engine + Risk Router + Compliance Engine，
+ * 编排层: 组合 DAG Engine + Risk Router + GovernanceGateway，
  * 通过 Event Sourcing 管理状态。
  *
- * Phase 3 修复:
- * 1. startRun() 发射 RUN_CONTEXT_CAPTURED 事件
- * 2. verifyRun() 使用 capturedContext 重建图（不再伪造）
- * 3. checkpoint 版本语义修正（事件后保存）
- * 4. CHECKPOINT_SAVED 严格 expectedVersion
- * 5. verifyRun() 发射 RUN_VERIFIED 事件
- * 6. 增量回放优化（从 checkpoint 恢复）
- * 7. complianceRules 依赖注入化
+ * v8.0: ComplianceEngine → GovernanceGateway (GaaS PDP/PEP)
  */
 import type { AGCState, RunRequest, AGCEventEnvelope, CheckpointDTO,
-  RouteDecision, ComplianceDecision, DRScore, RunGraph, RunMetadata,
+  RouteDecision, GovernanceDecisionRecord, DRScore, RunGraph, RunMetadata,
   CapturedContext } from '@anthropic/conductor-shared'
 import { createRunId, createEventId, createISODateTime, createCheckpointId,
   projectState, projectStateFromEvents, reduceEvent, RunRequestSchema } from '@anthropic/conductor-shared'
@@ -25,9 +18,10 @@ import { consoleLogger } from '../contracts/logger.js'
 import { DagEngine } from '../dag/dag-engine.js'
 import { DRCalculator } from '../risk/dr-calculator.js'
 import { RiskRouter } from '../risk/risk-router.js'
-import { ComplianceEngine } from '../compliance/compliance-engine.js'
-import type { ComplianceRule } from '../compliance/compliance-rule.js'
-import { DefaultComplianceRules } from '../compliance/default-rules.js'
+import { GovernanceGateway } from '../governance/governance-gateway.js'
+import { TrustFactorService } from '../governance/trust-factor.js'
+import type { GovernanceControl } from '../governance/governance-types.js'
+import { getDefaultControlPack } from '../governance/default-control-pack.js'
 import type { ReflexionActorLoop } from '../reflexion/actor-loop.js'
 import type { UpcastingRegistry } from '../event-sourcing/upcasting.js'
 
@@ -36,8 +30,8 @@ export interface AGCServiceDeps {
   eventStore: EventStore
   checkpointStore: CheckpointStore
   logger?: CoreLogger
-  /** Phase 3: 自定义合规规则（不传则使用默认规则） */
-  complianceRules?: ComplianceRule[]
+  /** v8.0: 自定义治理控制（不传则使用默认控制包） */
+  governanceControls?: GovernanceControl[]
   /** Phase 4: Reflexion Actor Loop (可选, 启用后自动注入反思记忆) */
   reflexionLoop?: ReflexionActorLoop
   /** Phase 4: Event Upcasting 注册表 (可选) */
@@ -49,7 +43,7 @@ export interface StartRunResult {
   runId: string
   state: AGCState
   route: RouteDecision
-  compliance: ComplianceDecision
+  governance: GovernanceDecisionRecord
   drScore: DRScore
   checkpoint?: CheckpointDTO
 }
@@ -60,7 +54,7 @@ export interface VerifyRunResult {
   state: AGCState
   replayedState: AGCState
   driftDetected: boolean
-  compliance: ComplianceDecision
+  governance: GovernanceDecisionRecord
 }
 
 /**
@@ -75,7 +69,7 @@ export class AGCService {
   private readonly dagEngine: DagEngine
   private readonly drCalculator: DRCalculator
   private readonly riskRouter: RiskRouter
-  private readonly complianceEngine: ComplianceEngine
+  private readonly gateway: GovernanceGateway
   /** Phase 4: Reflexion 闭环 (可选) */
   private readonly reflexionLoop?: ReflexionActorLoop
   /** Phase 4: Event Upcasting (可选) */
@@ -88,9 +82,11 @@ export class AGCService {
     this.dagEngine = new DagEngine()
     this.drCalculator = new DRCalculator()
     this.riskRouter = new RiskRouter()
-    // Phase 3: 合规规则 DI 化
-    this.complianceEngine = new ComplianceEngine(
-      deps.complianceRules ?? DefaultComplianceRules,
+    // v8.0: GovernanceGateway (GaaS PDP/PEP)
+    const trustService = new TrustFactorService()
+    this.gateway = new GovernanceGateway(
+      trustService,
+      deps.governanceControls ?? getDefaultControlPack(),
     )
     // Phase 4: Reflexion + Upcasting
     this.reflexionLoop = deps.reflexionLoop
@@ -175,12 +171,20 @@ export class AGCService {
     // 5. 投影初始状态用于合规评估
     const initialState = projectState(runId, nodeIds, events)
 
-    // 6. 合规评估
-    const compliance = await this.complianceEngine.evaluate({
+    // 6. 治理网关 preflight 评估
+    const governanceDecision = await this.gateway.preflight({
+      runId,
+      action: { type: 'node.execute', nodeId: 'ANALYZE' },
       state: initialState,
       graph: parsed.graph,
       metadata: parsed.metadata,
     })
+    const governance: GovernanceDecisionRecord = {
+      allowed: governanceDecision.effect === 'allow' || governanceDecision.effect === 'warn',
+      worstStatus: governanceDecision.effect === 'allow' ? 'pass' : governanceDecision.effect === 'warn' ? 'warn' : 'block',
+      evaluatedAt: createISODateTime(),
+      findings: governanceDecision.rationale.map(r => ({ ruleId: 'GaaS', ruleName: 'GovernanceGateway', status: 'pass' as const, message: r })),
+    }
 
     // COMPLIANCE_EVALUATED
     version++
@@ -189,16 +193,16 @@ export class AGCService {
       runId,
       type: 'COMPLIANCE_EVALUATED',
       payload: {
-        allowed: compliance.allowed,
-        worstStatus: compliance.worstStatus,
-        findingCount: compliance.findings.length,
+        allowed: governance.allowed,
+        worstStatus: governance.worstStatus,
+        findingCount: governance.findings.length,
       },
       timestamp: createISODateTime(),
       version,
     })
 
-    // 三模型审计 P0: compliance BLOCK 短路 — 合规拒绝时立即终止运行
-    if (!compliance.allowed) {
+    // 治理 BLOCK 短路 — 治理拒绝时立即终止运行
+    if (!governance.allowed) {
       // 只持久化到合规评估为止的事件 + RUN_COMPLETED(failed)
       version++
       events.push({
@@ -224,7 +228,7 @@ export class AGCService {
       }
       await this.checkpointStore.save({ checkpoint: blockedCheckpoint })
 
-      this.logger.warn('AGC 运行被合规拒绝', { runId, worstStatus: compliance.worstStatus })
+      this.logger.warn('AGC 运行被治理拒绝', { runId, worstStatus: governance.worstStatus })
 
       return {
         runId,
@@ -235,7 +239,7 @@ export class AGCService {
           skippedNodes: nodeIds.map(id => ({ nodeId: id, reason: 'compliance_blocked' })),
           confidence: 0,
         },
-        compliance,
+        governance,
         drScore,
         checkpoint: blockedCheckpoint,
       }
@@ -244,7 +248,7 @@ export class AGCService {
     // 7. 路由决策 (仅在合规通过后)
     const route = this.riskRouter.decide({
       score: drScore,
-      findings: compliance.findings,
+      findings: governance.findings,
       graph: parsed.graph,
     })
 
@@ -335,7 +339,7 @@ export class AGCService {
       }
     }
 
-    return { runId, state: finalState, route, compliance, drScore, checkpoint }
+    return { runId, state: finalState, route, governance, drScore, checkpoint }
   }
 
   /**
@@ -423,14 +427,22 @@ export class AGCService {
       driftDetected = replayedNodeJson !== fullNodeJson
     }
 
-    // 4. 重算合规（使用完整图）
-    const compliance = await this.complianceEngine.evaluate({
+    // 4. 治理网关 preflight 重算
+    const governanceDecision = await this.gateway.preflight({
+      runId,
+      action: { type: 'node.execute', nodeId: 'VERIFY' },
       state: replayedState,
       graph,
       metadata,
     })
+    const governance: GovernanceDecisionRecord = {
+      allowed: governanceDecision.effect === 'allow' || governanceDecision.effect === 'warn',
+      worstStatus: governanceDecision.effect === 'allow' ? 'pass' : governanceDecision.effect === 'warn' ? 'warn' : 'block',
+      evaluatedAt: createISODateTime(),
+      findings: governanceDecision.rationale.map(r => ({ ruleId: 'GaaS', ruleName: 'GovernanceGateway', status: 'pass' as const, message: r })),
+    }
 
-    const ok = !driftDetected && compliance.allowed
+    const ok = !driftDetected && governance.allowed
 
     // 5. 发射 RUN_VERIFIED 事件
     const currentVersion = replayedState.version
@@ -483,7 +495,7 @@ export class AGCService {
       state: finalState,
       replayedState: finalState,
       driftDetected,
-      compliance,
+      governance,
     }
   }
 }

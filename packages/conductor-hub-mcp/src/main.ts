@@ -54,6 +54,10 @@ const TOOL_DEFINITIONS = [
             properties: {
                 task: { type: 'string', description: 'Task description for Codex.' },
                 working_dir: { type: 'string', description: 'Working directory. Defaults to current directory.' },
+                file_paths: {
+                    type: 'array', items: { type: 'string' },
+                    description: 'Optional local file paths whose contents will be pre-injected into the prompt as context. This eliminates Codex serial tool-call file reads, dramatically reducing latency for analysis tasks.',
+                },
             },
             required: ['task'],
         },
@@ -67,6 +71,10 @@ const TOOL_DEFINITIONS = [
                 prompt: { type: 'string', description: 'The prompt / task to send to Gemini.' },
                 model: { type: 'string', description: 'Optional Gemini model to use (e.g. "gemini-2.5-pro"). Defaults to CLI default.' },
                 working_dir: { type: 'string', description: 'Working directory for Gemini CLI. Defaults to current directory.' },
+                file_paths: {
+                    type: 'array', items: { type: 'string' },
+                    description: 'Optional local file paths whose contents will be pre-injected into the prompt as context.',
+                },
             },
             required: ['prompt'],
         },
@@ -123,7 +131,7 @@ const TOOL_DEFINITIONS = [
                             provider: { type: 'string', description: 'Force provider (ask type only)' },
                             system_prompt: { type: 'string', description: 'System prompt (ask/multi_ask/consensus)' },
                             timeout_ms: { type: 'number', description: 'Per-task timeout in ms (default: 300000)' },
-                            file_paths: { type: 'array', items: { type: 'string' }, description: 'Local file paths for context injection (ask/multi_ask/consensus)' },
+                            file_paths: { type: 'array', items: { type: 'string' }, description: 'Local file paths for context injection (all task types including codex/gemini)' },
                         },
                         required: ['type', 'prompt'],
                     },
@@ -246,6 +254,8 @@ async function main() {
                     const result = await service.codexTask(
                         args.task as string,
                         args.working_dir as string | undefined,
+                        undefined,
+                        args.file_paths as string[] | undefined,
                     );
                     return { content: [{ type: 'text', text: result }] };
                 }
@@ -255,6 +265,8 @@ async function main() {
                         args.prompt as string,
                         args.model as string | undefined,
                         args.working_dir as string | undefined,
+                        undefined,
+                        args.file_paths as string[] | undefined,
                     );
                     return { content: [{ type: 'text', text: result }] };
                 }

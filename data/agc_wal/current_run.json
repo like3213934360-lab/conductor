@@ -1,33 +1,47 @@
 {
-  "run_id": "desc-source-label-20260309",
-  "goal": "MCP 工具和插件的描述信息标注来源（builtin/local/npm/pypi/ai）",
-  "started_at": "2026-03-09T01:05:00+08:00",
-  "completed_at": "2026-03-09T01:25:00+08:00",
+  "run_id": "agc-run-20260309-140032",
+  "goal": "AGC项目全球多Agent协作领域先进性分析",
+  "started_at": "2026-03-09T14:00:32+08:00",
+  "completed_at": "2026-03-09T14:12:00+08:00",
   "checkpoints": {
     "CP-ANALYZE": {
-      "task_type": "实现",
+      "task_type": "research_analysis",
+      "tools_available": ["codex_cli", "gemini_cli", "deepseek_chat"],
+      "evidence_files": 6,
       "risk_level": "low",
-      "route_path": "fast_track",
-      "token_budget": "M"
+      "route_path": "debate",
+      "token_budget": "L"
     },
-    "CP-PARALLEL": { "skipped": true, "reason": "fast_track route" },
+    "CP-PARALLEL": {
+      "codex_instances": 3,
+      "gemini_instances": 1,
+      "total_instances": 4,
+      "success_rate": "4/4",
+      "total_time_ms": 100205,
+      "dr_value": 0.5
+    },
+    "CP-DEBATE": {
+      "debate_rounds": 1,
+      "arbitrators": ["deepseek", "gemini"],
+      "convergence_score": 0.85,
+      "collusion_check": "PASS",
+      "key_adjustments": "governance 9→7, architecture 8→7, fault_tolerance 4→5"
+    },
     "CP-SYNTHESIZE": {
-      "final_answer": "扩展 source 类型为 5 种 + 添加 SourceBadge 组件",
-      "final_confidence": 95,
-      "template_used": "T002"
+      "final_confidence": 85,
+      "weighted_consensus_score": "6.9/10",
+      "template_used": "T003",
+      "dimensions_analyzed": 13,
+      "top3_leading": ["compliance_audit_trails", "governance_as_architecture", "deterministic_orchestration"],
+      "top5_gaps": ["dynamic_topology", "executable_policy", "fault_tolerance", "token_economy", "formal_verification"]
     },
     "CP-PERSIST": {
       "written_files": [
-        "packages/conductor-hub-vscode/src/dashboard-panel.ts",
-        "packages/conductor-hub-webview/src/components/ConfigPanel.tsx"
+        "data/agc_wal/current_run.json",
+        "brain/agc_global_benchmarking_report.md"
       ],
-      "manifest_updated": false,
+      "manifest_updated": true,
       "read_after_write": true
-    },
-    "CP-VERIFY": {
-      "backend_tsc": "PASS",
-      "webview_webpack": "PASS",
-      "compliance_check": "PASS"
     }
   }
 }

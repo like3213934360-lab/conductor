@@ -9,6 +9,7 @@
  */
 
 import { ConductorHubService } from './conductor-hub-service.js';
+import { buildFileContext } from './file-context.js';
 
 // ── 类型定义 ──────────────────────────────────────────────────────────────────
 
@@ -196,12 +197,34 @@ async function executeOneSafely(
     }
 }
 
+/**
+ * CLI 任务上下文注入: 预读 file_paths → 拼入 prompt → 消除 Codex 串行 tool call
+ *
+ * 当调用方提供 file_paths 时，在 dispatch 前将文件内容注入 prompt，
+ * 使 Codex/Gemini 无需自行通过 tool call 逐文件读取，显著降低延迟。
+ */
+function enrichPromptWithFiles(task: SubTask): string {
+    if (!task.file_paths || task.file_paths.length === 0 || !isCliTask(task.type)) {
+        return task.prompt;
+    }
+    const { context, warnings } = buildFileContext(task.file_paths);
+    if (!context) return task.prompt;
+
+    const parts = [task.prompt, '\n\n' + context];
+    if (warnings.length > 0) {
+        parts.push(`\n\n> ⚠️ File context warnings: ${warnings.join('; ')}`);
+    }
+    return parts.join('');
+}
+
 async function dispatchTask(task: SubTask, service: ConductorHubService, signal?: AbortSignal): Promise<string> {
+    // CLI 任务: 预注入文件上下文, 避免 Codex/Gemini 自行读文件
+    const prompt = enrichPromptWithFiles(task);
     switch (task.type) {
         case 'codex':
-            return service.codexTask(task.prompt, task.working_dir, signal);
+            return service.codexTask(prompt, task.working_dir, signal);
         case 'gemini':
-            return service.geminiTask(task.prompt, task.model, task.working_dir, signal);
+            return service.geminiTask(prompt, task.model, task.working_dir, signal);
         case 'ask': {
             const r = await service.ask({ message: task.prompt, provider: task.provider, systemPrompt: task.system_prompt, filePaths: task.file_paths, signal });
             return r.text;

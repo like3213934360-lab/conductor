@@ -162,12 +162,14 @@
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "package": "npx vsce package --no-dependencies -o conductor-hub.vsix",
     "install-ext": "npx vsce package --no-dependencies -o conductor-hub.vsix && code --install-extension conductor-hub.vsix && rm conductor-hub.vsix && cp dist/webview.js dist/extension.js dist/mcp-server.js dist/conductor-mcp-server.js ~/.antigravity/extensions/like3213934360-lab.conductor-hub-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
-    "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence packages/conductor-mcp-server",
+    "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence",
     "build:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter",
-    "build:all": "npm run build:conductor && npm run build:conductor-hub",
-    "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence packages/conductor-mcp-server --pretty",
+    "build:conductor-mcp": "tsc -b packages/conductor-mcp-server",
+    "build:all": "npm run build:conductor && npm run build:conductor-hub && npm run build:conductor-mcp",
+    "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence --pretty",
     "typecheck:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter --pretty",
-    "typecheck:all": "npm run typecheck:conductor && npm run typecheck:conductor-hub",
+    "typecheck:conductor-mcp": "tsc -b packages/conductor-mcp-server --pretty",
+    "typecheck:all": "npm run typecheck:conductor && npm run typecheck:conductor-hub && npm run typecheck:conductor-mcp",
     "clean": "rm -rf packages/*/dist dist"
   },
   "dependencies": {

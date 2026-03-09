@@ -1,0 +1,135 @@
+{
+  "bundleId": "conductor-agc-default",
+  "bundleVersion": "1.0.0",
+  "issuedAt": "2026-03-09T14:00:00Z",
+  "minEngineVersion": "7.0.0",
+  "policies": [
+    {
+      "id": "S1",
+      "name": "状态一致性 (State Consistency)",
+      "version": "1.0.0",
+      "priority": 100,
+      "defaultLevel": "block",
+      "enabled": true,
+      "assert": {
+        "gte": ["state.version", 0]
+      },
+      "onFailure": {
+        "status": "block",
+        "message": "状态版本号为负，状态一致性检查失败"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["integrity", "state"] }
+    },
+    {
+      "id": "S3",
+      "name": "Schema 完整性 (Schema Integrity)",
+      "version": "1.0.0",
+      "priority": 90,
+      "defaultLevel": "block",
+      "enabled": true,
+      "assert": {
+        "count": ["graph.nodes", { "gt": 0 }]
+      },
+      "onFailure": {
+        "status": "block",
+        "message": "DAG 图为空，至少需要一个节点"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["schema", "dag"] }
+    },
+    {
+      "id": "S11",
+      "name": "状态链接 (State Linkage)",
+      "version": "1.0.0",
+      "priority": 80,
+      "defaultLevel": "block",
+      "enabled": true,
+      "assert": {
+        "exists": "state.runId"
+      },
+      "onFailure": {
+        "status": "block",
+        "message": "缺少 runId，状态链接不完整"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["linkage", "state"] }
+    },
+    {
+      "id": "S12",
+      "name": "无检查点无结果 (No Checkpoint No Result)",
+      "version": "1.0.0",
+      "priority": 70,
+      "defaultLevel": "block",
+      "enabled": true,
+      "when": {
+        "any": [
+          { "eq": ["metadata.riskHint", "high"] },
+          { "eq": ["metadata.riskHint", "critical"] }
+        ]
+      },
+      "assert": {
+        "exists": "state.checkpointVersion"
+      },
+      "onFailure": {
+        "status": "block",
+        "message": "高风险运行缺少检查点快照"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["checkpoint", "fault-tolerance"] }
+    },
+    {
+      "id": "S14",
+      "name": "目标声明强制 (Goal Required)",
+      "version": "1.0.0",
+      "priority": 95,
+      "defaultLevel": "block",
+      "enabled": true,
+      "assert": {
+        "all": [
+          { "exists": "metadata.goal" },
+          { "matches": ["metadata.goal", ".{3,}"] }
+        ]
+      },
+      "onFailure": {
+        "status": "block",
+        "message": "运行目标不能为空且至少 3 个字符"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["governance", "goal"] }
+    },
+    {
+      "id": "S15",
+      "name": "节点拓扑完整性 (Topology Integrity)",
+      "version": "1.0.0",
+      "priority": 85,
+      "defaultLevel": "warn",
+      "enabled": true,
+      "when": {
+        "count": ["graph.nodes", { "gt": 1 }]
+      },
+      "assert": {
+        "count": ["graph.edges", { "gt": 0 }]
+      },
+      "onFailure": {
+        "status": "warn",
+        "message": "多节点 DAG 但无边定义，可能存在拓扑断裂"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["topology", "dag"] }
+    },
+    {
+      "id": "S16",
+      "name": "Token 预算声明 (Token Budget)",
+      "version": "1.0.0",
+      "priority": 60,
+      "defaultLevel": "warn",
+      "enabled": true,
+      "when": {
+        "exists": "metadata.tokenBudget"
+      },
+      "assert": {
+        "gt": ["metadata.tokenBudget", 0]
+      },
+      "onFailure": {
+        "status": "warn",
+        "message": "Token 预算必须大于 0"
+      },
+      "metadata": { "owner": "agc-core", "tags": ["token", "budget"] }
+    }
+  ]
+}
