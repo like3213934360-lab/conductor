@@ -147,6 +147,8 @@ export class WorkflowRuntime {
   private readonly completedNodes = new Set<string>() // 已完成节点
   private readonly skippedNodes = new Set<string>() // 已跳过节点
   private readonly deviations: WorkflowDeviation[] = []
+  // ★ P1-1 fix: 激活队列 — 仅激活节点可领取租约 (路由强制)
+  private readonly activatedNodes = new Set<string>()
 
   constructor(
     schemaRegistry: CheckpointSchemaRegistry,
@@ -169,6 +171,14 @@ export class WorkflowRuntime {
     this.deviations.length = 0
     // ★ Codex 审查修复: 重置预算状态防止跨 run 泄漏
     this.budgetEnforcer?.reset()
+    // ★ P1-1 fix: 初始化激活队列 — 将无依赖的入口节点加入
+    this.activatedNodes.clear()
+    for (const node of definition.graph.nodes) {
+      const deps = node.dependsOn ?? []
+      if (deps.length === 0) {
+        this.activatedNodes.add(node.id)
+      }
+    }
   }
 
   /**
@@ -193,6 +203,13 @@ export class WorkflowRuntime {
     this.deviations.length = 0
     this.activeLeases.clear()
     this.consumedLeases.clear()
+    // ★ P1-1 fix: 重启后激活所有 queued 节点
+    this.activatedNodes.clear()
+    for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+      if (nodeState.status === 'queued' || nodeState.status === 'running') {
+        this.activatedNodes.add(nodeId)
+      }
+    }
   }
 
   /**
@@ -215,6 +232,8 @@ export class WorkflowRuntime {
       if (this.completedNodes.has(node.id)) continue
       if (this.skippedNodes.has(node.id)) continue
       if (this.hasActiveLease(node.id)) continue
+      // ★ P1-1 fix: 仅激活队列中的节点可领取租约
+      if (!this.activatedNodes.has(node.id)) continue
 
       // 检查依赖
       const deps = node.dependsOn ?? []
@@ -352,9 +371,11 @@ export class WorkflowRuntime {
       return { accepted: false, reason: dev.message, deviation: dev }
     }
 
-    // 3. BoundaryGuard 断言 (Gemini 审查修复 #3)
-    if (input.currentMode) {
-      const violation = this.boundaryGuard.assert(nodeId, input.currentMode)
+    // 3. BoundaryGuard 断言 — ★ P1-5 fix: 自动从 definition 推导 boundaryMode
+    const effectiveMode = input.currentMode
+      ?? this.definition.nodes[nodeId]?.boundaryMode
+    if (effectiveMode) {
+      const violation = this.boundaryGuard.assert(nodeId, effectiveMode)
       if (violation) {
         const dev: WorkflowDeviation = {
           code: 'UNLEASED_NODE',
@@ -367,12 +388,30 @@ export class WorkflowRuntime {
       }
     }
 
-    // 4. 消费租约 + 标记完成
+    // ★ P2-1 fix: 先验证 token usage，再变更状态（防止 NaN/负值跳过导致状态污染）
+    if (this.budgetEnforcer && input.tokenUsage) {
+      const { promptTokens, completionTokens, totalTokens } = input.tokenUsage
+      if (!Number.isFinite(totalTokens) || totalTokens < 0 ||
+          !Number.isFinite(promptTokens) || promptTokens < 0 ||
+          !Number.isFinite(completionTokens) || completionTokens < 0) {
+        const dev: WorkflowDeviation = {
+          code: 'SCHEMA_INVALID',
+          nodeId,
+          leaseId,
+          message: `Invalid tokenUsage: prompt=${promptTokens} completion=${completionTokens} total=${totalTokens}`,
+          observed: input.tokenUsage,
+        }
+        this.deviations.push(dev)
+        return { accepted: false, reason: dev.message, deviation: dev }
+      }
+    }
+
+    // 4. 消费租约 + 标记完成（所有验证通过后才变更状态）
     this.activeLeases.delete(leaseId)
     this.consumedLeases.add(leaseId)
     this.completedNodes.add(nodeId)
 
-    // ★ 5. Token 预算记录 (Codex 审查修复: 闭合强制循环)
+    // 5. Token 预算记录（已验证安全）
     if (this.budgetEnforcer && input.tokenUsage) {
       this.budgetEnforcer.recordUsage({
         nodeId,
@@ -385,6 +424,10 @@ export class WorkflowRuntime {
 
     // 6. 路由计算 (代码决定，非 LLM)
     const nextNodeIds = this.computeNextNodes(nodeId, checkpoint as Record<string, unknown>, state)
+    // ★ P1-1 fix: 将路由结果加入激活队列
+    for (const nextId of nextNodeIds) {
+      this.activatedNodes.add(nextId)
+    }
 
     return { accepted: true, nextNodeIds, schemaResult }
   }
@@ -406,6 +449,54 @@ export class WorkflowRuntime {
 
     this.skippedNodes.add(nodeId)
     return null
+  }
+
+  /**
+   * ★ P0-2/P1-3 fix: 放弃租约 — 在授权拒绝/回调失败时调用
+   *
+   * 释放活跃租约 + Token 预留，防止资源泄漏和节点死锁。
+   */
+  abandonLease(leaseId: string, reason: string): void {
+    const lease = this.activeLeases.get(leaseId)
+    if (!lease) return // 幂等: 已不存在
+
+    this.activeLeases.delete(leaseId)
+
+    // 释放该租约的 Token 预留
+    if (this.budgetEnforcer && this.definition) {
+      const estimated = this.budgetEnforcer['config']?.nodeEstimates?.[lease.nodeId]
+        ?? this.budgetEnforcer['config']?.defaultReservation ?? 2000
+      this.budgetEnforcer.releaseReservation(estimated)
+    }
+
+    this.deviations.push({
+      code: 'UNLEASED_NODE',
+      nodeId: lease.nodeId,
+      leaseId,
+      message: `Lease abandoned: ${reason}`,
+    })
+  }
+
+  /**
+   * ★ P1-2 fix: 领取单个就绪节点的租约
+   *
+   * 避免发放多个租约导致未消费租约泄漏。
+   */
+  claimNextOne(runId: string, state: AGCState): NodeLease | null {
+    const leases = this.claimNext(runId, state)
+    if (leases.length === 0) return null
+
+    // 只保留第一个，释放其余
+    const claimed = leases[0]!
+    for (let i = 1; i < leases.length; i++) {
+      this.abandonLease(leases[i]!.leaseId, 'claimNextOne: only first lease retained')
+    }
+    return claimed
+  }
+
+  /** ★ P1-1 fix: 手动激活节点 (用于 route 阶段初始化) */
+  activateNode(nodeId: string): void {
+    this.activatedNodes.add(nodeId)
   }
 
   /** 获取所有检测到的偏差 */

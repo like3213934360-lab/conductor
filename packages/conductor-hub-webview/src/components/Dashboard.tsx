@@ -5,6 +5,7 @@ import HistoryConsole from './HistoryConsole';
 import RoutingGuidePanel from './RoutingGuidePanel';
 import SkillPanel from './SkillPanel';
 import TestPanel from './TestPanel';
+import AGCPanel from './AGCPanel';
 import { colors, radius, s, glass } from '../theme';
 import Icon from './Icon';
 import { vscode } from '../vscode-api';
@@ -45,11 +46,12 @@ const TAB_ICON_MAP: Record<string, string> = {
     history: 'clock',
     guide: 'compass',
     skill: 'layers',
+    agc: 'workflow',
     test: 'flask',
 };
 
 const Dashboard: React.FC = () => {
-    const [activeTab, setActiveTab] = useState<'overview' | 'config' | 'history' | 'guide' | 'skill' | 'test'>('overview');
+    const [activeTab, setActiveTab] = useState<'overview' | 'config' | 'history' | 'guide' | 'skill' | 'agc' | 'test'>('overview');
     const [lang, setLang] = useState<Lang>('zh');
 
     const logoUri = document.getElementById('root')?.getAttribute('data-logo-uri') || '';
@@ -86,6 +88,7 @@ const Dashboard: React.FC = () => {
         { key: 'history', label: t[lang].history, icon: 'history' },
         { key: 'guide', label: t[lang].guide, icon: 'guide' },
         { key: 'skill', label: t[lang].skill, icon: 'skill' },
+        { key: 'agc', label: 'AGC', icon: 'agc' },
         { key: 'test', label: t[lang].test, icon: 'test' },
     ] as const;
 
@@ -169,6 +172,7 @@ const Dashboard: React.FC = () => {
                 {activeTab === 'history' && <HistoryConsole lang={lang} />}
                 {activeTab === 'guide' && <RoutingGuidePanel lang={lang} />}
                 {activeTab === 'skill' && <SkillPanel lang={lang} />}
+                {activeTab === 'agc' && <AGCPanel lang={lang} />}
                 {activeTab === 'test' && <TestPanel lang={lang} />}
             </div>
 

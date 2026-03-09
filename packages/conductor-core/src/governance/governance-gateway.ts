@@ -65,6 +65,8 @@ export class GovernanceGateway {
   private readonly config: GovernanceGatewayConfig
   private readonly trustService: TrustFactorService
   private assuranceEngine?: AssuranceEngine
+  // ★ P3-1 fix: 延迟排序 — 注册时设脏标志，评估时排序
+  private sortDirty = false
 
   constructor(
     trustService: TrustFactorService,
@@ -75,20 +77,20 @@ export class GovernanceGateway {
     this.config = { ...DEFAULT_CONFIG, ...config }
     if (controls) {
       this.controls.push(...controls)
-      this.sortByPriority()
+      this.sortDirty = true
     }
   }
 
   /** 注册控制 */
   register(control: GovernanceControl): void {
     this.controls.push(control)
-    this.sortByPriority()
+    this.sortDirty = true // ★ P3-1 fix: 标记脏，不立即排序
   }
 
   /** 批量注册 */
   registerAll(controls: GovernanceControl[]): void {
     this.controls.push(...controls)
-    this.sortByPriority()
+    this.sortDirty = true // ★ P3-1 fix
   }
 
   /** 移除控制 */
@@ -201,7 +203,7 @@ export class GovernanceGateway {
           const fallback = scored[i]!
           const fbVerdict = await this.assuranceEngine.verify(fallback.candidate, ctx)
           if (fbVerdict.passed) {
-            // ★ Bug fix: fallback 也必须通过 output-stage controls (不再绕过)
+            // ★ P1-7 fix: fallback 通过 output-stage controls，且检查 degrade/warn 信号
             const fbOutputCtx: GovernanceContext = {
               ...ctx,
               action: { type: 'answer.release', candidateId: fallback.candidate.id },
@@ -211,21 +213,27 @@ export class GovernanceGateway {
             if (fbOutputDecision.effect === 'block' || fbOutputDecision.effect === 'escalate') {
               continue // 此 fallback 也被 output 控制拒绝，尝试下一个
             }
+            // ★ P1-7 fix: 将 output 控制的 degrade/warn 信号合并到最终 effect
+            const finalEffect = fbOutputDecision.effect === 'degrade' ? 'degrade' as const
+              : fbOutputDecision.effect === 'warn' ? 'release' as const
+              : 'release' as const
             return {
               selectedCandidateId: fallback.candidate.id,
-              effect: 'release' as const,
+              effect: finalEffect,
               rationale: [
                 `Primary candidate failed assurance: ${verdict.findings.map(f => f.message).join('; ')}`,
                 `Fallback to candidate ${fallback.candidate.id} (score=${fallback.score.toFixed(3)})`,
+                ...fbOutputDecision.rationale,
               ],
               score: fallback.score,
             }
           }
         }
+        // ★ P2-2 fix: 所有候选均失败时，返回 score=0 而非 best.score（防止误导性高分）
         return {
           effect: 'escalate' as const,
           rationale: [`All candidates failed assurance: ${verdict.findings.map(f => f.message).join('; ')}`],
-          score: best.score,
+          score: 0,
         }
       }
     }
@@ -286,45 +294,39 @@ export class GovernanceGateway {
     /** ★ Bug fix: 传入实际 DREAD 分数，不再硬编码 50 */
     dreadScore?: number,
   ): Promise<GovernanceDecision> {
+    // ★ P3-1 fix: 延迟排序 — 仅在评估时排一次
+    if (this.sortDirty) {
+      this.sortByPriority()
+      this.sortDirty = false
+    }
+
     const stageControls = this.controls.filter(c => c.stage === stage)
 
     const results: GovernanceControlResult[] = []
     let worstStatus: GovernanceControlResult['status'] = 'pass'
 
-    for (const control of stageControls) {
-      let result: GovernanceControlResult
-      try {
-        let timer: ReturnType<typeof setTimeout> | undefined
-        try {
-          result = await Promise.race([
-            Promise.resolve(control.evaluate(ctx)),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error(`Control [${control.id}] timeout (${this.config.controlTimeoutMs}ms)`)),
-                this.config.controlTimeoutMs,
-              )
-            }),
-          ])
-        } finally {
-          if (timer !== undefined) clearTimeout(timer)
-        }
-      } catch (err) {
-        const isBlockLevel = control.defaultLevel === 'block'
-        result = {
-          controlId: control.id,
-          controlName: control.name,
-          status: isBlockLevel ? 'block' : 'warn',
-          message: `Control error (${isBlockLevel ? 'fail-closed→block' : 'fail-open→warn'}): ${String(err)}`,
+    // ★ P1-8 fix: failFast=false 时并行评估控制（防阻塞事件循环）
+    if (!this.config.failFast && stageControls.length > 1) {
+      const promises = stageControls.map(control =>
+        this.evaluateControl(control, ctx),
+      )
+      const settledResults = await Promise.all(promises)
+      for (const result of settledResults) {
+        results.push(result)
+        if (isSeverer(result.status, worstStatus)) {
+          worstStatus = result.status
         }
       }
-
-      results.push(result)
-
-      if (isSeverer(result.status, worstStatus)) {
-        worstStatus = result.status
+    } else {
+      // failFast=true 或只有一个控制: 串行评估
+      for (const control of stageControls) {
+        const result = await this.evaluateControl(control, ctx)
+        results.push(result)
+        if (isSeverer(result.status, worstStatus)) {
+          worstStatus = result.status
+        }
+        if (result.status === 'block' && this.config.failFast) break
       }
-
-      if (result.status === 'block' && this.config.failFast) break
     }
 
     // ★ Bug fix: 使用传入的 DREAD 分数，回退到中性值 50
@@ -336,6 +338,37 @@ export class GovernanceGateway {
       obligations: results.filter(r => r.status !== 'pass').map(r => r.message),
       trust,
       rationale: results.map(r => `[${r.controlId}] ${r.status}: ${r.message}`),
+    }
+  }
+
+  /** ★ P1-8 fix: 单个控制评估 (含超时和错误处理，可并行调用) */
+  private async evaluateControl(
+    control: GovernanceControl,
+    ctx: GovernanceContext,
+  ): Promise<GovernanceControlResult> {
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          Promise.resolve(control.evaluate(ctx)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`Control [${control.id}] timeout (${this.config.controlTimeoutMs}ms)`)),
+              this.config.controlTimeoutMs,
+            )
+          }),
+        ])
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    } catch (err) {
+      const isBlockLevel = control.defaultLevel === 'block'
+      return {
+        controlId: control.id,
+        controlName: control.name,
+        status: isBlockLevel ? 'block' : 'warn',
+        message: `Control error (${isBlockLevel ? 'fail-closed→block' : 'fail-open→warn'}): ${String(err)}`,
+      }
     }
   }
 

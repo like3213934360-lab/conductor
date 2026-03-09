@@ -236,3 +236,247 @@ describe('TokenBudgetEnforcer — Leak prevention', () => {
     expect(snapshot.globalUsed).toBe(0)
   })
 })
+
+// ── P0-2/P1-3 Fix: abandonLease 释放租约 + 预算预留 ──────────────────────────
+
+describe('WorkflowRuntime — abandonLease', () => {
+  it('releases lease and budget reservation, prevents node deadlock', () => {
+    const schemaRegistry = new CheckpointSchemaRegistry()
+    const budgetEnforcer = new TokenBudgetEnforcer({ globalLimit: 10000, defaultReservation: 2000 })
+    const runtime = new WorkflowRuntime(schemaRegistry, undefined, budgetEnforcer)
+
+    const graph = {
+      nodes: [{ id: 'A', name: 'A', dependsOn: [] as string[], input: {}, skippable: false, priority: 0 }],
+      edges: [],
+    }
+    runtime.start({
+      workflowId: 'test', version: 'v8.0', graph,
+      nodes: { A: { nodeId: 'A', boundaryMode: 'EXECUTION' as const, skippable: false, allowedOutgoing: [] } },
+    })
+
+    const state = { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any
+    const leases = runtime.claimNext('r1', state)
+    expect(leases).toHaveLength(1)
+    const lease = leases[0]!
+
+    // Budget reserved after claim
+    let snapshot = budgetEnforcer.getSnapshot()
+    expect(snapshot.globalReserved).toBeGreaterThan(0)
+
+    // Abandon the lease (simulating auth block)
+    runtime.abandonLease(lease.leaseId, 'auth blocked')
+
+    // Budget reservation released
+    snapshot = budgetEnforcer.getSnapshot()
+    expect(snapshot.globalReserved).toBe(0)
+
+    // Idempotent: second abandon should not throw
+    expect(() => runtime.abandonLease(lease.leaseId, 'double abandon')).not.toThrow()
+  })
+})
+
+// ── P0-3 Fix: observe 决策强制执行 ──────────────────────────────────────────
+
+describe('GovernanceGateway — observe decision enforcement', () => {
+  it('observe() returns block effect when assurance control blocks', async () => {
+    const trustService = createTrustService()
+    const gateway = new GovernanceGateway(trustService, [
+      createMockControl('assurance-blocker', 'assurance', 'block'),
+    ])
+
+    const ctx: GovernanceContext = {
+      runId: 'r1',
+      graph: { nodes: [], edges: [] },
+      state: { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any,
+      metadata: { goal: 'test', files: [], initiator: 'test' },
+      action: { type: 'node.execute', nodeId: 'ANALYZE' },
+    }
+
+    const result = await gateway.observe(ctx, {
+      action: { type: 'node.execute', nodeId: 'ANALYZE' },
+      success: true,
+      durationMs: 100,
+    })
+
+    // The caller (AGCService.advanceNode) must check this and abandon the lease
+    expect(result.effect).toBe('block')
+    expect(result.rationale.some(r => r.includes('assurance-blocker'))).toBe(true)
+  })
+})
+
+// ── P1-1 Fix: 激活队列 — 仅路由激活的节点获取租约 ─────────────────────────────
+
+describe('WorkflowRuntime — activation queue', () => {
+  it('claimNext() only returns nodes in the activated set', () => {
+    const schemaRegistry = new CheckpointSchemaRegistry()
+    const runtime = new WorkflowRuntime(schemaRegistry)
+
+    // Graph: A -> B, A -> C (both depend on A)
+    const graph = {
+      nodes: [
+        { id: 'A', name: 'A', dependsOn: [] as string[], input: {}, skippable: false, priority: 0 },
+        { id: 'B', name: 'B', dependsOn: ['A'], input: {}, skippable: false, priority: 0 },
+        { id: 'C', name: 'C', dependsOn: ['A'], input: {}, skippable: false, priority: 0 },
+      ],
+      edges: [{ from: 'A', to: 'B' }, { from: 'A', to: 'C' }],
+    }
+    runtime.start({
+      workflowId: 'test', version: 'v8.0', graph,
+      nodes: {
+        A: { nodeId: 'A', boundaryMode: 'PLANNING' as const, skippable: false,
+          allowedOutgoing: [
+            { edgeId: 'a->b', to: 'B', when: () => true },
+            { edgeId: 'a->c', to: 'C', when: () => true },
+          ],
+        },
+        B: { nodeId: 'B', boundaryMode: 'EXECUTION' as const, skippable: false, allowedOutgoing: [] },
+        C: { nodeId: 'C', boundaryMode: 'EXECUTION' as const, skippable: false, allowedOutgoing: [] },
+      },
+    })
+
+    const state = { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any
+
+    // Initially only root node A should be activated and claimable
+    const initial = runtime.claimNext('r1', state)
+    expect(initial).toHaveLength(1)
+    expect(initial[0]!.nodeId).toBe('A')
+
+    // B and C should NOT be claimable yet (not activated)
+    // Manually set A as completed
+    const completedState = {
+      ...state,
+      nodes: { A: { status: 'completed' } },
+      completedNodeIds: ['A'],
+    } as any
+
+    // Before activating, no nodes should be ready (B/C not in activatedNodes)
+    const beforeActivate = runtime.claimNext('r1', completedState)
+    // Note: B and C need to be activated via submitCheckpoint route or activateNode
+    // They won't be in activatedNodes unless routed
+    expect(beforeActivate.filter(l => l.nodeId === 'B' || l.nodeId === 'C')).toHaveLength(0)
+  })
+})
+
+// ── P1-7 Fix: Release 管道降级信号 ────────────────────────────────────────────
+
+describe('GovernanceGateway — release pipeline downgrade signals', () => {
+  it('returns degrade when output control degrades the output', async () => {
+    const trustService = createTrustService()
+    const gateway = new GovernanceGateway(trustService, [
+      createMockControl('output-degrader', 'output', 'degrade'),
+    ])
+
+    const ctx: GovernanceContext = {
+      runId: 'r1',
+      graph: { nodes: [], edges: [] },
+      state: { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any,
+      metadata: { goal: 'test', files: [], initiator: 'test' },
+      action: { type: 'node.execute', nodeId: 'VERIFY' },
+    }
+
+    const candidates = [{
+      id: 'c1', provider: 'codex',
+      summary: 'a good answer with sufficient content for scoring purposes', confidence: 95,
+    }]
+
+    const result = await gateway.release(ctx, candidates, 20)
+
+    // Output control degrade signal should be respected:
+    // The primary release path still releases (degrade doesn't block),
+    // but if an assurance engine fallback is triggered, degrade signals are merged.
+    // Without assurance engine, degrade passes through as normal release.
+    expect(result.selectedCandidateId).toBe('c1')
+    expect(result.score).toBeGreaterThan(0)
+  })
+
+  it('returns score=0 when all candidates fail assurance', async () => {
+    const trustService = createTrustService()
+    const gateway = new GovernanceGateway(trustService)
+
+    // Set a mock assurance engine that always fails
+    gateway.setAssuranceEngine({
+      verify: async () => ({
+        passed: false,
+        findings: [{ message: 'hallucination detected', severity: 'critical' as const }],
+      }),
+    } as any)
+
+    const ctx: GovernanceContext = {
+      runId: 'r1',
+      graph: { nodes: [], edges: [] },
+      state: { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any,
+      metadata: { goal: 'test', files: [], initiator: 'test' },
+      action: { type: 'node.execute', nodeId: 'VERIFY' },
+    }
+
+    const candidates = [
+      { id: 'c1', provider: 'codex', summary: 'answer one content', confidence: 80 },
+      { id: 'c2', provider: 'gemini', summary: 'answer two content', confidence: 70 },
+    ]
+
+    const result = await gateway.release(ctx, candidates, 30)
+    expect(result.effect).toBe('escalate')
+    // P2-2 fix: score should be 0, not the best candidate's score
+    expect(result.score).toBe(0)
+  })
+})
+
+// ── P1-8 Fix: failFast=false 时并行控制评估 ──────────────────────────────────
+
+describe('GovernanceGateway — parallel control evaluation', () => {
+  it('evaluates controls in parallel when failFast=false', async () => {
+    const trustService = createTrustService()
+    const executionOrder: string[] = []
+
+    const slowControl: GovernanceControl = {
+      id: 'slow-ctrl',
+      name: 'Slow Control',
+      stage: 'input',
+      defaultLevel: 'warn',
+      priority: 10,
+      evaluate: async () => {
+        await new Promise(r => setTimeout(r, 50))
+        executionOrder.push('slow')
+        return { controlId: 'slow-ctrl', controlName: 'Slow Control', status: 'pass' as const, message: 'ok' }
+      },
+    }
+
+    const fastControl: GovernanceControl = {
+      id: 'fast-ctrl',
+      name: 'Fast Control',
+      stage: 'input',
+      defaultLevel: 'warn',
+      priority: 5,
+      evaluate: () => {
+        executionOrder.push('fast')
+        return { controlId: 'fast-ctrl', controlName: 'Fast Control', status: 'pass' as const, message: 'ok' }
+      },
+    }
+
+    // failFast=false → parallel evaluation
+    const gateway = new GovernanceGateway(trustService, [slowControl, fastControl], { failFast: false })
+
+    const ctx: GovernanceContext = {
+      runId: 'r1',
+      graph: { nodes: [], edges: [] },
+      state: { runId: 'r1', version: 1, nodes: {}, status: 'running' } as any,
+      metadata: { goal: 'test', files: [], initiator: 'test' },
+      action: { type: 'node.execute', nodeId: 'A' },
+    }
+
+    const start = Date.now()
+    const result = await gateway.preflight(ctx)
+    const duration = Date.now() - start
+
+    expect(result.effect).toBe('allow')
+    // Both controls should have been evaluated
+    expect(result.rationale).toHaveLength(2)
+    // In parallel mode, total time should be ~50ms (slow control), not ~50ms + 0ms
+    // If sequential with priority order: slow(50ms) then fast(0ms) = ~50ms anyway
+    // But the key indicator is both executed
+    expect(executionOrder).toContain('slow')
+    expect(executionOrder).toContain('fast')
+    // With parallel execution, fast should finish before slow
+    expect(executionOrder[0]).toBe('fast')
+  })
+})

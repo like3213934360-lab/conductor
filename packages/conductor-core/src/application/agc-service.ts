@@ -26,6 +26,7 @@ import { WorkflowRuntime } from '../governance/workflow-runtime.js'
 import type { WorkflowDefinition, NodeLease, CheckpointSubmission, CheckpointResult } from '../governance/workflow-runtime.js'
 import { CheckpointSchemaRegistry } from '../governance/checkpoint-schemas.js'
 import { TokenBudgetEnforcer } from '../governance/token-budget-enforcer.js'
+import { KeyedAsyncMutex } from '../concurrency/async-mutex.js' // ★ P0-4 fix
 import type { ReflexionActorLoop } from '../reflexion/actor-loop.js'
 import type { UpcastingRegistry } from '../event-sourcing/upcasting.js'
 
@@ -112,6 +113,8 @@ export class AGCService {
   private readonly upcastingRegistry?: UpcastingRegistry
   /** 当前运行上下文 (用于 advanceNode/completeRun) */
   private currentRunContext?: { runId: string; graph: RunGraph; metadata: RunMetadata; dreadScore: number }
+  /** ★ P0-4 fix: 节点领取互斥锁 (防止并发 advanceNode 竞态) */
+  private readonly advanceMutex = new KeyedAsyncMutex()
 
   constructor(deps: AGCServiceDeps) {
     this.eventStore = deps.eventStore
@@ -378,7 +381,7 @@ export class AGCService {
       graph: parsed.graph,
       nodes: Object.fromEntries(parsed.graph.nodes.map(n => [
         n.id,
-        {
+      {
           nodeId: n.id,
           boundaryMode: 'EXECUTION' as const,
           skippable: n.skippable ?? false,
@@ -387,7 +390,27 @@ export class AGCService {
             .map(e => ({
               edgeId: `${e.from}->${e.to}`,
               to: e.to,
-              when: () => !e.condition || true, // 路由条件由 runtime 评估
+              // ★ P1-6 fix: 实现真实的条件评估器，而非永远返回 true
+              when: e.condition
+                ? (ctx: import('../governance/workflow-runtime.js').RouteEvalContext) => {
+                    try {
+                      // 简单的属性路径评估 (e.g. "route_path === 'express'")
+                      const parts = e.condition!.split(/\s*(===|!==|==|!=)\s*/)
+                      const prop = parts[0]
+                      const value = parts[2]
+                      if (prop && value) {
+                        const actualValue = String(ctx.nodeOutput[prop.trim()] ?? '')
+                        const expectedValue = value.trim().replace(/^['"]|['"]$/g, '')
+                        return e.condition!.includes('!==') || e.condition!.includes('!=')
+                          ? actualValue !== expectedValue
+                          : actualValue === expectedValue
+                      }
+                      return true // 无法解析时默认通过
+                    } catch {
+                      return true // 评估异常时默认通过
+                    }
+                  }
+                : () => true, // 无条件边始终通过
             })) ?? [],
         },
       ])),
@@ -447,19 +470,20 @@ export class AGCService {
 
     const { runId, graph, metadata, dreadScore } = this.currentRunContext
 
+    // ★ P0-4 fix: 互斥锁保护 claim+execute 原子性
+    return this.advanceMutex.withLock(runId, async () => {
+
     // 1. 获取当前状态
     const state = await this.getState(runId)
     if (!state) throw new Error(`Run ${runId} not found`)
 
-    // 2. runtime.claimNext() — 获取租约
-    const leases = this.runtime.claimNext(runId, state)
-    if (leases.length === 0) {
+    // 2. ★ P1-2 fix: 使用 claimNextOne 代替 claimNext，避免孤立租约
+    const lease = this.runtime.claimNextOne(runId, state)
+    if (!lease) {
       // 无就绪节点，可能工作流已完成
       return { executed: false, state, nextNodeIds: [] }
     }
 
-    // 取第一个就绪节点 (顺序执行)
-    const lease = leases[0]!
     this.logger.info('WorkflowRuntime 发放租约', { runId, nodeId: lease.nodeId, leaseId: lease.leaseId })
 
     // 3. gateway.authorize() — 授权检查
@@ -476,6 +500,8 @@ export class AGCService {
         runId, nodeId: lease.nodeId, effect: authDecision.effect,
         rationale: authDecision.rationale,
       })
+      // ★ P0-2 fix: 授权失败时释放租约
+      this.runtime.abandonLease(lease.leaseId, `auth ${authDecision.effect}`)
       // 授权失败 → 不执行 callback，记录事件
       const events: AGCEventEnvelope[] = [{
         eventId: createEventId(),
@@ -501,13 +527,24 @@ export class AGCService {
       runId, nodeId: lease.nodeId, route: authDecision.route,
     })
 
+    // ★ P1-4 fix: 执行前预算检查（在昂贵的 LLM 调用之前）
+    if (this.budgetEnforcer) {
+      const budgetCheck = this.budgetEnforcer.preflight(lease.nodeId)
+      if (!budgetCheck.allowed) {
+        this.logger.warn('Token 预算不足，跳过节点', { runId, nodeId: lease.nodeId, reason: budgetCheck.reason })
+        this.runtime.abandonLease(lease.leaseId, `budget: ${budgetCheck.reason}`)
+        return { executed: false, nodeId: lease.nodeId, lease, state, nextNodeIds: [] }
+      }
+    }
+
     // 4. userCallback() — 执行节点逻辑
     const startTime = Date.now()
     let callbackResult: Awaited<ReturnType<NodeExecutionCallback>>
     try {
       callbackResult = await callback(lease, { state, graph, metadata })
     } catch (err) {
-      // callback 异常 → 记录失败
+      // ★ P1-3 fix: callback 异常时释放租约
+      this.runtime.abandonLease(lease.leaseId, `callback error: ${String(err)}`)
       this.logger.error('Node callback 执行失败', { runId, nodeId: lease.nodeId, error: String(err) })
       // 观察失败结果
       await this.gateway.observe(
@@ -516,6 +553,7 @@ export class AGCService {
       )
       throw err
     }
+    const durationMs = Date.now() - startTime
 
     // 5. gateway.observe() — 观察 + 更新信任因子
     const observeDecision = await this.gateway.observe(
@@ -528,6 +566,34 @@ export class AGCService {
       },
       callbackResult.outcome,
     )
+
+    // ★ P0-3 fix: 检查 observe 决策 — block/escalate 阻断 checkpoint 提交
+    if (observeDecision.effect === 'block' || observeDecision.effect === 'escalate') {
+      this.logger.warn('GovernanceGateway 观察拦截：阻断输出', {
+        runId, nodeId: lease.nodeId, effect: observeDecision.effect,
+        rationale: observeDecision.rationale,
+      })
+      this.runtime.abandonLease(lease.leaseId, `observe ${observeDecision.effect}`)
+      // 发射 NODE_FAILED 事件
+      const failEvents: AGCEventEnvelope[] = [{
+        eventId: createEventId(),
+        runId,
+        type: 'NODE_FAILED',
+        payload: { nodeId: lease.nodeId, error: `Observe interceptor ${observeDecision.effect}: ${observeDecision.rationale.join('; ')}` },
+        timestamp: createISODateTime(),
+        version: state.version + 1,
+      }]
+      await this.eventStore.append({ runId, events: failEvents, expectedVersion: state.version })
+      const failState = reduceEvent(state, failEvents[0]!)
+      return {
+        executed: true,
+        nodeId: lease.nodeId,
+        lease,
+        governanceDecision: observeDecision,
+        state: failState,
+        nextNodeIds: [],
+      }
+    }
 
     this.logger.info('GovernanceGateway 观察完成', {
       runId, nodeId: lease.nodeId,
@@ -579,10 +645,15 @@ export class AGCService {
       eventId: createEventId(),
       runId,
       type: 'NODE_COMPLETED',
+      // ★ P0-1 fix: 发射符合共享 NodeCompletedPayload 的 payload
       payload: {
         nodeId: lease.nodeId,
-        checkpoint: callbackResult.checkpoint,
-        tokenUsage: callbackResult.tokenUsage,
+        output: (callbackResult.checkpoint ?? {}) as Record<string, unknown>,
+        model: callbackResult.outcome.action && 'provider' in callbackResult.outcome.action
+          ? (callbackResult.outcome.action as { provider: string }).provider
+          : undefined,
+        durationMs,
+        degraded: false,
       },
       timestamp: createISODateTime(),
       version,
@@ -621,6 +692,8 @@ export class AGCService {
       state: newState,
       nextNodeIds: cpResult.nextNodeIds,
     }
+
+    }) // ★ P0-4 fix: advanceMutex.withLock 结束
   }
 
   /**
@@ -797,13 +870,15 @@ export class AGCService {
     if (checkpoint) {
       const fullReplayEvents = await this.eventStore.load({ runId })
       const fullReplayState = projectStateFromEvents(runId, fullReplayEvents)
-      // 比较节点状态 (忽略 version 字段)
-      const replayedNodeJson = JSON.stringify(Object.keys(replayedState.nodes).sort().map(k => ({
-        id: k, status: replayedState.nodes[k]?.status,
-      })))
-      const fullNodeJson = JSON.stringify(Object.keys(fullReplayState.nodes).sort().map(k => ({
-        id: k, status: fullReplayState.nodes[k]?.status,
-      })))
+      // ★ P2-3 fix: 深度比较完整节点状态（包含 output/model/durationMs，不仅是 status）
+      const replayedNodeJson = JSON.stringify(Object.keys(replayedState.nodes).sort().map(k => {
+        const n = replayedState.nodes[k]!
+        return { id: k, status: n.status, output: n.output, model: n.model, durationMs: n.durationMs }
+      }))
+      const fullNodeJson = JSON.stringify(Object.keys(fullReplayState.nodes).sort().map(k => {
+        const n = fullReplayState.nodes[k]!
+        return { id: k, status: n.status, output: n.output, model: n.model, durationMs: n.durationMs }
+      }))
       driftDetected = replayedNodeJson !== fullNodeJson
     }
 

@@ -61,6 +61,7 @@ const Icon: React.FC<{ name: string; size?: number; color?: string }> = ({ name,
         case 'grid': return <svg {...p}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>;
         case 'radio': return <svg {...p}><circle cx="12" cy="12" r="10"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49"/><line x1="12" y1="12" x2="12" y2="12.01"/></svg>;
         case 'table': return <svg {...p}><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/></svg>;
+        case 'workflow': return <svg {...p}><circle cx="5" cy="12" r="2.5"/><circle cx="12" cy="5" r="2.5"/><circle cx="12" cy="19" r="2.5"/><circle cx="19" cy="12" r="2.5"/><line x1="7.5" y1="11" x2="9.5" y2="6.5"/><line x1="7.5" y1="13" x2="9.5" y2="17.5"/><line x1="14.5" y1="6.5" x2="16.5" y2="11"/><line x1="14.5" y1="17.5" x2="16.5" y2="13"/></svg>;
         case 'arrow-right': return <svg {...p}><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>;
 
         default: return null;
