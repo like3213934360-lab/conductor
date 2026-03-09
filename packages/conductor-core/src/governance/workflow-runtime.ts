@@ -175,12 +175,24 @@ export class WorkflowRuntime {
    * 从 AGCState 恢复运行时状态（重启恢复）
    *
    * 解决 Gemini 审查问题 #1: Transient Runtime State Volatility Gap
+   * ★ Bug fix: 同时恢复预算状态，防止重启后预算丢失
    */
   resume(state: AGCState): void {
     for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
       if (nodeState.status === 'completed') this.completedNodes.add(nodeId)
       if (nodeState.status === 'skipped') this.skippedNodes.add(nodeId)
     }
+    // ★ 恢复预算状态 (重启后无活跃租约，预留归零)
+    if (this.budgetEnforcer && (state as Record<string, unknown>).budgetSnapshot) {
+      const snapshot = (state as Record<string, unknown>).budgetSnapshot as {
+        globalUsed: number; nodeBreakdown: Record<string, number>
+      }
+      this.budgetEnforcer.restoreFromSnapshot(snapshot)
+    }
+    // 重启后清空偏差记录（属于前一次执行的瞬态数据）
+    this.deviations.length = 0
+    this.activeLeases.clear()
+    this.consumedLeases.clear()
   }
 
   /**
@@ -467,6 +479,14 @@ export class WorkflowRuntime {
     for (const [leaseId, lease] of this.activeLeases.entries()) {
       if (new Date(lease.expiresAt).getTime() < now) {
         this.activeLeases.delete(leaseId)
+        // ★ Bug fix: 释放过期租约的预留 token，防止永久泄漏
+        if (this.budgetEnforcer) {
+          const estimated = (this.definition as WorkflowDefinition | undefined)
+            ? undefined : undefined // 从 config 获取
+          const nodeEstimate = this.budgetEnforcer['config']?.nodeEstimates?.[lease.nodeId]
+            ?? this.budgetEnforcer['config']?.defaultReservation ?? 2000
+          this.budgetEnforcer.releaseReservation(nodeEstimate)
+        }
         this.deviations.push({
           code: 'STALE_LEASE',
           nodeId: lease.nodeId,

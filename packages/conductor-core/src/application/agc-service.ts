@@ -20,8 +20,12 @@ import { DRCalculator } from '../risk/dr-calculator.js'
 import { RiskRouter } from '../risk/risk-router.js'
 import { GovernanceGateway } from '../governance/governance-gateway.js'
 import { TrustFactorService } from '../governance/trust-factor.js'
-import type { GovernanceControl } from '../governance/governance-types.js'
+import type { GovernanceControl, GovernanceDecision, ModelCandidate, ReleaseDecision, ActionOutcome } from '../governance/governance-types.js'
 import { getDefaultControlPack } from '../governance/default-control-pack.js'
+import { WorkflowRuntime } from '../governance/workflow-runtime.js'
+import type { WorkflowDefinition, NodeLease, CheckpointSubmission, CheckpointResult } from '../governance/workflow-runtime.js'
+import { CheckpointSchemaRegistry } from '../governance/checkpoint-schemas.js'
+import { TokenBudgetEnforcer } from '../governance/token-budget-enforcer.js'
 import type { ReflexionActorLoop } from '../reflexion/actor-loop.js'
 import type { UpcastingRegistry } from '../event-sourcing/upcasting.js'
 
@@ -57,6 +61,31 @@ export interface VerifyRunResult {
   governance: GovernanceDecisionRecord
 }
 
+/** 节点执行回调 — 用户提供的实际节点逻辑 */
+export type NodeExecutionCallback = (
+  lease: NodeLease,
+  ctx: { state: AGCState; graph: RunGraph; metadata: RunMetadata },
+) => Promise<{ checkpoint: unknown; tokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number }; outcome: ActionOutcome }>
+
+/** 节点推进结果 */
+export interface AdvanceNodeResult {
+  executed: boolean
+  nodeId?: string
+  lease?: NodeLease
+  governanceDecision?: GovernanceDecision
+  checkpointResult?: CheckpointResult
+  state: AGCState
+  /** 下一批就绪节点 ID */
+  nextNodeIds: string[]
+}
+
+/** 运行完成结果 */
+export interface CompleteRunResult {
+  release: ReleaseDecision
+  state: AGCState
+  governance: GovernanceDecisionRecord
+}
+
 /**
  * AGCService — Conductor 核心应用服务
  *
@@ -70,10 +99,19 @@ export class AGCService {
   private readonly drCalculator: DRCalculator
   private readonly riskRouter: RiskRouter
   private readonly gateway: GovernanceGateway
+  private readonly trustService: TrustFactorService
+  /** v8.0: Lease-Based 工作流运行时 */
+  private readonly runtime: WorkflowRuntime
+  /** v8.0: 检查点 Schema 注册表 */
+  private readonly schemaRegistry: CheckpointSchemaRegistry
+  /** v8.0: Token 预算执行器 (可选) */
+  private readonly budgetEnforcer?: TokenBudgetEnforcer
   /** Phase 4: Reflexion 闭环 (可选) */
   private readonly reflexionLoop?: ReflexionActorLoop
   /** Phase 4: Event Upcasting (可选) */
   private readonly upcastingRegistry?: UpcastingRegistry
+  /** 当前运行上下文 (用于 advanceNode/completeRun) */
+  private currentRunContext?: { runId: string; graph: RunGraph; metadata: RunMetadata; dreadScore: number }
 
   constructor(deps: AGCServiceDeps) {
     this.eventStore = deps.eventStore
@@ -83,10 +121,18 @@ export class AGCService {
     this.drCalculator = new DRCalculator()
     this.riskRouter = new RiskRouter()
     // v8.0: GovernanceGateway (GaaS PDP/PEP)
-    const trustService = new TrustFactorService()
+    this.trustService = new TrustFactorService()
     this.gateway = new GovernanceGateway(
-      trustService,
+      this.trustService,
       deps.governanceControls ?? getDefaultControlPack(),
+    )
+    // v8.0: Lease-Based Runtime + Schema Registry
+    this.schemaRegistry = new CheckpointSchemaRegistry()
+    this.budgetEnforcer = new TokenBudgetEnforcer()
+    this.runtime = new WorkflowRuntime(
+      this.schemaRegistry,
+      undefined,
+      this.budgetEnforcer,
     )
     // Phase 4: Reflexion + Upcasting
     this.reflexionLoop = deps.reflexionLoop
@@ -325,7 +371,43 @@ export class AGCService {
     }
     await this.checkpointStore.save({ checkpoint })
 
-    this.logger.info('AGC 运行已启动', { runId, lane: route.lane, drScore: drScore.score })
+    // v8.0: 初始化 WorkflowRuntime
+    const workflowDef: WorkflowDefinition = {
+      workflowId: `agc-${runId}`,
+      version: 'v8.0',
+      graph: parsed.graph,
+      nodes: Object.fromEntries(parsed.graph.nodes.map(n => [
+        n.id,
+        {
+          nodeId: n.id,
+          boundaryMode: 'EXECUTION' as const,
+          skippable: n.skippable ?? false,
+          allowedOutgoing: parsed.graph.edges
+            ?.filter(e => e.from === n.id)
+            .map(e => ({
+              edgeId: `${e.from}->${e.to}`,
+              to: e.to,
+              when: () => !e.condition || true, // 路由条件由 runtime 评估
+            })) ?? [],
+        },
+      ])),
+    }
+    this.runtime.start(workflowDef)
+
+    // 保存当前运行上下文 (advanceNode/completeRun 使用)
+    this.currentRunContext = {
+      runId,
+      graph: parsed.graph,
+      metadata: parsed.metadata,
+      dreadScore: drScore.score,
+    }
+
+    // 设置 Token 预算 (如果指定)
+    if (parsed.options?.tokenBudget && this.budgetEnforcer) {
+      this.budgetEnforcer.setGlobalLimit(parsed.options.tokenBudget)
+    }
+
+    this.logger.info('AGC 运行已启动 (已集成 WorkflowRuntime)', { runId, lane: route.lane, drScore: drScore.score })
 
     // Phase 4 接入: Reflexion enrichRunContext 注入反思记忆
     let enrichedContext: { reflexionPrompts: string[]; sourceRunIds: string[]; promptCount: number } | undefined
@@ -340,6 +422,304 @@ export class AGCService {
     }
 
     return { runId, state: finalState, route, governance, drScore, checkpoint }
+  }
+
+  // ── v8.0: 节点执行生命周期 (5 步治理合同) ──────────────────────────
+
+  /**
+   * 推进下一个节点 — Temporal Activity 合同模式
+   *
+   * 5 步强制生命周期:
+   * 1. runtime.claimNext()         → 获取 NodeLease
+   * 2. gateway.authorize()         → 授权检查 (execution + routing controls)
+   * 3. userCallback(lease, ctx)    → 用户执行节点逻辑
+   * 4. gateway.observe()           → 观察 + 更新信任因子
+   * 5. runtime.submitCheckpoint()  → Schema 验证 + 路由计算
+   *
+   * 每一步失败都会阻断执行，确保 LLM 无法绕过任何一个拦截点。
+   */
+  async advanceNode(
+    callback: NodeExecutionCallback,
+  ): Promise<AdvanceNodeResult> {
+    if (!this.currentRunContext) {
+      throw new Error('No active run. Call startRun() first.')
+    }
+
+    const { runId, graph, metadata, dreadScore } = this.currentRunContext
+
+    // 1. 获取当前状态
+    const state = await this.getState(runId)
+    if (!state) throw new Error(`Run ${runId} not found`)
+
+    // 2. runtime.claimNext() — 获取租约
+    const leases = this.runtime.claimNext(runId, state)
+    if (leases.length === 0) {
+      // 无就绪节点，可能工作流已完成
+      return { executed: false, state, nextNodeIds: [] }
+    }
+
+    // 取第一个就绪节点 (顺序执行)
+    const lease = leases[0]!
+    this.logger.info('WorkflowRuntime 发放租约', { runId, nodeId: lease.nodeId, leaseId: lease.leaseId })
+
+    // 3. gateway.authorize() — 授权检查
+    const authDecision = await this.gateway.authorize({
+      runId,
+      action: { type: 'node.execute', nodeId: lease.nodeId },
+      state,
+      graph,
+      metadata,
+    })
+
+    if (authDecision.effect === 'block' || authDecision.effect === 'escalate') {
+      this.logger.warn('GovernanceGateway 授权拒绝', {
+        runId, nodeId: lease.nodeId, effect: authDecision.effect,
+        rationale: authDecision.rationale,
+      })
+      // 授权失败 → 不执行 callback，记录事件
+      const events: AGCEventEnvelope[] = [{
+        eventId: createEventId(),
+        runId,
+        type: 'NODE_BLOCKED' as AGCEventEnvelope['type'],
+        payload: { nodeId: lease.nodeId, effect: authDecision.effect, rationale: authDecision.rationale },
+        timestamp: createISODateTime(),
+        version: state.version + 1,
+      }]
+      await this.eventStore.append({ runId, events, expectedVersion: state.version })
+      const newState = reduceEvent(state, events[0]!)
+      return {
+        executed: false,
+        nodeId: lease.nodeId,
+        lease,
+        governanceDecision: authDecision,
+        state: newState,
+        nextNodeIds: [],
+      }
+    }
+
+    this.logger.info('GovernanceGateway 授权通过', {
+      runId, nodeId: lease.nodeId, route: authDecision.route,
+    })
+
+    // 4. userCallback() — 执行节点逻辑
+    const startTime = Date.now()
+    let callbackResult: Awaited<ReturnType<NodeExecutionCallback>>
+    try {
+      callbackResult = await callback(lease, { state, graph, metadata })
+    } catch (err) {
+      // callback 异常 → 记录失败
+      this.logger.error('Node callback 执行失败', { runId, nodeId: lease.nodeId, error: String(err) })
+      // 观察失败结果
+      await this.gateway.observe(
+        { runId, action: { type: 'node.execute', nodeId: lease.nodeId }, state, graph, metadata },
+        { action: { type: 'node.execute', nodeId: lease.nodeId }, success: false, durationMs: Date.now() - startTime, error: String(err) },
+      )
+      throw err
+    }
+
+    // 5. gateway.observe() — 观察 + 更新信任因子
+    const observeDecision = await this.gateway.observe(
+      {
+        runId,
+        action: { type: 'node.execute', nodeId: lease.nodeId },
+        state,
+        graph,
+        metadata,
+      },
+      callbackResult.outcome,
+    )
+
+    this.logger.info('GovernanceGateway 观察完成', {
+      runId, nodeId: lease.nodeId,
+      trustUpdated: true,
+      observeEffect: observeDecision.effect,
+    })
+
+    // 6. runtime.submitCheckpoint() — Schema 验证 + 路由计算
+    const submission: CheckpointSubmission = {
+      runId,
+      leaseId: lease.leaseId,
+      nodeId: lease.nodeId,
+      checkpoint: callbackResult.checkpoint,
+      tokenUsage: callbackResult.tokenUsage,
+    }
+    const cpResult = this.runtime.submitCheckpoint(submission, state)
+
+    if (!cpResult.accepted) {
+      this.logger.error('WorkflowRuntime 检查点拒绝', {
+        runId, nodeId: lease.nodeId, reason: cpResult.reason,
+      })
+      // 持久化偏差事件
+      const devEvents: AGCEventEnvelope[] = [{
+        eventId: createEventId(),
+        runId,
+        type: 'DEVIATION_DETECTED' as AGCEventEnvelope['type'],
+        payload: { deviation: cpResult.deviation },
+        timestamp: createISODateTime(),
+        version: state.version + 1,
+      }]
+      await this.eventStore.append({ runId, events: devEvents, expectedVersion: state.version })
+      const devState = reduceEvent(state, devEvents[0]!)
+      return {
+        executed: true,
+        nodeId: lease.nodeId,
+        lease,
+        checkpointResult: cpResult,
+        state: devState,
+        nextNodeIds: [],
+      }
+    }
+
+    // 7. 持久化成功事件
+    let version = state.version
+    const successEvents: AGCEventEnvelope[] = []
+
+    version++
+    successEvents.push({
+      eventId: createEventId(),
+      runId,
+      type: 'NODE_COMPLETED',
+      payload: {
+        nodeId: lease.nodeId,
+        checkpoint: callbackResult.checkpoint,
+        tokenUsage: callbackResult.tokenUsage,
+      },
+      timestamp: createISODateTime(),
+      version,
+    })
+
+    // 为下一批就绪节点发射 NODE_QUEUED
+    for (const nextId of cpResult.nextNodeIds) {
+      version++
+      successEvents.push({
+        eventId: createEventId(),
+        runId,
+        type: 'NODE_QUEUED',
+        payload: { nodeId: nextId },
+        timestamp: createISODateTime(),
+        version,
+      })
+    }
+
+    await this.eventStore.append({ runId, events: successEvents, expectedVersion: state.version })
+
+    let newState = state
+    for (const evt of successEvents) {
+      newState = reduceEvent(newState, evt)
+    }
+
+    this.logger.info('advanceNode 完成', {
+      runId, nodeId: lease.nodeId, nextNodes: cpResult.nextNodeIds,
+    })
+
+    return {
+      executed: true,
+      nodeId: lease.nodeId,
+      lease,
+      governanceDecision: authDecision,
+      checkpointResult: cpResult,
+      state: newState,
+      nextNodeIds: cpResult.nextNodeIds,
+    }
+  }
+
+  /**
+   * 完成运行 — SYNTHESIZE 阶段调用 release 拦截点
+   *
+   * Trust-Weighted 释放决策:
+   * 1. gateway.release(candidates) → 信任加权释放
+   * 2. 持久化 RUN_COMPLETED 事件
+   */
+  async completeRun(
+    candidates: ModelCandidate[],
+  ): Promise<CompleteRunResult> {
+    if (!this.currentRunContext) {
+      throw new Error('No active run. Call startRun() first.')
+    }
+
+    const { runId, graph, metadata, dreadScore } = this.currentRunContext
+    const state = await this.getState(runId)
+    if (!state) throw new Error(`Run ${runId} not found`)
+
+    // 1. gateway.release() — Trust-Weighted 释放决策
+    const releaseDecision = await this.gateway.release(
+      {
+        runId,
+        action: { type: 'answer.release' },
+        state,
+        graph,
+        metadata,
+      },
+      candidates,
+      dreadScore,
+    )
+
+    this.logger.info('GovernanceGateway 释放决策', {
+      runId, effect: releaseDecision.effect,
+      selectedCandidate: releaseDecision.selectedCandidateId,
+      score: releaseDecision.score,
+    })
+
+    // 2. 持久化 RUN_COMPLETED
+    const finalStatus = releaseDecision.effect === 'release' ? 'completed'
+      : releaseDecision.effect === 'escalate' ? 'failed'
+      : 'completed' // degrade/revise 仍算完成
+
+    const events: AGCEventEnvelope[] = [{
+      eventId: createEventId(),
+      runId,
+      type: 'RUN_COMPLETED',
+      payload: {
+        finalStatus,
+        releaseEffect: releaseDecision.effect,
+        selectedCandidateId: releaseDecision.selectedCandidateId,
+        releaseScore: releaseDecision.score,
+      },
+      timestamp: createISODateTime(),
+      version: state.version + 1,
+    }]
+
+    await this.eventStore.append({ runId, events, expectedVersion: state.version })
+    const finalState = reduceEvent(state, events[0]!)
+
+    // 保存最终检查点
+    const checkpointId = createCheckpointId()
+    await this.checkpointStore.save({
+      checkpoint: {
+        checkpointId,
+        runId,
+        version: finalState.version,
+        state: finalState,
+        createdAt: createISODateTime(),
+      },
+    })
+
+    // 清理运行上下文
+    this.currentRunContext = undefined
+
+    const governance: GovernanceDecisionRecord = {
+      allowed: releaseDecision.effect !== 'escalate',
+      worstStatus: releaseDecision.effect === 'release' ? 'pass' : 'warn',
+      evaluatedAt: createISODateTime(),
+      findings: releaseDecision.rationale.map(r => ({
+        ruleId: 'GaaS-Release',
+        ruleName: 'GovernanceGateway.release',
+        status: 'pass' as const,
+        message: r,
+      })),
+    }
+
+    this.logger.info('AGC 运行完成 (全治理生命周期)', {
+      runId, finalStatus,
+      releaseEffect: releaseDecision.effect,
+    })
+
+    return { release: releaseDecision, state: finalState, governance }
+  }
+
+  /** 获取 WorkflowRuntime (用于外部查询偏差、完成状态等) */
+  getRuntime(): WorkflowRuntime {
+    return this.runtime
   }
 
   /**

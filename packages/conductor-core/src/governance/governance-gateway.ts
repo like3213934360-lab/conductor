@@ -201,6 +201,16 @@ export class GovernanceGateway {
           const fallback = scored[i]!
           const fbVerdict = await this.assuranceEngine.verify(fallback.candidate, ctx)
           if (fbVerdict.passed) {
+            // ★ Bug fix: fallback 也必须通过 output-stage controls (不再绕过)
+            const fbOutputCtx: GovernanceContext = {
+              ...ctx,
+              action: { type: 'answer.release', candidateId: fallback.candidate.id },
+              candidate: fallback.candidate,
+            }
+            const fbOutputDecision = await this.evaluateStage('output', fbOutputCtx, dreadScore)
+            if (fbOutputDecision.effect === 'block' || fbOutputDecision.effect === 'escalate') {
+              continue // 此 fallback 也被 output 控制拒绝，尝试下一个
+            }
             return {
               selectedCandidateId: fallback.candidate.id,
               effect: 'release' as const,
@@ -226,7 +236,7 @@ export class GovernanceGateway {
       action: { type: 'answer.release', candidateId: best.candidate.id },
       candidate: best.candidate,
     }
-    const outputDecision = await this.evaluateStage('output', outputCtx)
+    const outputDecision = await this.evaluateStage('output', outputCtx, dreadScore)
 
     if (outputDecision.effect === 'block' || outputDecision.effect === 'escalate') {
       return {
@@ -273,6 +283,8 @@ export class GovernanceGateway {
   private async evaluateStage(
     stage: ControlStage,
     ctx: GovernanceContext,
+    /** ★ Bug fix: 传入实际 DREAD 分数，不再硬编码 50 */
+    dreadScore?: number,
   ): Promise<GovernanceDecision> {
     const stageControls = this.controls.filter(c => c.stage === stage)
 
@@ -315,7 +327,8 @@ export class GovernanceGateway {
       if (result.status === 'block' && this.config.failFast) break
     }
 
-    const trust = this.trustService.compute({ dreadScore: 50 }) // 中性默认
+    // ★ Bug fix: 使用传入的 DREAD 分数，回退到中性值 50
+    const trust = this.trustService.compute({ dreadScore: dreadScore ?? 50 })
     const effect = statusToEffect(worstStatus)
 
     return {
