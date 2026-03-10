@@ -27,11 +27,11 @@ export function registerAgcRunTool(server: McpServer, ctx: ServerContext): void 
             nodes: [
               { id: 'ANALYZE', name: 'ANALYZE', dependsOn: [], input: {}, skippable: false, priority: 0 },
               { id: 'PARALLEL', name: 'PARALLEL', dependsOn: ['ANALYZE'], input: {}, skippable: false, priority: 0 },
-              { id: 'DEBATE', name: 'DEBATE', dependsOn: ['PARALLEL'], input: {}, skippable: true, priority: 0 },
+              { id: 'DEBATE', name: 'DEBATE', dependsOn: ['PARALLEL'], input: {}, skippable: false, priority: 0 },
               { id: 'VERIFY', name: 'VERIFY', dependsOn: ['DEBATE'], input: {}, skippable: false, priority: 0 },
               { id: 'SYNTHESIZE', name: 'SYNTHESIZE', dependsOn: ['VERIFY'], input: {}, skippable: false, priority: 0 },
               { id: 'PERSIST', name: 'PERSIST', dependsOn: ['SYNTHESIZE'], input: {}, skippable: false, priority: 0 },
-              { id: 'HITL', name: 'HITL', dependsOn: ['PERSIST'], input: {}, skippable: true, priority: 0 },
+              { id: 'HITL', name: 'HITL', dependsOn: ['PERSIST'], input: {}, skippable: false, priority: 0 },
             ],
             edges: [],
           },

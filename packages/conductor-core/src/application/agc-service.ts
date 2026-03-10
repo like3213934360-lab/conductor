@@ -295,11 +295,18 @@ export class AGCService {
     }
 
     // 7. 路由决策 (仅在合规通过后)
-    const route = this.riskRouter.decide({
-      score: drScore,
-      findings: governance.findings,
-      graph: parsed.graph,
-    })
+    const route = parsed.options?.forceFullPath
+      ? {
+          lane: 'full' as const,
+          nodePath: nodeIds,
+          skippedNodes: [],
+          confidence: 100,
+        }
+      : this.riskRouter.decide({
+          score: drScore,
+          findings: governance.findings,
+          graph: parsed.graph,
+        })
 
     // ROUTE_DECIDED
     version++

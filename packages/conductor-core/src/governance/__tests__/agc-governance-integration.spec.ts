@@ -211,6 +211,58 @@ describe('WorkflowRuntime — Lease lifecycle', () => {
       expect(result.deviation.code).toBe('DUPLICATE_SUBMIT')
     }
   })
+
+  it('rejects PARALLEL checkpoint without dual execution receipts', () => {
+    const parallelRuntime = new WorkflowRuntime(new CheckpointSchemaRegistry())
+    parallelRuntime.start({
+      workflowId: 'parallel-only',
+      version: 'v8.0',
+      graph: {
+        nodes: [{ id: 'PARALLEL', name: 'PARALLEL', dependsOn: [] as string[], input: {}, skippable: false, priority: 0 }],
+        edges: [],
+      },
+      nodes: {
+        PARALLEL: {
+          nodeId: 'PARALLEL',
+          boundaryMode: 'EXECUTION',
+          skippable: false,
+          allowedOutgoing: [],
+        },
+      },
+    })
+
+    const state = { runId: 'r-parallel', version: 1, nodes: {}, status: 'running' } as any
+    const lease = parallelRuntime.claimNext('r-parallel', state)[0]!
+
+    const result = parallelRuntime.submitCheckpoint({
+      runId: 'r-parallel',
+      leaseId: lease.leaseId,
+      nodeId: 'PARALLEL',
+      checkpoint: {
+        execution_mode: 'dual_model_parallel',
+        codex: {
+          provider: 'codex',
+          task_id: 'codex-task-1',
+          started_at: '2026-03-10T00:00:00.000Z',
+          finished_at: '2026-03-10T00:00:01.000Z',
+          status: 'success',
+          output_hash: 'abc',
+          summary: 'done',
+          confidence: 90,
+          option_id: 'A',
+        },
+        both_available: true,
+        dr_value: 0,
+        skip_allowed: false,
+      },
+    }, state)
+
+    expect(result.accepted).toBe(false)
+    if (!result.accepted) {
+      expect(result.deviation.code).toBe('SCHEMA_INVALID')
+      expect(result.reason).toContain('gemini')
+    }
+  })
 })
 
 // ── Token 预算泄漏修复验证 ──────────────────────────────────────────────────

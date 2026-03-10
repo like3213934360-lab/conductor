@@ -20,7 +20,6 @@
     { "path": "packages/conductor-hub-shared" },
     { "path": "packages/conductor-hub-core" },
     { "path": "packages/conductor-hub-persistence" },
-    { "path": "packages/conductor-hub-mcp" },
     { "path": "packages/conductor-hub-adapter" }
   ]
 }

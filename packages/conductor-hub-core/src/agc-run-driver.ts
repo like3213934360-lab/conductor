@@ -28,7 +28,7 @@ import { createEventId, createISODateTime, createCheckpointId, projectStateFromE
 import type { EventStore } from '@anthropic/conductor-core'
 import type { CheckpointStore } from '@anthropic/conductor-core'
 import { DagEngine } from '@anthropic/conductor-core'
-import type { ConductorHubService } from './conductor-hub-service.js'
+import type { AgcAgentRuntime } from '@anthropic/conductor-core'
 import {
   type NodeExecutor,
   type NodeExecutionContext,
@@ -60,10 +60,12 @@ export interface DrainOptions {
   signal?: AbortSignal
   /** 最大 tick 次数（防止死循环） */
   maxTicks?: number
+  /** 节点开始执行后的回调 */
+  onNodeStarted?: (nodeId: string) => void | Promise<void>
   /** 节点执行完成后的回调 */
-  onNodeComplete?: (nodeId: string, result: NodeExecutionResult) => void
+  onNodeComplete?: (nodeId: string, result: NodeExecutionResult) => void | Promise<void>
   /** 节点执行失败后的回调 */
-  onNodeFailed?: (nodeId: string, error: Error) => void
+  onNodeFailed?: (nodeId: string, error: Error) => void | Promise<void>
 }
 
 /** AGCRunDriver 依赖注入 */
@@ -71,7 +73,7 @@ export interface AGCRunDriverDeps {
   eventStore: EventStore
   checkpointStore: CheckpointStore
   dagEngine: DagEngine
-  hub: ConductorHubService
+  hub: AgcAgentRuntime
   executorRegistry?: NodeExecutorRegistry
 }
 
@@ -81,56 +83,17 @@ export interface AGCRunDriverDeps {
  * 条件路由: 根据节点实际输出决定跳过哪些后续节点
  *
  * AGC 工作流路由规则:
- * - PARALLEL → 降级(单模型) → 不跳过任何节点
- * - PARALLEL → DR=0 + conf≥85 → 跳过 DEBATE + VERIFY (Fast-Track)
- * - PARALLEL → DR=0 + conf<85 → 跳过 DEBATE, 保留 VERIFY
- * - PARALLEL → DR>0 → 走 DEBATE
- * - DEBATE → DR<1 && risk<high → 跳过 VERIFY
+ * - PARALLEL → 强制完整路径，不允许 Fast-Track
+ * - DEBATE → 强制进入 VERIFY，不允许跳过
  * - VERIFY → compliance=VIOLATION → 路由到 HITL
  */
-function evaluateTransition(
+export function evaluateTransition(
   nodeId: string,
   output: Record<string, unknown>,
-  state: AGCState,
+  _state: AGCState,
 ): TransitionDecision {
   const skipNodes: Array<{ nodeId: string; reason: string }> = []
   const forceQueue: string[] = []
-
-  if (nodeId === 'PARALLEL') {
-    const drValue = (output.dr_value as number) ?? 0.5
-    const bothAvailable = (output.both_available as boolean) ?? true
-    const codex = output.codex as Record<string, unknown> | undefined
-    const gemini = output.gemini as Record<string, unknown> | undefined
-    const codexConf = typeof codex?.confidence === 'number' ? codex.confidence : 0
-    const geminiConf = typeof gemini?.confidence === 'number' ? gemini.confidence : 0
-    const avgConf = bothAvailable ? (codexConf + geminiConf) / 2 : Math.max(codexConf, geminiConf)
-
-    // 复查修复 #5: 降级执行（只有一个模型可用）时强制走完整路径
-    if (!bothAvailable) {
-      // 不跳过任何节点 — 降级时需要更多验证
-    } else if (drValue === 0 && avgConf >= 85) {
-      // Fast-Track: 完全一致且高置信度
-      skipNodes.push({ nodeId: 'DEBATE', reason: 'DR=0, conf>=85, Fast-Track' })
-      skipNodes.push({ nodeId: 'VERIFY', reason: 'DR=0, conf>=85, Fast-Track' })
-    } else if (drValue === 0 && avgConf < 85) {
-      // 复查修复: 一致但低置信度 → 跳过 DEBATE 但保留 VERIFY
-      skipNodes.push({ nodeId: 'DEBATE', reason: 'DR=0, 模型一致无需辩论' })
-      // 不跳过 VERIFY — 低置信度需要独立验证
-    }
-    // DR > 0: 不跳过，走 DEBATE 路径
-  }
-
-  if (nodeId === 'DEBATE') {
-    const parallelOutput = state.nodes['PARALLEL']?.output
-    const drValue = (parallelOutput?.dr_value as number) ?? 0.5
-    const riskLevel = state.capturedContext?.metadata?.goal ? 'medium' : 'low'
-    const analyzeOutput = state.nodes['ANALYZE']?.output
-    const actualRisk = (analyzeOutput?.risk_level as string) ?? riskLevel
-
-    if (drValue < 1 && actualRisk !== 'high' && actualRisk !== 'critical') {
-      skipNodes.push({ nodeId: 'VERIFY', reason: `DR=${drValue}, risk=${actualRisk}, 无需独立验证` })
-    }
-  }
 
   if (nodeId === 'VERIFY') {
     const complianceCheck = (output.compliance_check as string) ?? 'PASS'
@@ -160,7 +123,7 @@ export class AGCRunDriver {
   private readonly eventStore: EventStore
   private readonly checkpointStore: CheckpointStore
   private readonly dagEngine: DagEngine
-  private readonly hub: ConductorHubService
+  private readonly hub: AgcAgentRuntime
   private readonly registry: NodeExecutorRegistry
 
   constructor(deps: AGCRunDriverDeps) {
@@ -362,6 +325,7 @@ export class AGCRunDriver {
 
     // C. 发射 NODE_STARTED (OCC 重试) — 二轮修复: 传入计划执行的 executor 节点 ID
     await this.safeEmitNodeStarted(runId, nodeId, executor.nodeId)
+    await opts.onNodeStarted?.(nodeId)
 
     // D. 执行（含超时和重试）
     let result: NodeExecutionResult
@@ -396,7 +360,7 @@ export class AGCRunDriver {
 
         // E. 成功 — 发射 NODE_COMPLETED + CHECKPOINT（原子补偿）
         await this.safeEmitNodeCompletedWithCheckpoint(runId, nodeId, result)
-        opts.onNodeComplete?.(nodeId, result)
+        await opts.onNodeComplete?.(nodeId, result)
 
         // F. 条件路由
         const transition = evaluateTransition(nodeId, result.output, state)
@@ -415,7 +379,7 @@ export class AGCRunDriver {
 
     // G. 所有重试耗尽 — 发射 NODE_FAILED
     await this.safeEmitNodeFailed(runId, nodeId, lastError?.message ?? 'Unknown error')
-    opts.onNodeFailed?.(nodeId, lastError ?? new Error('Unknown error'))
+    await opts.onNodeFailed?.(nodeId, lastError ?? new Error('Unknown error'))
     return { status: 'failed' }
   }
 

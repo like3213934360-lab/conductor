@@ -5,6 +5,6 @@ export { SettingsManager, type ModelConfig, type BridgeConfig, type Provider, SU
 export { DashboardPanel, type IHistoryStorage, type HistoryRecord } from './dashboard-panel.js';
 export { ConductorStatusBar } from './status-bar.js';
 export { ConductorWsMcpServer } from './ws-mcp-server.js';
-export { syncKeysToFile, autoRegisterMcpConfig, autoInstallSkill, autoInstallAgcWorkflow, autoInjectRoutingRules } from './auto-config.js';
+export { syncKeysToFile, autoRegisterMcpConfig, autoInstallSkill, autoInjectRoutingRules } from './auto-config.js';
 export { activateConductorHub, deactivateConductorHub } from './activation.js';
 //# sourceMappingURL=index.d.ts.map

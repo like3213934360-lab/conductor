@@ -47,8 +47,10 @@ const dashboard_panel_js_1 = require("./dashboard-panel.js");
 const status_bar_js_1 = require("./status-bar.js");
 const ws_mcp_server_js_1 = require("./ws-mcp-server.js");
 const auto_config_js_1 = require("./auto-config.js");
+const agc_orchestrator_js_1 = require("./agc-orchestrator.js");
 let statusBar;
 let wsMcpServer;
+let agcOrchestrator;
 /**
  * 在宿主扩展的 activate() 中调用此函数以初始化 Conductor Hub 全部功能。
  *
@@ -64,24 +66,73 @@ async function activateConductorHub(context, extensionUri, storage) {
         if (!storage) {
             console.log('[Conductor Hub] History storage not provided — history features disabled.');
         }
-        dashboard_panel_js_1.DashboardPanel.createOrShow(extensionUri, storage || null, settings, () => statusBar?.refresh());
+        dashboard_panel_js_1.DashboardPanel.createOrShow(extensionUri, storage || null, settings, agcOrchestrator, () => statusBar?.refresh());
     });
     context.subscriptions.push(openPanelCmd);
     console.log('[Conductor Hub] Command conductor-hub.openPanel registered ✅');
-    // ── STEP 2: 同步密钥 + 自动配置 ─────────────────────────────────────────
+    agcOrchestrator = new agc_orchestrator_js_1.AgcOrchestrator();
+    context.subscriptions.push(agcOrchestrator);
+    const runAgcCmd = vscode.commands.registerCommand('conductor-hub.runAgc', async () => {
+        const goal = await vscode.window.showInputBox({
+            title: 'Run AGC',
+            prompt: 'Describe the AGC analysis goal',
+            placeHolder: 'Audit this workspace against global SOTA and identify gaps',
+            ignoreFocusOut: true,
+            validateInput: (value) => value.trim().length === 0 ? 'Goal is required' : undefined,
+        });
+        if (!goal) {
+            return;
+        }
+        dashboard_panel_js_1.DashboardPanel.createOrShow(extensionUri, storage || null, settings, agcOrchestrator, () => statusBar?.refresh());
+        try {
+            const result = await agcOrchestrator.startRun({ goal });
+            vscode.window.showInformationMessage(`AGC started: ${result.runId}`);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to start AGC: ${message}`);
+        }
+    });
+    context.subscriptions.push(runAgcCmd);
+    console.log('[Conductor Hub] Command conductor-hub.runAgc registered ✅');
+    // ── STEP 2: 状态栏（最优先，确保始终可见）──────────────────────────────
+    statusBar = new status_bar_js_1.ConductorStatusBar(settings);
+    context.subscriptions.push(statusBar.getItem());
+    try {
+        await statusBar.initialize();
+    }
+    catch (e) {
+        console.error('[Conductor Hub] StatusBar initialize failed (bar still visible):', e);
+    }
+    console.log('[Conductor Hub] StatusBar created ✅');
+    // ── STEP 3: 同步密钥 + 自动配置（每步独立 try-catch，不影响核心功能）──
     const dbFilePath = storage
         ? storage.getDbPath?.() || ''
         : path.join(context.globalStorageUri.fsPath, 'history.db');
-    await (0, auto_config_js_1.syncKeysToFile)(settings, dbFilePath);
-    (0, auto_config_js_1.autoRegisterMcpConfig)(context.extensionPath);
-    (0, auto_config_js_1.autoInstallSkill)(context.extensionPath);
-    (0, auto_config_js_1.autoInstallAgcWorkflow)(context.extensionPath);
-    await (0, auto_config_js_1.autoInjectRoutingRules)(settings);
-    // ── STEP 3: 状态栏 ─────────────────────────────────────────────────────
-    statusBar = new status_bar_js_1.ConductorStatusBar(settings);
-    context.subscriptions.push(statusBar.getItem());
-    await statusBar.initialize();
-    console.log('[Conductor Hub] StatusBar created ✅');
+    try {
+        await (0, auto_config_js_1.syncKeysToFile)(settings, dbFilePath);
+    }
+    catch (e) {
+        console.error('[Conductor Hub] syncKeysToFile failed:', e);
+    }
+    try {
+        (0, auto_config_js_1.autoRegisterMcpConfig)(context.extensionPath);
+    }
+    catch (e) {
+        console.error('[Conductor Hub] autoRegisterMcpConfig failed:', e);
+    }
+    try {
+        (0, auto_config_js_1.autoInstallSkill)(context.extensionPath);
+    }
+    catch (e) {
+        console.error('[Conductor Hub] autoInstallSkill failed:', e);
+    }
+    try {
+        await (0, auto_config_js_1.autoInjectRoutingRules)(settings);
+    }
+    catch (e) {
+        console.error('[Conductor Hub] autoInjectRoutingRules failed:', e);
+    }
     // ── STEP 4: WebSocket MCP Server (非关键) ───────────────────────────────
     try {
         wsMcpServer = new ws_mcp_server_js_1.ConductorWsMcpServer(storage || null, settings);
@@ -99,5 +150,6 @@ async function activateConductorHub(context, extensionUri, storage) {
 function deactivateConductorHub() {
     statusBar?.dispose();
     wsMcpServer?.stop();
+    agcOrchestrator?.dispose();
 }
 //# sourceMappingURL=activation.js.map

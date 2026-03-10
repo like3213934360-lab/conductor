@@ -63,7 +63,7 @@ export class ConductorWsMcpServer {
         this.wss.on('connection', (ws: any) => {
             const transport = new WsTransport(ws);
             const mcpServer = new Server(
-                { name: 'conductor-hub', version: '0.2.0' },
+                { name: 'conductor', version: '0.7.0' },
                 { capabilities: { tools: {} } },
             );
 

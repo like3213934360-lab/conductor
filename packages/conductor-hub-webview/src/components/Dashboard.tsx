@@ -18,7 +18,8 @@ const t = {
         settings: 'Models',
         history: 'History',
         guide: 'Routing',
-        skill: 'AI Skill',
+        skill: 'Routing Skill',
+        workflow: 'Workflow',
         test: 'Test',
         subtitle: 'AI Model Orchestration Hub',
         github: 'GitHub',
@@ -30,7 +31,8 @@ const t = {
         settings: '模型管理',
         history: '调用历史',
         guide: '路由推荐',
-        skill: 'AI 调度',
+        skill: '调度规则',
+        workflow: '工作流',
         test: '测试',
         subtitle: 'AI 模型智能编排中心',
         github: 'GitHub',
@@ -84,11 +86,11 @@ const Dashboard: React.FC = () => {
 
     const tabs = [
         { key: 'overview', label: t[lang].overview, icon: 'overview' },
+        { key: 'agc', label: t[lang].workflow, icon: 'agc' },
         { key: 'config', label: t[lang].settings, icon: 'settings' },
         { key: 'history', label: t[lang].history, icon: 'history' },
         { key: 'guide', label: t[lang].guide, icon: 'guide' },
         { key: 'skill', label: t[lang].skill, icon: 'skill' },
-        { key: 'agc', label: 'AGC', icon: 'agc' },
         { key: 'test', label: t[lang].test, icon: 'test' },
     ] as const;
 

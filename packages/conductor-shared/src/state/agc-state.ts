@@ -40,6 +40,7 @@ const CapturedOptionsSchema = z.object({
   debug: z.boolean().default(false),
   riskHint: z.string().optional(),
   tokenBudget: z.number().optional(),
+  forceFullPath: z.boolean().optional(),
 })
 
 /**

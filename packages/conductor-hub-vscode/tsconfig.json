@@ -17,6 +17,9 @@
   "include": ["src"],
   "references": [
     { "path": "../conductor-hub-shared" },
-    { "path": "../conductor-hub-core" }
+    { "path": "../conductor-hub-core" },
+    { "path": "../conductor-core" },
+    { "path": "../conductor-shared" },
+    { "path": "../conductor-mcp-server" }
   ]
 }

@@ -13,20 +13,14 @@ import type { SettingsManager } from './settings-manager.js';
  */
 export declare function syncKeysToFile(settings: SettingsManager, dbPath?: string): Promise<void>;
 /**
- * 自动注册所有 MCP Server 到 Antigravity 配置 (幂等)
- * - conductor-hub: ai_ask / ai_multi_ask / ai_consensus / ai_codex_task / ai_gemini_task / ai_list_providers
- * - conductor: agc-run / agc-get-state / agc-verify-run / agc-plugins / agc-memory-search / agc-phase4
+ * 自动注册统一 MCP Server 到 Antigravity 配置 (幂等)
+ * Phase 7: conductor-hub 与 conductor 合并为单个 conductor 服务
  */
 export declare function autoRegisterMcpConfig(extensionPath: string): void;
 /**
  * 自动安装 AI 路由 Skill (幂等，每次激活覆盖以保持最新)
  */
 export declare function autoInstallSkill(extensionPath: string): void;
-/**
- * 自动安装 AGC 工作流到当前工作区 (幂等，每次激活覆盖以保持最新)
- * 安装后用户在 Antigravity 聊天中输入 /agc 即可使用多模型协作工作流
- */
-export declare function autoInstallAgcWorkflow(extensionPath: string): void;
 /**
  * 自动注入路由规则到 geminicodeassist.rules 设置 (幂等)
  * 策略: 多模型并行 + 主模型裁决，优先节省 Antigravity 额度

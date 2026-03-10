@@ -20,6 +20,7 @@
   "references": [
     { "path": "../conductor-shared" },
     { "path": "../conductor-core" },
-    { "path": "../conductor-persistence" }
+    { "path": "../conductor-persistence" },
+    { "path": "../conductor-hub-core" }
   ]
 }

@@ -18,7 +18,9 @@
     "composite": true
   },
   "references": [
-    { "path": "../conductor-hub-shared" }
+    { "path": "../conductor-hub-shared" },
+    { "path": "../conductor-core" },
+    { "path": "../conductor-shared" }
   ],
   "include": ["src/**/*.ts"]
 }

@@ -22,3 +22,28 @@ Thumbs.db
 # 构建产物
 *.js.map
 *.d.ts.map
+
+# Compiled output (TypeScript -> JS)
+src/**/*.js
+src/**/*.d.ts
+packages/**/src/**/*.js
+packages/**/src/**/*.d.ts
+packages/**/__tests__/**/*.js
+packages/**/__tests__/**/*.d.ts
+
+# Temp analysis files
+all_exports.txt
+all_src_files.txt
+private_methods.txt
+
+# Built VSIX
+*.vsix
+
+# Codex
+.codex/
+
+# Hvigor
+.hvigor/
+
+# Turborepo
+turbo.json

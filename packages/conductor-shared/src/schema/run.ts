@@ -26,6 +26,8 @@ export const RunOptionsSchema = z.object({
   riskHint: z.enum(['low', 'medium', 'high', 'critical']).optional(),
   /** Token 预算上限 */
   tokenBudget: z.number().positive().optional(),
+  /** 强制完整路径执行（禁用任何路由级跳过） */
+  forceFullPath: z.boolean().optional(),
   /** 启用的插件 ID 列表 */
   plugins: z.array(z.string()).default([]),
   /** 是否启用调试模式 */

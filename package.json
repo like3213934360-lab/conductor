@@ -5,6 +5,9 @@
   "version": "0.3.0",
   "publisher": "like3213934360-lab",
   "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/like3213934360-lab/conductor"
@@ -61,6 +64,11 @@
         "command": "conductor-hub.openPanel",
         "title": "Conductor Hub: 打开控制面板",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "conductor-hub.runAgc",
+        "title": "Conductor Hub: 运行 AGC",
+        "icon": "$(run-all)"
       }
     ],
     "configuration": {
@@ -158,18 +166,21 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "npm run build --prefix packages/conductor-hub-webview && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify && esbuild ./packages/conductor-hub-mcp/src/main.ts --bundle --outfile=dist/mcp-server.js --format=cjs --platform=node --minify && esbuild ./packages/conductor-mcp-server/src/main.ts --bundle --outfile=dist/conductor-mcp-server.js --format=cjs --platform=node --minify",
+    "build": "npm run build --prefix packages/conductor-hub-webview && mkdir -p dist && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify && esbuild ./packages/conductor-mcp-server/src/main.ts --bundle --outfile=dist/conductor-mcp-server.js --format=cjs --platform=node --minify",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "package": "npx vsce package --no-dependencies -o conductor-hub.vsix",
-    "install-ext": "npx vsce package --no-dependencies -o conductor-hub.vsix && code --install-extension conductor-hub.vsix && rm conductor-hub.vsix && cp dist/webview.js dist/extension.js dist/mcp-server.js dist/conductor-mcp-server.js ~/.antigravity/extensions/like3213934360-lab.conductor-hub-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
+    "install-ext": "npx vsce package --no-dependencies -o conductor-hub.vsix && code --install-extension conductor-hub.vsix && rm conductor-hub.vsix && cp dist/webview.js dist/extension.js dist/conductor-mcp-server.js ~/.antigravity/extensions/like3213934360-lab.conductor-hub-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
     "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence",
-    "build:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter",
+    "build:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-adapter",
     "build:conductor-mcp": "tsc -b packages/conductor-mcp-server",
     "build:all": "npm run build:conductor && npm run build:conductor-hub && npm run build:conductor-mcp",
     "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence --pretty",
-    "typecheck:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-mcp packages/conductor-hub-adapter --pretty",
+    "typecheck:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-adapter --pretty",
     "typecheck:conductor-mcp": "tsc -b packages/conductor-mcp-server --pretty",
     "typecheck:all": "npm run typecheck:conductor && npm run typecheck:conductor-hub && npm run typecheck:conductor-mcp",
+    "turbo:build": "turbo run build",
+    "turbo:typecheck": "turbo run typecheck",
+    "turbo:clean": "turbo run clean && rm -rf dist",
     "clean": "rm -rf packages/*/dist dist"
   },
   "dependencies": {
@@ -180,6 +191,7 @@
     "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
     "esbuild": "^0.24.0",
+    "turbo": "^2.0.0",
     "typescript": "^5.3.0",
     "vitest": "^3.0.0"
   }

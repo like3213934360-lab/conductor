@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import type { ConductorHubConfig, ProviderCallResultWithFallback, ConsensusResult, MultiAskResult } from '@anthropic/conductor-hub-shared';
+import type { AgcAgentRuntime } from '@anthropic/conductor-core';
 import { resolveRoute } from './routing.js';
 import { callProvider, callProviderWithFallback } from './provider-client.js';
 import { callCodex, callGemini } from './cli-runners.js';
@@ -42,7 +43,7 @@ export class FileConfigLoader implements ConfigLoader {
 /**
  * Conductor Hub 服务门面 — 无 VS Code 依赖的纯 Node 运行时
  */
-export class ConductorHubService {
+export class ConductorHubService implements AgcAgentRuntime {
     private config: ConductorHubConfig;
     private configLoader: ConfigLoader;
 

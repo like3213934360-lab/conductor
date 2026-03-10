@@ -9,6 +9,7 @@ export * from './contracts/event-store.js'
 export * from './contracts/checkpoint-store.js'
 export * from './contracts/logger.js'
 export * from './contracts/model-executor.js'
+export * from './contracts/agc-agent-runtime.js'
 
 // DAG 引擎
 export * from './dag/topology.js'

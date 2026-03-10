@@ -2,18 +2,22 @@
   "name": "@anthropic/conductor-hub-vscode",
   "version": "0.1.0",
   "private": true,
-  "description": "Conductor Hub VS Code 集成层 — SettingsManager / Dashboard / StatusBar / AutoConfig",
+  "description": "Conductor Hub VS Code \u96c6\u6210\u5c42 \u2014 SettingsManager / Dashboard / StatusBar / AutoConfig",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty",
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "@anthropic/conductor-hub-shared": "*",
     "@anthropic/conductor-hub-core": "*",
+    "@anthropic/conductor-core": "*",
+    "@anthropic/conductor-shared": "*",
+    "@anthropic/conductor-mcp-server": "*",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
-
   "devDependencies": {
     "@types/vscode": "^1.95.0",
     "@types/ws": "^8.0.0",

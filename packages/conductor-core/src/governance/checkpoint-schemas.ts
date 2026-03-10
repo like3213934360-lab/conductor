@@ -33,20 +33,101 @@ export type CPAnalyze = z.infer<typeof CPAnalyzeSchema>
 // ── CP-PARALLEL Schema ────────────────────────────────────────────────────────
 
 const ModelOutputSchema = z.object({
-  summary: z.string().min(1, 'summary must not be empty'),
-  confidence: z.number().min(0).max(100),
-  option_id: z.string(),
+  provider: z.enum(['codex', 'gemini']),
+  task_id: z.string().min(1, 'task_id must not be empty'),
+  started_at: z.string().datetime(),
+  finished_at: z.string().datetime(),
+  status: z.enum(['success', 'error', 'timeout']),
+  output_hash: z.string().min(1, 'output_hash must not be empty'),
+  summary: z.string().optional(),
+  confidence: z.number().min(0).max(100).optional(),
+  option_id: z.string().optional(),
+  error: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.status === 'success') {
+    if (!data.summary || data.summary.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['summary'],
+        message: 'summary is required when status=success',
+      })
+    }
+    if (typeof data.confidence !== 'number') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['confidence'],
+        message: 'confidence is required when status=success',
+      })
+    }
+    if (!data.option_id || data.option_id.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['option_id'],
+        message: 'option_id is required when status=success',
+      })
+    }
+  }
+
+  if (data.status !== 'success' && (!data.error || data.error.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['error'],
+      message: 'error is required when status is not success',
+    })
+  }
 })
 
 export const CPParallelSchema = z.object({
-  codex: ModelOutputSchema.optional(),
-  gemini: ModelOutputSchema.optional(),
+  execution_mode: z.literal('dual_model_parallel'),
+  codex: ModelOutputSchema,
+  gemini: ModelOutputSchema,
+  both_available: z.boolean(),
   dr_value: z.number().min(0).max(1),
+  skip_allowed: z.literal(false),
+  degraded_reason: z.string().optional(),
   trust_factors: z.record(z.string(), z.number().min(0).max(1)).optional(),
-}).refine(
-  data => data.codex !== undefined || data.gemini !== undefined,
-  { message: 'At least one model output (codex or gemini) is required' },
-)
+}).superRefine((data, ctx) => {
+  if (data.codex.provider !== 'codex') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['codex', 'provider'],
+      message: 'codex receipt must declare provider=codex',
+    })
+  }
+
+  if (data.gemini.provider !== 'gemini') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['gemini', 'provider'],
+      message: 'gemini receipt must declare provider=gemini',
+    })
+  }
+
+  if (data.codex.task_id === data.gemini.task_id) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['gemini', 'task_id'],
+      message: 'codex and gemini task_id must be distinct',
+    })
+  }
+
+  const bothSucceeded = data.codex.status === 'success' && data.gemini.status === 'success'
+  if (data.both_available !== bothSucceeded) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['both_available'],
+      message: 'both_available must exactly reflect dual success state',
+    })
+  }
+
+  if (!bothSucceeded && (!data.degraded_reason || data.degraded_reason.trim().length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['degraded_reason'],
+      message: 'degraded_reason is required when either model did not succeed',
+    })
+  }
+})
 
 export type CPParallel = z.infer<typeof CPParallelSchema>
 

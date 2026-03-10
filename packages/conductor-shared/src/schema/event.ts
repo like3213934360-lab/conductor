@@ -259,6 +259,7 @@ const RunContextCapturedPayloadSchema = z.object({
       plugins: z.array(z.string()), debug: z.boolean(),
       riskHint: z.string().optional(),
       tokenBudget: z.number().optional(),
+      forceFullPath: z.boolean().optional(),
     }),
     capturedAt: z.string().optional(),
   }),
@@ -392,4 +393,3 @@ export function parseAGCEvent(raw: unknown): AGCTypedEventEnvelope | null {
     payload: typed.data.payload,
   } as AGCTypedEventEnvelope
 }
-

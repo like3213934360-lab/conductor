@@ -11,6 +11,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import type { SettingsManager } from './settings-manager.js';
+import type { AgcOrchestrator } from './agc-orchestrator.js';
 
 /** 请求历史存储接口 — 解耦具体实现 */
 export interface IHistoryStorage {
@@ -43,11 +44,13 @@ export class DashboardPanel {
     private _disposables: vscode.Disposable[] = [];
     private _onConfigChanged?: () => void;
     private _modelTestCache: Map<string, 'online' | 'offline'> = new Map();
+    private _agcWatcher?: vscode.FileSystemWatcher;
 
     public static createOrShow(
         extensionUri: vscode.Uri,
         storage: IHistoryStorage | null,
         settings: SettingsManager,
+        agcOrchestrator: AgcOrchestrator,
         onConfigChanged?: () => void,
     ) {
         const column = vscode.window.activeTextEditor?.viewColumn;
@@ -67,7 +70,7 @@ export class DashboardPanel {
                 retainContextWhenHidden: true,
             },
         );
-        DashboardPanel.currentPanel = new DashboardPanel(panel, extensionUri, storage, settings, onConfigChanged);
+        DashboardPanel.currentPanel = new DashboardPanel(panel, extensionUri, storage, settings, agcOrchestrator, onConfigChanged);
     }
 
     private constructor(
@@ -75,6 +78,7 @@ export class DashboardPanel {
         extensionUri: vscode.Uri,
         private storage: IHistoryStorage | null,
         private settings: SettingsManager,
+        private agcOrchestrator: AgcOrchestrator,
         onConfigChanged?: () => void,
     ) {
         this._panel = panel;
@@ -84,6 +88,7 @@ export class DashboardPanel {
         this._update();
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
         this._setupMessageHandler();
+        this._setupAgcStateWatcher();
     }
 
     /** webview → extension 消息协议 */
@@ -766,6 +771,43 @@ export class DashboardPanel {
                         await this._handleTestAllModels();
                         break;
                     }
+
+                    // ── AGC Workflow State ──────────────────────────────────
+                    case 'getAgcState': {
+                        await this._publishAgcState();
+                        break;
+                    }
+                    case 'startAgcRun': {
+                        const goal = typeof message.goal === 'string' ? message.goal.trim() : '';
+                        if (!goal) {
+                            this._panel.webview.postMessage({
+                                command: 'agcRunError',
+                                message: 'AGC goal must not be empty',
+                            });
+                            break;
+                        }
+
+                        this._panel.webview.postMessage({
+                            command: 'agcRunPending',
+                            message: 'AGC start request received. Initializing runtime...',
+                        });
+
+                        try {
+                            const result = await this.agcOrchestrator.startRun({ goal });
+                            this._panel.webview.postMessage({
+                                command: 'agcRunStarted',
+                                runId: result.runId,
+                            });
+                            await this._publishAgcState();
+                        } catch (error) {
+                            const messageText = error instanceof Error ? error.message : String(error);
+                            this._panel.webview.postMessage({
+                                command: 'agcRunError',
+                                message: messageText,
+                            });
+                        }
+                        break;
+                    }
                 }
             },
             null,
@@ -955,6 +997,124 @@ export class DashboardPanel {
                 todayRequests, successRate, avgLatency, totalTokens, tokensByProvider, recentRequests,
             },
         });
+    }
+
+    /** 监听工作区 data/agc_wal/current_run.json 变化并实时推送到面板 */
+    private _setupAgcStateWatcher() {
+        this._agcWatcher = vscode.workspace.createFileSystemWatcher('**/data/agc_wal/current_run.json');
+        const publish = () => {
+            void this._publishAgcState();
+        };
+
+        this._agcWatcher.onDidCreate(publish, null, this._disposables);
+        this._agcWatcher.onDidChange(publish, null, this._disposables);
+        this._agcWatcher.onDidDelete(publish, null, this._disposables);
+        this._disposables.push(this._agcWatcher);
+    }
+
+    /** 工作流面板状态数据 */
+    private async _publishAgcState() {
+        const snapshot = this._readAgcState();
+        this._panel.webview.postMessage({ command: 'agcState', data: snapshot });
+    }
+
+    private _readAgcState(): any | null {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const candidates = [
+            workspaceRoot ? path.join(workspaceRoot, 'data', 'agc_wal', 'current_run.json') : '',
+            path.join(this._extensionUri.fsPath, 'data', 'agc_wal', 'current_run.json'),
+        ].filter(Boolean);
+
+        let rawState: any = null;
+        let sourcePath: string | undefined;
+        let sourceMtimeMs = 0;
+
+        for (const candidate of candidates) {
+            try {
+                if (!fs.existsSync(candidate)) continue;
+                const stat = fs.statSync(candidate);
+                const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+                if (parsed && typeof parsed === 'object') {
+                    rawState = parsed;
+                    sourcePath = candidate;
+                    sourceMtimeMs = stat.mtimeMs;
+                    break;
+                }
+            } catch {
+                // Ignore malformed candidate and continue to fallback.
+            }
+        }
+
+        if (!rawState) {
+            return null;
+        }
+
+        const normalizedNodes = this._normalizeAgcNodes(rawState.nodes || {}, rawState.phase);
+
+        return {
+            ...rawState,
+            nodes: normalizedNodes,
+            _meta: {
+                sourcePath,
+                updatedAt: sourceMtimeMs || Date.now(),
+            },
+        };
+    }
+
+    private _normalizeAgcNodes(rawNodes: Record<string, any>, phase?: string) {
+        const orderedIds = ['ANALYZE', 'PARALLEL', 'DEBATE', 'SYNTHESIZE', 'IMPLEMENT', 'VERIFY', 'PERSIST', 'HITL'];
+        const phaseUpper = String(phase || '').toUpperCase();
+        const nodes: Record<string, any> = {};
+
+        for (const id of orderedIds) {
+            const rawNode = rawNodes[id] || {};
+            nodes[id] = {
+                ...rawNode,
+                status: this._normalizeAgcNodeStatus(rawNode.status, phaseUpper, id, rawNodes),
+            };
+        }
+
+        for (const [id, rawNode] of Object.entries(rawNodes)) {
+            if (nodes[id]) continue;
+            nodes[id] = {
+                ...rawNode,
+                status: this._normalizeAgcNodeStatus((rawNode as any)?.status, phaseUpper, id, rawNodes),
+            };
+        }
+
+        return nodes;
+    }
+
+    private _normalizeAgcNodeStatus(
+        status: string | undefined,
+        phaseUpper: string,
+        nodeId: string,
+        rawNodes: Record<string, any>,
+    ): string {
+        const normalized = String(status || '').toLowerCase();
+        if (['pending', 'queued', 'running', 'completed', 'failed', 'skipped', 'paused'].includes(normalized)) {
+            return normalized === 'paused' ? 'running' : normalized;
+        }
+
+        if (phaseUpper === 'COMPLETED' && rawNodes[nodeId]) return 'completed';
+        if (phaseUpper === 'FAILED' && nodeId === this._inferCurrentNode(rawNodes)) return 'failed';
+
+        const currentNode = this._inferCurrentNode(rawNodes);
+        if (nodeId === currentNode) return 'running';
+        if (rawNodes[nodeId]) return 'completed';
+        return 'pending';
+    }
+
+    private _inferCurrentNode(rawNodes: Record<string, any>): string | undefined {
+        const order = ['ANALYZE', 'PARALLEL', 'DEBATE', 'SYNTHESIZE', 'IMPLEMENT', 'VERIFY', 'PERSIST', 'HITL'];
+        for (const id of order) {
+            const status = String(rawNodes[id]?.status || '').toLowerCase();
+            if (status === 'running' || status === 'queued' || status === 'paused') return id;
+        }
+        for (const id of order) {
+            if (!rawNodes[id]) return id;
+        }
+        return undefined;
     }
 
     /** 批量测试所有启用模型 */

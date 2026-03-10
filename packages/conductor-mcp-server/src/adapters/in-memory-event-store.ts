@@ -14,7 +14,7 @@ export class InMemoryEventStore implements EventStore {
     const existing = this.streams.get(input.runId)
     const currentVersion = existing && existing.length > 0
       ? existing[existing.length - 1]!.version
-      : -1
+      : 0
 
     // 乐观并发控制
     if (input.expectedVersion === 'no_stream' && existing) {

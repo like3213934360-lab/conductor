@@ -1,12 +1,14 @@
 {
   "name": "@anthropic/conductor-shared",
   "version": "0.1.0",
-  "description": "Conductor AGC — 共享 Schema、状态定义、事件类型、错误码",
+  "description": "Conductor AGC \u2014 \u5171\u4eab Schema\u3001\u72b6\u6001\u5b9a\u4e49\u3001\u4e8b\u4ef6\u7c7b\u578b\u3001\u9519\u8bef\u7801",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -p tsconfig.json --watch"
+    "watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -b --pretty",
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "zod": "^3.24.0"

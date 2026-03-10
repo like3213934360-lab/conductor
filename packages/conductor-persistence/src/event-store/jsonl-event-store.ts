@@ -102,7 +102,7 @@ export class JsonlEventStore implements EventStore {
 
       // 乐观并发校验
       if (expectedVersion === 'no_stream') {
-        if (currentVersion >= 0) {
+        if (currentVersion > 0) {
           throw new AGCError(
             AGCErrorCode.STATE_VERSION_CONFLICT,
             `流 ${runId} 已存在（当前版本 ${currentVersion}），但 expectedVersion='no_stream'`,
@@ -119,7 +119,7 @@ export class JsonlEventStore implements EventStore {
       // expectedVersion === 'any' → 跳过校验
 
       // 二次审查 P1 修复: 校验 event.runId 与目标 runId 一致
-      const startVersion = currentVersion + 1
+      const startVersion = currentVersion <= 0 ? 1 : currentVersion + 1
       for (let i = 0; i < events.length; i++) {
         const event = events[i]!
         if (event.runId !== runId) {
@@ -174,7 +174,7 @@ export class JsonlEventStore implements EventStore {
   async getCurrentVersion(runId: string): Promise<number> {
     const streamPath = this.getStreamPath(runId)
     const lastEvent = await readLastJsonlLine<AGCEventEnvelope>(streamPath)
-    return lastEvent?.version ?? -1
+    return lastEvent?.version ?? 0
   }
 
   /** 检查运行是否存在 */

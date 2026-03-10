@@ -45,9 +45,8 @@ export async function syncKeysToFile(settings: SettingsManager, dbPath?: string)
 }
 
 /**
- * 自动注册所有 MCP Server 到 Antigravity 配置 (幂等)
- * - conductor-hub: ai_ask / ai_multi_ask / ai_consensus / ai_codex_task / ai_gemini_task / ai_list_providers
- * - conductor: agc-run / agc-get-state / agc-verify-run / agc-plugins / agc-memory-search / agc-phase4
+ * 自动注册统一 MCP Server 到 Antigravity 配置 (幂等)
+ * Phase 7: conductor-hub 与 conductor 合并为单个 conductor 服务
  */
 export function autoRegisterMcpConfig(extensionPath: string) {
     const mcpConfigPath = path.join(os.homedir(), '.gemini', 'antigravity', 'mcp_config.json');
@@ -59,19 +58,7 @@ export function autoRegisterMcpConfig(extensionPath: string) {
 
         let changed = false;
 
-        // ── 1. Conductor Hub MCP Server (ai_ask 等 6 个工具) ──────────────────
-        const conductorHubServerPath = path.join(extensionPath, 'dist', 'mcp-server.js');
-        const conductorHubExisting = config.mcpServers['conductor-hub'];
-        const conductorHubEntry = { command: 'node', args: [conductorHubServerPath], env: {} };
-        if (!conductorHubExisting || conductorHubExisting.args?.[0] !== conductorHubServerPath) {
-            if (config.mcpServers['conductor-hub']) {
-                delete config.mcpServers['conductor-hub']; // 清理旧命名
-            }
-            config.mcpServers['conductor-hub'] = conductorHubEntry;
-            changed = true;
-        }
-
-        // ── 2. Conductor MCP Server (agc-run 等 6 个工具) ─────────────
+        // Phase 7: 统一 MCP Server (ai_ask + agc-run 等 17 个工具)
         const conductorServerPath = path.join(extensionPath, 'dist', 'conductor-mcp-server.js');
         const conductorExisting = config.mcpServers['conductor'];
         const conductorEntry = { command: 'node', args: [conductorServerPath], env: {} };
@@ -82,9 +69,15 @@ export function autoRegisterMcpConfig(extensionPath: string) {
             }
         }
 
+        // 清理废弃的 conductor-hub 条目 (已合并)
+        if (config.mcpServers['conductor-hub']) {
+            delete config.mcpServers['conductor-hub'];
+            changed = true;
+        }
+
         if (changed) {
             fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 4), 'utf8');
-            console.log('[Conductor Hub] Auto-registered MCP servers ✅');
+            console.log('[Conductor Hub] Auto-registered unified MCP server ✅');
         }
     } catch (err) {
         console.error('[Conductor Hub] Failed to auto-register MCP config:', err);
@@ -109,42 +102,6 @@ export function autoInstallSkill(extensionPath: string) {
         console.log('[Conductor Hub] Installed AI routing Skill ✅');
     } catch (err) {
         console.error('[Conductor Hub] Failed to install Skill:', err);
-    }
-}
-
-/**
- * 自动安装 AGC 工作流到当前工作区 (幂等，每次激活覆盖以保持最新)
- * 安装后用户在 Antigravity 聊天中输入 /agc 即可使用多模型协作工作流
- */
-export function autoInstallAgcWorkflow(extensionPath: string) {
-    const srcWorkflow = path.join(extensionPath, 'workflows', 'agc.md');
-    if (!fs.existsSync(srcWorkflow)) {
-        console.warn('[Conductor Hub] agc.md not found in extension, skipping');
-        return;
-    }
-
-    // 安装到所有打开的工作区
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) return;
-
-    for (const folder of workspaceFolders) {
-        const destDir = path.join(folder.uri.fsPath, '.agents', 'workflows');
-        const destFile = path.join(destDir, 'agc.md');
-
-        try {
-            // 如果工作区已有 agc.md 且内容相同，跳过
-            if (fs.existsSync(destFile)) {
-                const existing = fs.readFileSync(destFile, 'utf8');
-                const incoming = fs.readFileSync(srcWorkflow, 'utf8');
-                if (existing === incoming) continue;
-            }
-
-            if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-            fs.copyFileSync(srcWorkflow, destFile);
-            console.log(`[Conductor Hub] Installed AGC workflow → ${destDir} ✅`);
-        } catch (err) {
-            console.error('[Conductor Hub] Failed to install AGC workflow:', err);
-        }
     }
 }
 
@@ -175,37 +132,37 @@ export async function autoInjectRoutingRules(settings: SettingsManager) {
         ];
 
         if (hasProvider('deepseek')) {
-            rules.push('- 翻译/文档/注释/简单文本/信息整理 → mcp_conductor_hub_ai_ask(provider="deepseek")');
+            rules.push('- 翻译/文档/注释/简单文本/信息整理 → mcp_conductor_ai_ask(provider="deepseek")');
         }
 
         rules.push('', '=== 代码（质量优先）===');
         if (codexInstalled) {
-            rules.push('- 代码审查/Bug检查 → mcp_conductor_hub_ai_codex_task()（首选）');
-            rules.push('- 代码生成/实现功能 → 主模型首选，备选 mcp_conductor_hub_ai_codex_task()');
+            rules.push('- 代码审查/Bug检查 → mcp_conductor_ai_codex_task()（首选）');
+            rules.push('- 代码生成/实现功能 → 主模型首选，备选 mcp_conductor_ai_codex_task()');
         }
         if (hasProvider('glm') || hasProvider('zhipu')) {
-            rules.push('- 复杂调试/跨文件工程 → mcp_conductor_hub_ai_ask(provider="glm")');
+            rules.push('- 复杂调试/跨文件工程 → mcp_conductor_ai_ask(provider="glm")');
         }
 
         rules.push('', '=== 专业领域 ===');
         if (geminiInstalled) {
-            rules.push('- 推理/算法/数学 → mcp_conductor_hub_ai_gemini_task()');
-            rules.push('- 前端UI/UX → mcp_conductor_hub_ai_gemini_task()');
+            rules.push('- 推理/算法/数学 → mcp_conductor_ai_gemini_task()');
+            rules.push('- 前端UI/UX → mcp_conductor_ai_gemini_task()');
         }
-        if (hasProvider('qwen')) rules.push('- 多语言/结构化写作 → mcp_conductor_hub_ai_ask(provider="qwen")');
-        if (hasProvider('minimax')) rules.push('- 大量高速生成 → mcp_conductor_hub_ai_ask(provider="minimax")');
+        if (hasProvider('qwen')) rules.push('- 多语言/结构化写作 → mcp_conductor_ai_ask(provider="qwen")');
+        if (hasProvider('minimax')) rules.push('- 大量高速生成 → mcp_conductor_ai_ask(provider="minimax")');
 
         // 创意写作协作链
         if ((hasProvider('qwen') || hasProvider('glm') || hasProvider('minimax')) && enabledModels.length > 1) {
             rules.push('', '=== 创意写作（多模型协作链）===');
-            rules.push('1. mcp_conductor_hub_ai_multi_ask() 至少2模型并行出大纲');
-            rules.push('2. mcp_conductor_hub_ai_multi_ask() 多模型并行写初稿');
+            rules.push('1. mcp_conductor_ai_multi_ask() 至少2模型并行出大纲');
+            rules.push('2. mcp_conductor_ai_multi_ask() 多模型并行写初稿');
             rules.push('3. 主模型综合择优，融合最好段落');
         }
 
         if (enabledModels.length > 1) {
             rules.push('', '=== 多方案对比 ===');
-            rules.push('- 需要多视角/对比方案 → mcp_conductor_hub_ai_multi_ask()');
+            rules.push('- 需要多视角/对比方案 → mcp_conductor_ai_multi_ask()');
         }
 
         rules.push('', '=== 主模型专属（不委派）===');

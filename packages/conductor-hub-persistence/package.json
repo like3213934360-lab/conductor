@@ -1,12 +1,14 @@
 {
   "name": "@anthropic/conductor-hub-persistence",
   "version": "0.1.0",
-  "description": "Conductor Hub — 请求历史持久化（复用 conductor-persistence SqliteClient）",
+  "description": "Conductor Hub \u2014 \u8bf7\u6c42\u5386\u53f2\u6301\u4e45\u5316\uff08\u590d\u7528 conductor-persistence SqliteClient\uff09",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -p tsconfig.json --watch"
+    "watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -b --pretty",
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "@anthropic/conductor-hub-shared": "*",

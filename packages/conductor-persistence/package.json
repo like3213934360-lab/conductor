@@ -1,13 +1,14 @@
 {
   "name": "@anthropic/conductor-persistence",
   "version": "0.1.0",
-  "description": "Conductor AGC — 持久化层 (JSONL EventStore + SQLite CheckpointStore + Memory)",
+  "description": "Conductor AGC \u2014 \u6301\u4e45\u5316\u5c42 (JSONL EventStore + SQLite CheckpointStore + Memory)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -b",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "typecheck": "tsc -b --pretty"
   },
   "dependencies": {
     "@anthropic/conductor-shared": "*",

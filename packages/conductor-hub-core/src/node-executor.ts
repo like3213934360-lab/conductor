@@ -10,7 +10,8 @@
  * - Airflow: 显式任务状态、分支跳过作为一等公民
  */
 import type { AGCState, RunGraph } from '@anthropic/conductor-shared'
-import type { ConductorHubService } from './conductor-hub-service.js'
+import { createHash } from 'node:crypto'
+import type { AgcAgentRuntime } from '@anthropic/conductor-core'
 
 // ── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -32,8 +33,8 @@ export interface NodeExecutionContext {
   readonly nodeId: string
   readonly attempt: number
   readonly signal: AbortSignal
-  /** Conductor Hub 服务（AI 调用入口） */
-  readonly hub: ConductorHubService
+  /** AGC Agent Runtime（AI 调用入口） */
+  readonly hub: AgcAgentRuntime
   /** 获取前驱节点的输出 */
   getUpstreamOutput(nodeId: string): Record<string, unknown> | undefined
 }
@@ -74,6 +75,125 @@ export interface GapCheckResult {
   ok: boolean
   code?: 'SCHEMA_INVALID' | 'CHECKPOINT_MISSING' | 'LOW_CONFIDENCE' | 'COMPLIANCE_BLOCK'
   message?: string
+}
+
+type ParallelProvider = 'codex' | 'gemini'
+
+interface ParallelReceipt {
+  provider: ParallelProvider
+  task_id: string
+  started_at: string
+  finished_at: string
+  status: 'success' | 'error' | 'timeout'
+  output_hash: string
+  summary?: string
+  confidence?: number
+  option_id?: string
+  error?: string
+}
+
+function clampConfidence(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return fallback
+  }
+  return Math.max(0, Math.min(100, value))
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    return JSON.parse(trimmed) as Record<string, unknown>
+  } catch {
+    const start = trimmed.indexOf('{')
+    const end = trimmed.lastIndexOf('}')
+    if (start === -1 || end <= start) {
+      return null
+    }
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>
+    } catch {
+      return null
+    }
+  }
+}
+
+function normalizeSummary(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 2000)
+}
+
+function createOutputHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function buildParallelReceipt(
+  provider: ParallelProvider,
+  taskId: string,
+  startedAt: string,
+  finishedAt: string,
+  settled: PromiseSettledResult<string>,
+): ParallelReceipt {
+  if (settled.status === 'fulfilled') {
+    const parsed = parseJsonObject(settled.value)
+    const summary = typeof parsed?.summary === 'string' && parsed.summary.trim().length > 0
+      ? parsed.summary.trim().slice(0, 2000)
+      : normalizeSummary(settled.value)
+    const optionId = typeof parsed?.option_id === 'string' && parsed.option_id.trim().length > 0
+      ? parsed.option_id.trim().slice(0, 64)
+      : provider.toUpperCase()
+    const fallbackConfidence = provider === 'codex' ? 85 : 82
+    return {
+      provider,
+      task_id: taskId,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      status: 'success',
+      output_hash: createOutputHash(settled.value),
+      summary,
+      confidence: clampConfidence(parsed?.confidence, fallbackConfidence),
+      option_id: optionId,
+    }
+  }
+
+  const error = settled.reason instanceof Error ? settled.reason.message : String(settled.reason)
+  const normalizedError = normalizeSummary(error || `${provider} task failed`)
+  return {
+    provider,
+    task_id: taskId,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    status: normalizedError.toLowerCase().includes('timeout') ? 'timeout' : 'error',
+    output_hash: createOutputHash(normalizedError),
+    error: normalizedError,
+  }
+}
+
+function computeDisagreementScore(codex: ParallelReceipt, gemini: ParallelReceipt): number {
+  if (codex.status !== 'success' || gemini.status !== 'success') {
+    return 1
+  }
+
+  const codexOption = codex.option_id?.toLowerCase() ?? ''
+  const geminiOption = gemini.option_id?.toLowerCase() ?? ''
+  const codexSummary = codex.summary?.toLowerCase().replace(/\s+/g, ' ').trim() ?? ''
+  const geminiSummary = gemini.summary?.toLowerCase().replace(/\s+/g, ' ').trim() ?? ''
+
+  if (codexOption !== '' && codexOption === geminiOption && codexSummary === geminiSummary) {
+    return 0
+  }
+
+  if (codexOption !== '' && codexOption === geminiOption) {
+    return 0.5
+  }
+
+  if (codexSummary !== '' && codexSummary === geminiSummary) {
+    return 0.5
+  }
+
+  return 1
 }
 
 // ── ANALYZE 执行器 ──────────────────────────────────────────────────────────
@@ -138,33 +258,32 @@ export class ParallelExecutor implements NodeExecutor {
     // Codex + Gemini 并行独立思考
     const prompt = `作为${taskType}专家，对以下任务进行独立分析并给出方案：\n${goal}\n\n请输出 JSON: {"summary": "方案摘要", "confidence": 数字(0-100), "option_id": "A或B", "key_points": ["要点1","要点2"]}`
 
+    const codexStartedAt = new Date().toISOString()
+    const geminiStartedAt = new Date().toISOString()
+
     const [codexResult, geminiResult] = await Promise.allSettled([
       ctx.hub.codexTask(prompt, undefined, ctx.signal),
       ctx.hub.geminiTask(prompt, undefined, undefined, ctx.signal),
     ])
 
-    const codexOk = codexResult.status === 'fulfilled'
-    const geminiOk = geminiResult.status === 'fulfilled'
-
-    // 提取结果
-    const codexSummary = codexOk ? codexResult.value.slice(0, 2000) : 'Codex 超时/失败'
-    const geminiSummary = geminiOk ? geminiResult.value.slice(0, 2000) : 'Gemini 超时/失败'
-
-    // 计算 DR(分歧率): 0=完全一致, 0.5=部分分歧, 1=完全分歧
-    let drValue = 0.5 // 默认部分分歧
-    if (!codexOk || !geminiOk) {
-      drValue = 0 // 只有一个模型可用，无法比较
-    }
+    const finishedAt = new Date().toISOString()
+    const codex = buildParallelReceipt('codex', `${ctx.runId}:PARALLEL:codex:${ctx.attempt}`, codexStartedAt, finishedAt, codexResult)
+    const gemini = buildParallelReceipt('gemini', `${ctx.runId}:PARALLEL:gemini:${ctx.attempt}`, geminiStartedAt, finishedAt, geminiResult)
+    const bothAvailable = codex.status === 'success' && gemini.status === 'success'
+    const drValue = computeDisagreementScore(codex, gemini)
 
     return {
       output: {
-        codex: { summary: codexSummary, confidence: 85, option_id: 'A' },
-        gemini: { summary: geminiSummary, confidence: 82, option_id: 'B' },
+        execution_mode: 'dual_model_parallel',
+        codex,
+        gemini,
+        both_available: bothAvailable,
         dr_value: drValue,
-        both_available: codexOk && geminiOk,
+        skip_allowed: false,
+        degraded_reason: bothAvailable ? undefined : 'dual-model execution incomplete; full workflow remains mandatory',
       },
       durationMs: Date.now() - start,
-      degraded: !codexOk || !geminiOk,
+      degraded: !bothAvailable,
     }
   }
 }
@@ -242,13 +361,24 @@ export class VerifyExecutor implements NodeExecutor {
       parsed = { verdict: 'PARTIAL', compliance_check: 'PASS', concerns: [] }
     }
 
+    const verdict = typeof parsed.verdict === 'string' ? parsed.verdict.toUpperCase() : 'PARTIAL'
+    const complianceCheck = typeof parsed.compliance_check === 'string'
+      ? parsed.compliance_check.toUpperCase()
+      : 'PASS'
+
     return {
       output: {
-        deepseek_verdict: parsed.verdict ?? 'PARTIAL',
-        compliance_check: parsed.compliance_check ?? 'PASS',
+        assurance_verdict: verdict === 'AGREE' ? 'PASS' : verdict === 'DISAGREE' ? 'REVISE' : 'REVISE',
+        challenger_provider: 'deepseek',
+        compliance_check: complianceCheck === 'VIOLATION' ? 'VIOLATION' : 'PASS',
         entropy_gain: 15,
         third_proposal: false,
-        concerns: parsed.concerns ?? [],
+        findings: Array.isArray(parsed.concerns)
+          ? parsed.concerns.map(item => ({
+            type: 'warning' as const,
+            message: typeof item === 'string' ? item : JSON.stringify(item),
+          }))
+          : [],
       },
       model: result.usedModel,
       durationMs: Date.now() - start,
@@ -290,7 +420,8 @@ export class SynthesizeExecutor implements NodeExecutor {
       output: {
         final_answer: result.text.slice(0, 5000),
         final_confidence: 88,
-        weighted_scores: {},
+        release_decision: 'release',
+        candidate_scores: {},
         template_used: 'T002',
       },
       model: result.usedModel,

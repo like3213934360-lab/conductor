@@ -45,7 +45,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncKeysToFile = syncKeysToFile;
 exports.autoRegisterMcpConfig = autoRegisterMcpConfig;
 exports.autoInstallSkill = autoInstallSkill;
-exports.autoInstallAgcWorkflow = autoInstallAgcWorkflow;
 exports.autoInjectRoutingRules = autoInjectRoutingRules;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
@@ -84,9 +83,8 @@ async function syncKeysToFile(settings, dbPath) {
     }
 }
 /**
- * 自动注册所有 MCP Server 到 Antigravity 配置 (幂等)
- * - conductor-hub: ai_ask / ai_multi_ask / ai_consensus / ai_codex_task / ai_gemini_task / ai_list_providers
- * - conductor: agc-run / agc-get-state / agc-verify-run / agc-plugins / agc-memory-search / agc-phase4
+ * 自动注册统一 MCP Server 到 Antigravity 配置 (幂等)
+ * Phase 7: conductor-hub 与 conductor 合并为单个 conductor 服务
  */
 function autoRegisterMcpConfig(extensionPath) {
     const mcpConfigPath = path.join(os.homedir(), '.gemini', 'antigravity', 'mcp_config.json');
@@ -97,18 +95,7 @@ function autoRegisterMcpConfig(extensionPath) {
         if (!config.mcpServers)
             config.mcpServers = {};
         let changed = false;
-        // ── 1. Conductor Hub MCP Server (ai_ask 等 6 个工具) ──────────────────
-        const conductorHubServerPath = path.join(extensionPath, 'dist', 'mcp-server.js');
-        const conductorHubExisting = config.mcpServers['conductor-hub'];
-        const conductorHubEntry = { command: 'node', args: [conductorHubServerPath], env: {} };
-        if (!conductorHubExisting || conductorHubExisting.args?.[0] !== conductorHubServerPath) {
-            if (config.mcpServers['conductor-hub']) {
-                delete config.mcpServers['conductor-hub']; // 清理旧命名
-            }
-            config.mcpServers['conductor-hub'] = conductorHubEntry;
-            changed = true;
-        }
-        // ── 2. Conductor MCP Server (agc-run 等 6 个工具) ─────────────
+        // Phase 7: 统一 MCP Server (ai_ask + agc-run 等 17 个工具)
         const conductorServerPath = path.join(extensionPath, 'dist', 'conductor-mcp-server.js');
         const conductorExisting = config.mcpServers['conductor'];
         const conductorEntry = { command: 'node', args: [conductorServerPath], env: {} };
@@ -118,9 +105,14 @@ function autoRegisterMcpConfig(extensionPath) {
                 changed = true;
             }
         }
+        // 清理废弃的 conductor-hub 条目 (已合并)
+        if (config.mcpServers['conductor-hub']) {
+            delete config.mcpServers['conductor-hub'];
+            changed = true;
+        }
         if (changed) {
             fs.writeFileSync(mcpConfigPath, JSON.stringify(config, null, 4), 'utf8');
-            console.log('[Conductor Hub] Auto-registered MCP servers ✅');
+            console.log('[Conductor Hub] Auto-registered unified MCP server ✅');
         }
     }
     catch (err) {
@@ -146,41 +138,6 @@ function autoInstallSkill(extensionPath) {
     }
     catch (err) {
         console.error('[Conductor Hub] Failed to install Skill:', err);
-    }
-}
-/**
- * 自动安装 AGC 工作流到当前工作区 (幂等，每次激活覆盖以保持最新)
- * 安装后用户在 Antigravity 聊天中输入 /agc 即可使用多模型协作工作流
- */
-function autoInstallAgcWorkflow(extensionPath) {
-    const srcWorkflow = path.join(extensionPath, 'workflows', 'agc.md');
-    if (!fs.existsSync(srcWorkflow)) {
-        console.warn('[Conductor Hub] agc.md not found in extension, skipping');
-        return;
-    }
-    // 安装到所有打开的工作区
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0)
-        return;
-    for (const folder of workspaceFolders) {
-        const destDir = path.join(folder.uri.fsPath, '.agents', 'workflows');
-        const destFile = path.join(destDir, 'agc.md');
-        try {
-            // 如果工作区已有 agc.md 且内容相同，跳过
-            if (fs.existsSync(destFile)) {
-                const existing = fs.readFileSync(destFile, 'utf8');
-                const incoming = fs.readFileSync(srcWorkflow, 'utf8');
-                if (existing === incoming)
-                    continue;
-            }
-            if (!fs.existsSync(destDir))
-                fs.mkdirSync(destDir, { recursive: true });
-            fs.copyFileSync(srcWorkflow, destFile);
-            console.log(`[Conductor Hub] Installed AGC workflow → ${destDir} ✅`);
-        }
-        catch (err) {
-            console.error('[Conductor Hub] Failed to install AGC workflow:', err);
-        }
     }
 }
 /**

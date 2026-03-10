@@ -1,7 +1,7 @@
 {
   "name": "@anthropic/conductor-mcp-server",
   "version": "0.1.0",
-  "description": "Conductor AGC — MCP Server 入口、工具注册、stdio/http transport",
+  "description": "Conductor AGC \u2014 MCP Server \u5165\u53e3\u3001\u5de5\u5177\u6ce8\u518c\u3001stdio/http transport",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -10,15 +10,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "typecheck": "tsc -b --pretty",
+    "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "@anthropic/conductor-shared": "*",
     "@anthropic/conductor-core": "*",
     "@anthropic/conductor-hub-core": "*",
     "@anthropic/conductor-persistence": "*",
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "zod": "^3.24.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^3.25.76",
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {

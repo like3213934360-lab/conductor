@@ -94,7 +94,11 @@ export class CircuitBreakerRegistry {
             }
 
             case 'HALF_OPEN':
-                return b.halfOpenAttempts < this.config.halfOpenMax;
+                if (b.halfOpenAttempts < this.config.halfOpenMax) {
+                    b.halfOpenAttempts++;
+                    return true;
+                }
+                return false;
         }
     }
 
