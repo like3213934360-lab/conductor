@@ -1,148 +1,91 @@
-# 🏗️ Architecture — Conductor AGC
+# 🏗️ Architecture — Antigravity Workflow Runtime
 
 ## 系统分层
 
 ```mermaid
 graph TB
     subgraph Protocol["Protocol Layer"]
-        MCP["MCP Server\n(agc.run / get_state / verify)"]
-        A2A["A2A Federation\n(P2P Swarm)"]
+        MCP["MCP Server\n(model tools + workflow.run/getState/advance/verifyRun)"]
+        EXT["Antigravity Extension\n(commands + dashboard)"]
+        A2A["Remote Workers\n(A2A-style adapters)"]
     end
 
-    subgraph App["Application Layer"]
-        AGC["AGCService\n(Orchestrator)"]
+    subgraph Control["Control Plane"]
+        DAEMON["antigravity-daemon\n(authority owner + durable runtime)"]
+        DSL["Workflow Definition Compiler\n(strict-full / adaptive)"]
+        POLICY["Evidence + Policy Gate\n(skip / release / HITL)"]
+    end
+
+    subgraph Exec["Execution Plane"]
+        DRIVER["WorkflowRunDriver\n(node execution + transitions)"]
+        HUB["AntigravityModelService\n(Codex / Gemini / judge model hints)"]
+        REMOTE["Remote Worker Directory\n(capability routing + fallback)"]
     end
 
     subgraph Core["Core Engine Layer"]
-        DAG["DAG Engine\n(Cyclic + Topo)"]
-        RISK["Risk Router\n(DR Score → 4 Lanes)"]
-        GOV["Governance Gateway\n(GaaS 4 Intercepts)"]
-        PLUGIN["Plugin Manager\n(Hook Bus)"]
-        FED["Federation Bus\n(Agent Registry)"]
-    end
-
-    subgraph Intelligence["Intelligence Layer"]
-        REF["Reflexion\n(Actor Loop)"]
-        OPT["Prompt Optimizer\n(ELO + Mutation)"]
-        BENCH["Benchmark Runner\n(DAG + Gov Suites)"]
-        OTEL["OTel Tracer\n(GenAI Semantic)"]
+        DAG["DagEngine\n(queue + topology)"]
+        GOV["Governance Gateway\n(control pack + assurance)"]
+        FED["Federation Primitives\n(agent cards + handoff)"]
     end
 
     subgraph Infra["Infrastructure Layer"]
-        ES["Event Store\n(Append-Only)"]
-        CP["Checkpoint Store\n(Snapshots)"]
-        VEC["Vector Memory\n(Semantic Recall)"]
-        SAND["Sandbox Manager\n(E2B / Process)"]
+        LEDGER["SQLite Ledger\n(run / receipt / verdict / skip)"]
+        EVENTS["JSONL Event Store\n(replayable execution log)"]
+        CP["Checkpoint Store\n(SQLite snapshots)"]
+        PROJECTION["Run Projection\n(data/antigravity_daemon/run-projection.json)"]
+        TRACE["Trace Bundle Export\n(replayable evidence pack)"]
     end
 
-    subgraph Shared["Shared Kernel"]
-        TYPES["Zod Schema\n(Branded Types)"]
-        PROJ["Event Projector\n(Pure Function)"]
-    end
-
-    Protocol --> App
-    App --> Core
-    Core --> Intelligence
-    Core --> Infra
-    Intelligence --> Infra
-    Infra --> Shared
+    Protocol --> Control
+    Control --> Exec
+    Exec --> Core
+    Control --> Infra
+    Exec --> Infra
 ```
 
-## 17 个模块
+## 运行语义
 
-| # | 模块 | 路径 | 职责 |
-|---|------|------|------|
-| 1 | **DAG Engine** | `dag/dag-engine.ts` | Kahn 拓扑排序，节点生命周期管理 |
-| 2 | **Cyclic DAG** | `dag/cyclic-dag-engine.ts` | 条件回边 + Tarjan SCC 检测 |
-| 3 | **Risk Router** | `risk/dr-calculator.ts` + `risk-router.ts` | DR 分歧率 → 4 级路由 |
-| 4 | **Governance Gateway** | `governance/governance-gateway.ts` | GaaS PDP/PEP，4 个拦截点 |
-| 5 | **Trust Factor** | `governance/trust-factor.ts` | 信任评分 (风险×合规×模型可靠性×证据) |
-| 6 | **Workflow Runtime** | `governance/workflow-runtime.ts` | Lease-Based 执行合同 |
-| 7 | **Token Budget** | `governance/token-budget-enforcer.ts` | 双层 Token 预算 (全局+节点) |
-| 8 | **Plugin Manager** | `plugin/plugin-manager.ts` | VSCode-style 插件生命周期 |
-| 9 | **Hook Bus** | `plugin/hook-bus.ts` | 4 模式 Hook (waterfall/parallel/bail/series) |
-| 10 | **Capability Sandbox** | `plugin/capability-sandbox.ts` | Deno-style 权限隔离 |
-| 11 | **Isolated Sandbox** | `plugin/isolated-sandbox.ts` | E2B 硬件微 VM 隔离 |
-| 12 | **Reflexion Actor** | `reflexion/actor-loop.ts` | 反思闭环 (Trial→Error→Reflect→Retry) |
-| 13 | **Federation** | `federation/` | A2A Agent Card + Swarm Router + Message Bus |
-| 14 | **Benchmark** | `benchmark/benchmark-runner.ts` | DAG 正确性 + 治理覆盖率评估 |
-| 15 | **Prompt Optimizer** | `optimization/prompt-optimizer.ts` | ELO 评分 + 突变策略 |
-| 16 | **OTel Tracer** | `observability/dag-tracer.ts` | OpenTelemetry GenAI Semantic Convention |
-| 17 | **Collusion Detector** | `collusion/embedding-detector.ts` | 向量余弦相似度串通检测 |
+1. Antigravity 或 MCP 触发 `StartRun`。
+2. `antigravity-daemon` 编译 workflow definition，成为唯一 authority owner。
+3. `WorkflowRunDriver` 执行节点；远程 worker 只能作为 execution unit，不拥有流程主权。daemon 对远程委派统一支持 `inline`、`poll`、`stream`、`callback` 四种 lifecycle，其中 `callback` 通过独立 callback ingress 接收远端终态结果，并要求 remote worker 使用 `hmac-sha256` 对回调 body 做签名。
+4. 每个节点必须产出 receipt；`PARALLEL` / `DEBATE` / `VERIFY` 还必须先经过 remote-first tribunal，policy skip 必须产出 `SkipDecision` 和 skip receipt。
+5. release 由 daemon 依据 evidence gate 和 policy pack 决定，必要时进入 `paused_for_human`。
+6. 所有状态、timeline、handoff、policy verdict、policy pack 和 trace bundle 都可回放和导出。
 
-## Event Sourcing 数据流
+## 当前模板
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant AGCService
-    participant EventStore
-    participant Projector
+- `antigravity.strict-full`
+  7 节点全路径执行，`DEBATE` 不允许跳过。
 
-    Client->>AGCService: startRun(request)
-    AGCService->>AGCService: DAG validate + DR calculate
-    AGCService->>AGCService: Gateway preflight
-    AGCService->>EventStore: append([RUN_CREATED, CONTEXT_CAPTURED, RISK_ASSESSED, ...])
-    AGCService->>Projector: projectState(events)
-    Projector-->>AGCService: AGCState
+- `antigravity.adaptive`
+  仍然是 7 节点模板，但 `DEBATE` 只有在 `PARALLEL` 结果满足策略条件时才允许进入 `policy_skipped`。
 
-    loop For each node
-        Client->>AGCService: advanceNode(callback)
-        AGCService->>AGCService: Gateway authorize
-        AGCService->>AGCService: callback(lease)
-        AGCService->>AGCService: Gateway observe
-        AGCService->>EventStore: append([NODE_COMPLETED, NODE_QUEUED...])
-    end
+## 核心工程资产
 
-    Client->>AGCService: completeRun(candidates)
-    AGCService->>AGCService: Gateway release (Trust-Weighted)
-    AGCService->>EventStore: append([RUN_COMPLETED])
-```
+| 模块 | 路径 | 职责 |
+|---|---|---|
+| Daemon Runtime | `packages/antigravity-daemon/src/runtime.ts` | 权威 run lifecycle、恢复、release gate |
+| Tribunal Service | `packages/antigravity-daemon/src/tribunal.ts` | remote-first juror orchestration、quorum、fallback 标记 |
+| Run Bootstrap | `packages/antigravity-daemon/src/run-bootstrap.ts` | daemon 自己完成 run 初始化，不再走旧应用服务入口 |
+| Workflow Compiler | `packages/antigravity-daemon/src/workflow-definition.ts` | DSL → 7 节点编译图 |
+| Evidence Policy | `packages/antigravity-daemon/src/evidence-policy.ts` | receipt / handoff / skip / release evidence |
+| Policy Engine | `packages/antigravity-daemon/src/policy-engine.ts` | policy-as-code pack、verdict 生成、scope 级策略 |
+| MCP Bridge | `packages/antigravity-mcp-server/src/daemon-bridge.ts` | MCP → daemon 启动与会话桥接 |
+| Tool Registry | `packages/antigravity-mcp-server/src/tool-registry.ts` | canonical tool catalog 与域注册 |
+| Workflow Run Driver | `packages/antigravity-model-core/src/workflow-run-driver.ts` | 节点推进、条件路由、skip callback |
+| Dashboard Panel | `packages/antigravity-vscode/src/dashboard-panel.ts` | Antigravity 面板状态同步 |
+| Webview UI | `packages/antigravity-webview/src/components/WorkflowPanel.tsx` | strict/adaptive 启动、timeline、remote worker lifecycle |
 
-## 治理网关 4 拦截点
+## 持久化与观测
 
-```
-请求进入 → preflight (input 控制)
-                ↓
-         authorize (execution + routing 控制)
-                ↓
-         [执行节点逻辑]
-                ↓
-         observe (assurance 控制 + 信任更新)
-                ↓
-         release (output 控制 + Trust-Weighted 释放)
-```
-
-每个拦截点独立评估 GovernanceControl，支持 5 种决策：
-- **allow** → 放行
-- **warn** → 放行但警告
-- **degrade** → 降级执行
-- **block** → 阻断
-- **escalate** → 上报人工
-
-## Federation P2P 消息模型
-
-```mermaid
-graph LR
-    A[Agent A] -->|task.delegate| B[Agent B]
-    B -->|task.result| A
-    A -->|handoff.request| C[Agent C]
-    C -->|handoff.accept| A
-    A -.->|heartbeat| B
-    A -.->|heartbeat| C
-    A -.->|discovery.query| ALL[Broadcast *]
-```
-
-10 种消息类型：`task.delegate` / `task.result` / `task.cancel` / `heartbeat` / `heartbeat.ack` / `handoff.request` / `handoff.accept` / `handoff.reject` / `discovery.query` / `discovery.response`
-
-## 技术栈
-
-| 层 | 技术 |
-|---|------|
-| Language | TypeScript 5.3+ (strict + NodeNext) |
-| Schema | Zod 3.24+ |
-| Protocol | MCP SDK 1.12+ |
-| Testing | Vitest |
-| Build | npm Workspaces + tsc + Webpack |
-| UI | React + Liquid Glass Design System |
-| Observability | OpenTelemetry |
+- Canonical state 在 SQLite ledger，不在 `run-projection.json`。
+- `data/antigravity_daemon/run-projection.json` 只是 projection artifact，供导出、调试和外部集成读取；面板本身直接读取 daemon snapshot。
+- step completion protocol 现在持久化为 durable completion session；snapshot/session 的 pending/prepared/acknowledged 由 ledger 中的 completion session 派生，不再靠 timeline latest-kind 推断。
+- daemon 重启时会先 reconcile committed/pending/prepared completion sessions，再恢复 drain；`committed but not NODE_COMPLETED` 会自动 replay，stale lease without staged bundle 会回收到 `queued`。
+- trace bundle 默认包含 manifest、policy pack、run、events、checkpoints、timeline、receipts、tribunals、handoffs、skip decisions、policy verdicts、remote workers。
+- `data/antigravity_daemon/policy-pack.json` 是 workspace 级 policy-as-code 输入源；daemon 启动时自动加载，也支持热重载。
+- `data/antigravity_daemon/benchmark-manifest.json` 是 workspace 级 benchmark harness manifest；daemon 运行 benchmark 时按它启用 suite。
+- `data/antigravity_daemon/benchmark-dataset.json` 是 workspace 级 benchmark dataset；daemon 运行 benchmark 时按它生成 case-level 结果并回聚到 suite/report，case 既可以编译 workflow definition，也可以回放 trace bundle 做 evidence-backed 校验。
+- `data/antigravity_daemon/interop-manifest.json` 是 workspace 级 interop harness manifest；daemon 运行互操作诊断时按它启用 suite。
+- remote tribunal worker 使用独立 capability `tribunal-judge`；只有 `mode=remote` 的 tribunal summary 才能满足 release gate，`hybrid` / `local-fallback` 只保留为诊断轨迹。
+- daemon 重启后会从 ledger 找回 `starting/running` run 并继续 drain。

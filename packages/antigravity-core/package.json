@@ -1,0 +1,21 @@
+{
+  "name": "@anthropic/antigravity-core",
+  "version": "0.1.0",
+  "description": "Antigravity Workflow Runtime \u2014 DAG \u5f15\u64ce\u3001\u98ce\u9669\u8def\u7531\u3001\u5408\u89c4\u5f15\u64ce\u3001\u5e94\u7528\u670d\u52a1",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "npm run clean && tsc -b --pretty",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@anthropic/antigravity-shared": "*",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}

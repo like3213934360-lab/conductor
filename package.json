@@ -1,7 +1,7 @@
 {
-  "name": "conductor-hub",
-  "displayName": "Conductor Hub",
-  "description": "多 Agent 治理引擎 — 多模型编排 + AGC 工作流 + MCP 自动注册",
+  "name": "antigravity-workflow",
+  "displayName": "Antigravity Workflow",
+  "description": "Antigravity-first multi-agent workflow system with optional ArkTS LSP support",
   "version": "0.3.0",
   "publisher": "like3213934360-lab",
   "license": "MIT",
@@ -16,32 +16,63 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Programming Languages",
-    "Linters",
-    "Formatters",
     "Other"
   ],
   "keywords": [
-    "arkts",
-    "harmonyos",
+    "antigravity",
+    "workflow",
     "conductor",
     "multi-agent",
-    "agc",
     "ai-orchestration",
-    "mcp"
+    "mcp",
+    "arkts-lsp"
   ],
   "activationEvents": [
-    "onLanguage:arkts",
-    "workspaceContains:**/*.ets",
-    "*"
+    "onStartupFinished",
+    "onCommand:antigravity.openPanel",
+    "onCommand:antigravity.runWorkflow",
+    "onCommand:antigravity.getRunSession",
+    "onCommand:antigravity.getRun",
+    "onCommand:antigravity.streamRun",
+    "onCommand:antigravity.approveGate",
+    "onCommand:antigravity.cancelRun",
+    "onCommand:antigravity.replayRun",
+    "onCommand:antigravity.reloadPolicyPack",
+    "onCommand:antigravity.reloadTrustRegistry",
+    "onCommand:antigravity.exportTraceBundle",
+    "onCommand:antigravity.getReleaseArtifacts",
+    "onCommand:antigravity.getPolicyReport",
+    "onCommand:antigravity.verifyReleaseArtifacts",
+    "onCommand:antigravity.verifyPolicyReport",
+    "onCommand:antigravity.getInvariantReport",
+    "onCommand:antigravity.verifyInvariantReport",
+    "onCommand:antigravity.getReleaseAttestation",
+    "onCommand:antigravity.verifyReleaseAttestation",
+    "onCommand:antigravity.getReleaseBundle",
+    "onCommand:antigravity.verifyReleaseBundle",
+    "onCommand:antigravity.getReleaseDossier",
+    "onCommand:antigravity.verifyReleaseDossier",
+    "onCommand:antigravity.getCertificationRecord",
+    "onCommand:antigravity.verifyCertificationRecord",
+    "onCommand:antigravity.getTransparencyLedger",
+    "onCommand:antigravity.verifyTransparencyLedger",
+    "onCommand:antigravity.runBenchmark",
+    "onCommand:antigravity.runInteropHarness",
+    "onCommand:antigravity.toggleArktsLsp"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "arkts",
-        "aliases": ["ArkTS", "arkts", "ets"],
-        "extensions": [".ets"],
+        "aliases": [
+          "ArkTS",
+          "arkts",
+          "ets"
+        ],
+        "extensions": [
+          ".ets"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -61,18 +92,130 @@
     ],
     "commands": [
       {
-        "command": "conductor-hub.openPanel",
-        "title": "Conductor Hub: 打开控制面板",
+        "command": "antigravity.openPanel",
+        "title": "Antigravity Workflow: 打开控制面板",
         "icon": "$(dashboard)"
       },
       {
-        "command": "conductor-hub.runAgc",
-        "title": "Conductor Hub: 运行 AGC",
+        "command": "antigravity.runWorkflow",
+        "title": "Antigravity Workflow: 运行 Antigravity 工作流",
         "icon": "$(run-all)"
+      },
+      {
+        "command": "antigravity.getRunSession",
+        "title": "Antigravity Workflow: 查看 Run Session"
+      },
+      {
+        "command": "antigravity.getRun",
+        "title": "Antigravity Workflow: 查看当前工作流"
+      },
+      {
+        "command": "antigravity.streamRun",
+        "title": "Antigravity Workflow: 实时查看工作流"
+      },
+      {
+        "command": "antigravity.approveGate",
+        "title": "Antigravity Workflow: 审批工作流门禁"
+      },
+      {
+        "command": "antigravity.cancelRun",
+        "title": "Antigravity Workflow: 取消当前工作流"
+      },
+      {
+        "command": "antigravity.replayRun",
+        "title": "Antigravity Workflow: 重放当前工作流"
+      },
+      {
+        "command": "antigravity.reloadPolicyPack",
+        "title": "Antigravity Workflow: 重载 Policy Pack"
+      },
+      {
+        "command": "antigravity.reloadTrustRegistry",
+        "title": "Antigravity Workflow: 重载 Trust Registry"
+      },
+      {
+        "command": "antigravity.exportTraceBundle",
+        "title": "Antigravity Workflow: 导出 Trace Bundle"
+      },
+      {
+        "command": "antigravity.getReleaseArtifacts",
+        "title": "Antigravity Workflow: 查看 Release Artifacts"
+      },
+      {
+        "command": "antigravity.getPolicyReport",
+        "title": "Antigravity Workflow: 查看 Policy Report"
+      },
+      {
+        "command": "antigravity.verifyReleaseArtifacts",
+        "title": "Antigravity Workflow: 校验 Release Artifacts"
+      },
+      {
+        "command": "antigravity.verifyPolicyReport",
+        "title": "Antigravity Workflow: 校验 Policy Report"
+      },
+      {
+        "command": "antigravity.getInvariantReport",
+        "title": "Antigravity Workflow: 查看 Invariant Report"
+      },
+      {
+        "command": "antigravity.verifyInvariantReport",
+        "title": "Antigravity Workflow: 校验 Invariant Report"
+      },
+      {
+        "command": "antigravity.getReleaseAttestation",
+        "title": "Antigravity Workflow: 查看 Release Attestation"
+      },
+      {
+        "command": "antigravity.verifyReleaseAttestation",
+        "title": "Antigravity Workflow: 校验 Release Attestation"
+      },
+      {
+        "command": "antigravity.getReleaseBundle",
+        "title": "Antigravity Workflow: 查看 Release Bundle"
+      },
+      {
+        "command": "antigravity.verifyReleaseBundle",
+        "title": "Antigravity Workflow: 校验 Release Bundle"
+      },
+      {
+        "command": "antigravity.getReleaseDossier",
+        "title": "Antigravity Workflow: 查看 Release Dossier"
+      },
+      {
+        "command": "antigravity.verifyReleaseDossier",
+        "title": "Antigravity Workflow: 校验 Release Dossier"
+      },
+      {
+        "command": "antigravity.getCertificationRecord",
+        "title": "Antigravity Workflow: 查看 Certification Record"
+      },
+      {
+        "command": "antigravity.verifyCertificationRecord",
+        "title": "Antigravity Workflow: 校验 Certification Record"
+      },
+      {
+        "command": "antigravity.getTransparencyLedger",
+        "title": "Antigravity Workflow: 查看 Transparency Ledger"
+      },
+      {
+        "command": "antigravity.verifyTransparencyLedger",
+        "title": "Antigravity Workflow: 校验 Transparency Ledger"
+      },
+      {
+        "command": "antigravity.runBenchmark",
+        "title": "Antigravity Workflow: 运行 Antigravity Benchmark"
+      },
+      {
+        "command": "antigravity.runInteropHarness",
+        "title": "Antigravity Workflow: 运行互操作 Harness"
+      },
+      {
+        "command": "antigravity.toggleArktsLsp",
+        "title": "Antigravity Workflow: 切换 ArkTS LSP"
       }
     ],
     "configuration": {
-      "title": "Conductor Hub",
+      "title": "Antigravity Workflow",
       "properties": {
         "arkts.deveco.path": {
           "type": "string",
@@ -81,24 +224,37 @@
         },
         "arkts.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "LSP 通信日志级别（调试用）"
         },
-        "conductor-hub._dashboardTip": {
+        "antigravity._dashboardTip": {
           "type": "string",
-          "default": "👉 点击右下角 'Conductor Hub' 打开 Dashboard 👈",
-          "description": "💡 模型配置不在本页！Conductor Hub 使用可视化 Dashboard。请点击右下角状态栏的 'Conductor Hub' 按钮，或使用 Cmd+Shift+P → 'Conductor Hub: 打开控制面板'。",
+          "default": "👉 点击右下角 'Antigravity Workflow' 打开控制面板 👈",
+          "description": "💡 Antigravity workflow 与 ArkTS LSP 控制都在可视化控制面中。请点击右下角状态栏按钮，或使用 Cmd+Shift+P → 'Antigravity Workflow: 打开控制面板'。",
           "order": 1
         },
-        "conductor-hub.defaultModel": {
+        "antigravity.defaultModel": {
           "type": "string",
           "default": "deepseek",
-          "enum": ["deepseek", "glm", "qwen", "minimax", "kimi", "gpt", "gemini", "mistral"],
+          "enum": [
+            "deepseek",
+            "glm",
+            "qwen",
+            "minimax",
+            "kimi",
+            "gpt",
+            "gemini",
+            "mistral"
+          ],
           "description": "默认路由大模型（未触发垂直分支时的兜底模型）",
           "order": 2
         },
-        "conductor-hub.retentionDays": {
+        "antigravity.retentionDays": {
           "type": "number",
           "default": 30,
           "description": "自动清理历史记录的天数",
@@ -166,30 +322,42 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "npm run build --prefix packages/conductor-hub-webview && mkdir -p dist && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify && esbuild ./packages/conductor-mcp-server/src/main.ts --bundle --outfile=dist/conductor-mcp-server.js --format=cjs --platform=node --minify",
+    "build": "npm run clean && npm run build:all && npm run build --prefix packages/antigravity-webview && mkdir -p dist && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-mcp-server/src/main.ts --bundle --outfile=dist/antigravity-mcp-server.js --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-daemon/src/main.ts --bundle --outfile=dist/antigravity-daemon.js --external:better-sqlite3 --format=cjs --platform=node --minify",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
-    "package": "npx vsce package --no-dependencies -o conductor-hub.vsix",
-    "install-ext": "npx vsce package --no-dependencies -o conductor-hub.vsix && code --install-extension conductor-hub.vsix && rm conductor-hub.vsix && cp dist/webview.js dist/extension.js dist/conductor-mcp-server.js ~/.antigravity/extensions/like3213934360-lab.conductor-hub-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
-    "build:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence",
-    "build:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-adapter",
-    "build:conductor-mcp": "tsc -b packages/conductor-mcp-server",
-    "build:all": "npm run build:conductor && npm run build:conductor-hub && npm run build:conductor-mcp",
-    "typecheck:conductor": "tsc -b packages/conductor-shared packages/conductor-core packages/conductor-persistence --pretty",
-    "typecheck:conductor-hub": "tsc -b packages/conductor-hub-shared packages/conductor-hub-core packages/conductor-hub-persistence packages/conductor-hub-adapter --pretty",
-    "typecheck:conductor-mcp": "tsc -b packages/conductor-mcp-server --pretty",
-    "typecheck:all": "npm run typecheck:conductor && npm run typecheck:conductor-hub && npm run typecheck:conductor-mcp",
+    "package": "npx vsce package --no-dependencies -o antigravity-workflow.vsix",
+    "install-ext": "npx vsce package --no-dependencies -o antigravity-workflow.vsix && code --install-extension antigravity-workflow.vsix && rm antigravity-workflow.vsix && cp dist/webview.js dist/extension.js dist/antigravity-mcp-server.js dist/antigravity-daemon.js ~/.antigravity/extensions/like3213934360-lab.antigravity-workflow-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
+    "build:runtime": "npm run build --prefix packages/antigravity-shared && npm run build --prefix packages/antigravity-core && npm run build --prefix packages/antigravity-persistence",
+    "build:antigravity-model": "npm run build --prefix packages/antigravity-model-shared && npm run build --prefix packages/antigravity-model-core",
+    "build:antigravity-daemon": "npm run build --prefix packages/antigravity-daemon",
+    "build:antigravity-vscode": "npm run build --prefix packages/antigravity-vscode",
+    "build:antigravity-mcp": "npm run build --prefix packages/antigravity-mcp-server",
+    "build:all": "npm run build --prefix packages/ace-bridge && npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run build:antigravity-vscode && npm run build:antigravity-mcp",
+    "typecheck:ace-bridge": "npm run typecheck --prefix packages/ace-bridge",
+    "typecheck:runtime": "npm run typecheck --prefix packages/antigravity-shared && npm run typecheck --prefix packages/antigravity-core && npm run typecheck --prefix packages/antigravity-persistence",
+    "typecheck:antigravity-model": "npm run typecheck --prefix packages/antigravity-model-shared && npm run typecheck --prefix packages/antigravity-model-core",
+    "typecheck:antigravity-vscode": "npm run typecheck --prefix packages/antigravity-vscode",
+    "typecheck:antigravity-daemon": "npm run typecheck --prefix packages/antigravity-daemon",
+    "typecheck:antigravity-mcp": "npm run typecheck --prefix packages/antigravity-mcp-server",
+    "check:source-artifacts": "if find packages src -path '*/src/*' \\( -name '*.js' -o -name '*.js.map' -o -name '*.d.ts' -o -name '*.d.ts.map' \\) | grep -q .; then echo 'Source tree contains generated artifacts under src/'; find packages src -path '*/src/*' \\( -name '*.js' -o -name '*.js.map' -o -name '*.d.ts' -o -name '*.d.ts.map' \\) | sort; exit 1; fi",
+    "typecheck:all": "npm run check:source-artifacts && npm run typecheck:ace-bridge && npm run typecheck:runtime && npm run typecheck:antigravity-model && npm run typecheck:antigravity-daemon && npm run typecheck:antigravity-vscode && npm run typecheck:antigravity-mcp && npm run clean:dist-tests",
+    "test": "vitest run --config vitest.config.ts",
+    "check:contracts": "vitest run --config vitest.config.ts packages/antigravity-daemon/src/__tests__/server-manifest.spec.ts packages/antigravity-daemon/src/__tests__/runtime-recovery.spec.ts packages/antigravity-daemon/src/__tests__/release-surface.spec.ts packages/antigravity-daemon/src/__tests__/formal-specs.spec.ts packages/antigravity-vscode/src/__tests__/workflow-contract.spec.ts",
+    "coverage": "vitest run --config vitest.config.ts --coverage",
+    "ci": "npm run typecheck:all && npm test && npm run build",
     "turbo:build": "turbo run build",
     "turbo:typecheck": "turbo run typecheck",
     "turbo:clean": "turbo run clean && rm -rf dist",
+    "clean:dist-tests": "find packages -type d -path '*/dist/__tests__' -exec rm -rf {} + 2>/dev/null || true",
     "clean": "rm -rf packages/*/dist dist"
   },
   "dependencies": {
-    "vscode-languageclient": "^9.0.0",
-    "json5": "^2.2.3"
+    "json5": "^2.2.3",
+    "vscode-languageclient": "^9.0.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "esbuild": "^0.24.0",
     "turbo": "^2.0.0",
     "typescript": "^5.3.0",

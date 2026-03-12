@@ -13,13 +13,12 @@
   },
   "references": [
     { "path": "packages/ace-bridge" },
-    { "path": "packages/conductor-shared" },
-    { "path": "packages/conductor-core" },
-    { "path": "packages/conductor-persistence" },
-    { "path": "packages/conductor-mcp-server" },
-    { "path": "packages/conductor-hub-shared" },
-    { "path": "packages/conductor-hub-core" },
-    { "path": "packages/conductor-hub-persistence" },
-    { "path": "packages/conductor-hub-adapter" }
+    { "path": "packages/antigravity-shared" },
+    { "path": "packages/antigravity-core" },
+    { "path": "packages/antigravity-persistence" },
+    { "path": "packages/antigravity-daemon" },
+    { "path": "packages/antigravity-mcp-server" },
+    { "path": "packages/antigravity-model-shared" },
+    { "path": "packages/antigravity-model-core" }
   ]
 }

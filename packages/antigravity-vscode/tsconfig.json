@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "composite": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../ace-bridge" },
+    { "path": "../antigravity-daemon" },
+    { "path": "../antigravity-model-shared" },
+    { "path": "../antigravity-model-core" },
+    { "path": "../antigravity-core" },
+    { "path": "../antigravity-persistence" },
+    { "path": "../antigravity-shared" },
+    { "path": "../antigravity-mcp-server" }
+  ]
+}

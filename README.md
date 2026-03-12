@@ -1,13 +1,12 @@
-# Conductor AGC
+# Antigravity Workflow
 
 > **🤖 Multi-Model AI Governance Engine** — Event Sourcing × DAG Orchestration × GaaS (Governance as a Service)
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3+-blue.svg)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.12+-purple.svg)](https://modelcontextprotocol.io/)
-[![SOTA Score](https://img.shields.io/badge/SOTA-8.6%2F10-brightgreen.svg)](#sota-rating)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Conductor AGC 是一个**生产级多智能体治理引擎**，通过 7 节点 DAG 状态机编排多个 LLM，结合 Event Sourcing、GaaS 策略网关和 P2P Federation，实现安全、可审计、可回溯的 AI 工作流。
+Antigravity Workflow 是一个**Antigravity 专用、daemon-owned 多智能体协作系统**。主产品是 Antigravity workflow authority runtime，通过 7 节点状态机编排多个 LLM，并结合 Event Sourcing、policy-as-code、A2A-style remote worker federation，实现安全、可审计、可回放的工作流执行。ArkTS LSP / DevEco ace-server 仍然保留，但作为插件内可单独开关的附加能力，不再驱动宿主激活与产品入口。
 
 ## ✨ 核心特性
 
@@ -15,33 +14,33 @@ Conductor AGC 是一个**生产级多智能体治理引擎**，通过 7 节点 D
 |------|------|-----------|
 | 🔀 DAG 编排 | 7 节点状态机 + 循环 DAG | LangGraph 2.0 |
 | 🛡️ 治理网关 | GaaS 4 拦截点 (PDP/PEP) | OPA + NeMo Guardrails |
-| 📦 Event Sourcing | 不可变事件流 + Time-Travel | Temporal.io |
+| 📦 Event Sourcing | 不可变事件流 + Replayable Ledger | Temporal.io |
 | 🔍 可观测性 | OpenTelemetry GenAI Semantic | LangSmith |
 | 🧠 记忆系统 | Vector Search + Snapshot | MemGPT |
-| 🔒 安全沙箱 | E2B 硬件隔离 + 进程沙箱 | Deno Permissions |
-| 🌐 P2P 联邦 | A2A Agent Card + Swarm Router | OpenAI Swarm SDK |
-| 🎯 自适应学习 | ELO Prompt 优化 + Reflexion | DSPy |
-| ⏪ HITL | Time-Travel 回退 + 分支执行 | — |
+| 🔏 信任治理 | Trust Registry + Signed Callback/Registry | Sigstore-style Trust |
+| 🌐 远程 Worker 联邦 | Agent Card + Remote Worker Directory | A2A / ADK |
+| 🎯 自适应协作 | Adaptive workflow + policy-authorized skip | DSPy-style Orchestration |
+| ⏪ HITL | Human approval gate + replay/export | — |
 | 🧪 基准评估 | DAG + 治理评估套件 | AgentBench |
 
 ## 🏗️ 架构
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    MCP / A2A Protocol                     │
-│         agc.run │ agc.get_state │ agc.verify_run          │
+│                 MCP / Workflow Protocol                   │
+│ workflow.run │ workflow.getState │ workflow.advance      │
 ├──────────────────────────────────────────────────────────┤
-│                  Application Service                      │
-│             AGCService (Orchestrator)                      │
-├────────┬────────┬───────────┬────────────┬───────────────┤
-│  DAG   │ Risk   │Governance │  Plugin    │  Federation   │
-│ Engine │ Router │  Gateway  │  Manager   │     Bus       │
-│(Cyclic)│(DR/4L) │ (GaaS)    │(Hook+Caps) │ (P2P Swarm)  │
-├────────┴────────┴───────────┴────────────┴───────────────┤
-│     Event Sourcing  │  Reflexion  │  Observability       │
-│   (Upcasting+Snap)  │ (Actor Loop)│  (OTel Tracer)      │
+│                 Daemon Control Plane                      │
+│      antigravity-daemon (authority + durable runtime)      │
+├────────┬────────┬───────────┬───────────────┤
+│  DAG   │ Risk   │Governance │ Remote Worker │
+│ Engine │ Router │  Gateway  │  Directory    │
+│(Cyclic)│(DR/4L) │ (GaaS)    │ (A2A-style)   │
+├────────┴────────┴───────────┴───────────────┤
+│     Event Sourcing  │  Evidence   │  Observability       │
+│   (Upcasting+Snap)  │    Gate     │  (OTel Tracer)      │
 ├──────────────────────────────────────────────────────────┤
-│              conductor-shared (Schema/Types/Zod)          │
+│             antigravity-shared (Schema/Types/Zod)         │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -49,91 +48,142 @@ Conductor AGC 是一个**生产级多智能体治理引擎**，通过 7 节点 D
 
 ```
 packages/
-├── conductor-shared        # 共享类型 + Zod Schema + Event 投影器
-├── conductor-core          # 核心引擎 (17 模块)
+├── antigravity-shared      # 共享类型 + Zod Schema + Event 投影器
+├── antigravity-core        # 核心工作流运行时
+│   ├── contracts/          #   运行时接口
 │   ├── dag/                #   DAG 引擎 + 循环支持
 │   ├── governance/         #   GaaS 治理网关
 │   ├── risk/               #   DR 风险路由
-│   ├── plugin/             #   插件系统
-│   ├── federation/         #   P2P Agent Federation
-│   ├── reflexion/          #   Reflexion Actor Loop
-│   ├── benchmark/          #   基准评估
-│   ├── optimization/       #   Prompt 优化
+│   ├── federation/         #   Agent card + handoff primitives
 │   ├── observability/      #   OTel Tracer
-│   └── cli/                #   CLI 工具
-├── conductor-persistence   # 持久化 (JSONL + Vector Memory)
-├── conductor-mcp-server    # MCP Server 入口
-├── conductor-hub-vscode    # VS Code 扩展
-└── conductor-hub-webview   # Dashboard UI (Liquid Glass)
+│   └── ...                 #   核心运行时子模块
+├── antigravity-persistence # 持久化 (JSONL + Vector Memory)
+├── antigravity-model-shared # 模型目录共享契约
+├── antigravity-model-core  # Host-facing 模型编排服务
+├── antigravity-daemon      # Antigravity daemon-owned runtime
+├── antigravity-mcp-server  # MCP Server 入口
+├── antigravity-vscode      # VS Code / Antigravity 集成层
+└── antigravity-webview     # Dashboard UI
 ```
 
 ## 🚀 快速开始
 
 ```bash
 # 安装
-git clone https://github.com/anthropic/conductor-agc.git && cd conductor-agc
+git clone https://github.com/like3213934360-lab/conductor.git && cd conductor
 npm install
 
 # 构建
-npm run build:conductor
+npm run build
 
-# CLI
-npx ts-node packages/conductor-core/src/cli/conductor-agc-cli.ts run --goal "分析代码"
-
-# MCP Server
-node packages/conductor-mcp-server/dist/main.js
+# Antigravity / VS Code
+Cmd+Shift+P → Antigravity Workflow: 运行 Antigravity 工作流
 ```
 
 ```typescript
-import { AGCService } from '@anthropic/conductor-core'
+import { AntigravityDaemonClient, resolveAntigravityDaemonPaths } from '@anthropic/antigravity-daemon'
 
-const service = new AGCService({ eventStore, checkpointStore })
-const { runId, route, drScore } = await service.startRun({
-  metadata: { goal: '代码审查', repoRoot: '.' },
-  graph: standardDAG,
+const paths = resolveAntigravityDaemonPaths(process.cwd())
+const client = new AntigravityDaemonClient(paths.socketPath)
+
+const run = await client.startRun({
+  invocation: {
+    workflowId: 'antigravity.strict-full',
+    workflowVersion: '1.0.0',
+    goal: '代码审查',
+    workspaceRoot: process.cwd(),
+    files: [],
+    initiator: 'readme-example',
+    triggerSource: 'command',
+    forceFullPath: true,
+    options: {},
+    metadata: {},
+  },
 })
+
+console.log(run.runId, run.snapshot.status)
 ```
 
-**👉 详细指南: [Quick Start](docs/QUICK_START.md) | [API Cookbook](docs/API_COOKBOOK.md)**
+**👉 详细指南: [Quick Start](docs/QUICK_START.md) | [API Cookbook](docs/API_COOKBOOK.md) | [Antigravity Contract](docs/ANTIGRAVITY_CONTRACT.md)**
 
-## 📐 DAG 7 节点流程
+## 📐 Antigravity 7 节点流程
 
 ```
-ANALYZE → PARALLEL → DEBATE → SYNTHESIZE → VERIFY → PERSIST
-                                                        ↘
-                                                       HITL
+ANALYZE → PARALLEL → DEBATE → VERIFY → SYNTHESIZE → PERSIST → HITL
 ```
 
-4 级风险路由: **Express** (跳过 DEBATE) → **Standard** → **Full** (含 DEBATE) → **Escalated** (含 HITL)
+Antigravity 触发后，工作流执行主权切换到本地 `antigravity-daemon`。宿主模型只返回内容和工具结果，不决定节点顺序、跳过或提前结束。
+
+默认模板是 `antigravity.strict-full`。如果显式选择 `antigravity.adaptive`，daemon 只会在 `PARALLEL` 结果显示双 worker 共识足够强时，把 `DEBATE` 标记为 `policy_skipped`，并同时生成 `SkipDecision`、skip receipt 和 downstream handoff。
+
+release 阶段默认走 evidence gate + policy pack：节点执行完成并不等于允许发布，daemon 会基于导出的 policy-as-code 规则检查 receipt、artifact、judge signal 和 handoff 证据后再决定 `completed`、`paused_for_human` 或 `policy_skipped`。
+
+如果工作区存在 `data/antigravity_daemon/remote-workers.json`，daemon 会发现并路由远程 worker，但远程端始终只是执行单元，workflow authority 依旧只在本地。这个配置文件现在只承担本地路由策略和运行时约束；真正的 task protocol 由 `GET /.well-known/agent-card.json` 返回的 `taskProtocol` 广告。除了 `preferredResponseMode`、`allowCapabilities`、`preferredNodeIds`、`minTrustScore` 这些本地调度约束外，还可以声明 `expectedAgentCardSha256`、`requiredAdvertisementSchemaVersion`、`maxAdvertisementAgeMs` 和 `advertisementTrustPolicyId`。具体的 signed advertisement 规则不再散落在 worker 配置里，而是统一由 `trust-registry.json` 中的 signer policy 定义，例如是否必须签名、允许哪些 key status、允许哪些 rotation group、允许哪些 key/issuer、签名最长有效期。这样 daemon 不只 pin agent-card digest/schema/freshness，还会按统一 trust policy 强制验证“这份 advertisement 是谁签的、是否过期、当前 key 是否处于允许状态、是否落在有效期窗口内、是否属于允许的轮换组”。remote worker 支持四种 A2A-style response mode：`inline`、`poll`、`stream`、`callback`。其中 `callback` 由 daemon 启动独立 callback ingress，远程端拿到 callback lease 后再把终态结果回推给本地 authority runtime；callback lease 默认带 `hmac-sha256` 签名约束，远程端必须用 timestamp + raw JSON body 生成签名后才能完成回调。daemon 现在会对 agent card 做显式协议验证：校验 agent-card 基础字段、capability overlap、trust threshold、task protocol surface、callback auth advertisement，以及 advertisement digest/schema/freshness/signature；运行时快照会暴露 `advertisementTrustPolicyId`、`agentCardSha256`、`agentCardSchemaVersion`、`agentCardPublishedAt`、`agentCardExpiresAt`、`agentCardAdvertisementSignatureKeyId`、`agentCardAdvertisementSignatureIssuer`、`agentCardAdvertisementSignedAt`、`agentCardEtag`、`agentCardLastModified`。发现失败会带 `issueKind`（`discovery`、`agent-card`、`protocol`、`auth`、`routing`）以及 `advertisementTrustPolicyId`、`allowedAdvertisementKeyStatuses`、`allowedAdvertisementRotationGroups`、`allowedAdvertisementKeyIds`、`allowedAdvertisementIssuers` 这些 policy 展开结果单独进入 discovery issues，而不是伪装成可委派 worker。如果需要跨主机回调，可通过 `ANTIGRAVITY_DAEMON_CALLBACK_BASE_URL` 把 callback 广播地址切到反向代理或公网入口。
+
+如果工作区存在 `data/antigravity_daemon/policy-pack.json`，daemon 会在启动时自动加载它作为 workspace 级 policy-as-code 输入，并支持在控制面或 MCP 中热重载。
+
+如果工作区存在 `data/antigravity_daemon/trust-registry.json`，daemon 会把它作为签名信任面的单一事实源，用来解析 signed remote worker advertisement 和 signed benchmark source registry 所需的 key/issuer/scope/envVar，同时统一承载 signer policy。trust registry 里的 key 已经不是简单的“开/关”开关，而是带 `status=active|staged|retired`、`validFrom`、`expiresAt`、`rotationGroup` 的生命周期实体；signer policy 则用 `allowedKeyStatuses`、`allowedRotationGroups`、`allowedKeyIds`、`allowedIssuers`、`maxSignatureAgeMs` 控制哪些签名当前可被接受。这样 remote worker 不再直接从散落的 env 命名约定里找 secret，benchmark source registry 也不再自带独立 secret 解析逻辑，而是统一走 daemon trust registry。随后如果工作区存在 `data/antigravity_daemon/benchmark-manifest.json`，daemon benchmark harness 会按 manifest 中启用的 suite 执行本地评测；如果还存在 `data/antigravity_daemon/benchmark-dataset.json`，其中的 dataset case 不仅可以编译 workflow DSL，也可以直接读取 workspace 内的 trace bundle / run artifact 做 evidence-backed benchmark，产出 case/check 双层结果，而不是固定写死一组本地检查。trace-bundle case 现在还能要求 remote worker evidence 暴露 `agentCardSha256`、`agentCardSchemaVersion`，以及 signed advertisement 的 `agentCardAdvertisementSignatureKeyId/Issuer/SignedAt`，把 federation advertisement provenance 也纳入 benchmark。benchmark source 现在支持 registry-first 组织方式：工作区可选 `data/antigravity_daemon/benchmark-source-registry.json` 作为单一事实源，manifest 和 `workflow.benchmark` request 里的 `datasetSources` 可以直接引用 `registry:<sourceId>` 或 `{ registryRef: "<sourceId>" }`，不再要求每次都内联完整 source object。registry entry 仍然支持 `expectedDatasetId`、`expectedVersion`、`expectedSha256`、`cacheTtlMs`、`allowStaleOnError` 和 `authEnvVar`，而 registry 顶层则显式声明 `trustPolicyId`。registry 可选 `signature` 会通过 trust registry 中同 scope 的 signer policy 和 key set 做 `hmac-sha256` 验签；一旦某个 source 被标记为 `locked`，daemon 就要求整个 registry 处于 `verification.summary=verified`，并且拒绝 `authEnvVar`、`expectedDatasetId`、`expectedVersion`、`expectedSha256`、`cacheTtlMs`、`allowStaleOnError` 这类 override。remote dataset 会走本地缓存、ETag/Last-Modified 重验证和 sha256 完整性校验；如果用户显式配置了外部 source 或 registry ref，加载失败时 daemon 会生成 issue case，而不会静默回退到内置 benchmark dataset 掩盖错误。
+
+如果工作区存在 `data/antigravity_daemon/interop-manifest.json`，daemon interop harness 会按 manifest 中启用的 suite 执行互操作诊断，而不是在 runtime 里写死一组检查。
+
+Model 域工具也已经切换到 model-catalog 语义：`ai_ask` 使用 `model_hint`，`ai_multi_ask` 使用 `model_hints`，`ai_consensus` 使用 `judge_model_hint`，模型清单工具为 `ai_list_models`。
 
 ## 🔧 MCP 工具
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `agc.run` | goal, riskHint, files, tokenBudget | 启动 AGC 运行 |
-| `agc.get_state` | runId | 查询运行状态 (Event Replay) |
-| `agc.verify_run` | runId | 完整性验证 (Drift Detection) |
-| `agc.benchmark` | — | 运行评估套件 |
-| `agc.plugins` | — | 查询插件状态 |
+| `workflow.run` | goal, workflowId, riskHint, files, tokenBudget | 启动 daemon-owned workflow 运行 |
+| `workflow.runSession` | runId | 读取当前 run 的 active lease / session 状态 |
+| `workflow.getState` | runId | 查询最新 run snapshot |
+| `workflow.advance` | runId, cursor | 读取 timeline 增量 |
+| `workflow.verifyRun` | runId | 校验 receipt / skip / release gate 完整性 |
+| `workflow.verifyTraceBundle` | runId | 校验已导出 trace bundle 的完整性与 digest |
+| `workflow.releaseArtifacts` | runId | 读取统一的 release artifact surface |
+| `workflow.policyReport` | runId | 读取 policy report 治理证明 |
+| `workflow.invariantReport` | runId | 读取 invariant report 运行约束证明 |
+| `workflow.releaseAttestation` | runId | 读取已导出的 release attestation |
+| `workflow.releaseBundle` | runId | 读取 release bundle 统一发布包 |
+| `workflow.releaseDossier` | runId | 读取 release dossier 发布档案 |
+| `workflow.verifyReleaseArtifacts` | runId | 校验统一的 release artifact surface |
+| `workflow.verifyPolicyReport` | runId | 校验 policy report 的 payload digest、签名 provenance 与 verdict 列表一致性 |
+| `workflow.verifyInvariantReport` | runId | 校验 invariant report 的 payload digest、签名 provenance 与 invariant failure 一致性 |
+| `workflow.verifyReleaseAttestation` | runId | 校验 release attestation 的 payload digest 与签名 provenance |
+| `workflow.verifyReleaseBundle` | runId | 校验 release bundle 的 payload digest、签名 provenance、dossier/verifyRun 摘要一致性 |
+| `workflow.verifyReleaseDossier` | runId | 校验 release dossier 的 payload digest、签名 provenance 与 verifyRun 摘要一致性 |
+| `workflow.transparencyLedger` | — | 读取本地 append-only transparency ledger |
+| `workflow.verifyTransparencyLedger` | — | 校验 transparency ledger 的 hash chain |
+| `workflow.policyPack` | `reload?` | 读取 daemon 当前 policy-as-code pack，可选热重载 workspace 中的 `policy-pack.json` |
+| `workflow.trustRegistry` | `reload?` | 读取或热重载 daemon trust registry，查看签名 key、issuer、scope 与 secret 解算状态 |
+| `workflow.traceExport` | runId | 导出 replayable trace bundle |
+| `workflow.benchmark` | `suiteIds?`, `caseIds?`, `datasetSources?` | 运行 daemon benchmark harness，可选指定 suiteId / caseId / 外部 dataset source registry（字符串路径/URL或带 pin、sha、缓存策略的 source object） |
+| `workflow.benchmarkSources` | `reload?` | 读取或热重载 daemon benchmark source registry，查看 registry-first dataset source 配置 |
+| `workflow.interop` | `suiteIds?` | 运行 Antigravity 互操作 harness，可选指定 suiteId 列表 |
+| `workflow.remoteWorkers` | — | 查询 daemon 已发现的 remote workers、agent-card verification summary 与 classified discovery issues |
+| `workflow.memorySearch` | `query`, `files?`, `topK?` | 搜索 daemon-owned workflow 记忆与语义事实 |
 
-## <a name="sota-rating"></a>📊 SOTA 评级 (2026.03)
+trace bundle 现在是 tamper-evident 且可签名的证据产物。`workflow.traceExport` 会在 bundle 顶层写入 `integrity.algorithm / generatedAt / entryDigests / bundleDigest`，覆盖 `manifest`、`policyPack`、`trustRegistry`、`benchmarkSourceRegistry`、`remoteWorkers`、`run`、`events`、`checkpoints`、`timeline`、`receipts`、`handoffs`、`skips`、`verdicts` 这些导出段；如果 workspace trust registry 为 `trace-bundle` scope 提供了可用 signer policy 和 key，daemon 还会附加 `signaturePolicyId` 与 HMAC 签名。`workflow.verifyTraceBundle` 会重新计算 section digest，并按 `trace-bundle` signer policy 校验签名来源，用来检测导出后被篡改或损坏的证据包。
 
-**综合评分: 8.6 / 10** (Gemini 8.8 + DeepSeek 8.4 加权平均)
+release attestation 是终态默认生成的发布证明。它基于 run snapshot、trace bundle report、policy verdicts、trust registry 和 benchmark source registry 汇总成稳定 artifact；如果 workspace trust registry 为 `release-attestation` scope 提供了 signer policy 和 key，daemon 会为 attestation 附加签名。`workflow.releaseAttestation` 用于读取该文档，`workflow.verifyReleaseAttestation` 用于校验 payload digest 与签名 provenance。
 
-| 维度 | 评级 | 维度 | 评级 |
-|------|:----:|------|:----:|
-| Agent Orchestration | ⭐ **LEADING** | Memory Systems | ⭐ **LEADING** |
-| Governance & Compliance | ⭐ **LEADING** | Observability | ⭐ **LEADING** |
-| Reliability & Fault Tolerance | ⭐ **LEADING** | Security Sandboxing | ⭐ **LEADING** |
-| Evaluation Benchmarks | ⭐ **LEADING** | HITL | ⭐ **LEADING** |
-| Adaptive Learning | ⭐ **LEADING** | Tool Use | ⭐ **LEADING** |
-| Communication Protocols | 🟢 ON_PAR | Multi-Model Collab | 🟢 ON_PAR |
-| Plugin Ecosystem | 🟢 ON_PAR | Scale & Federation | 🟢 ON_PAR |
+invariant report 是终态默认生成的运行约束证明。它把当前 run 的终态 snapshot、releaseArtifacts 与 invariant failure 列表固定成独立 artifact；如果 workspace trust registry 为 `invariant-report` scope 提供 signer policy 和 key，daemon 会为该 report 附加签名。`workflow.invariantReport` 用于读取该文档，`workflow.verifyInvariantReport` 用于校验 payload digest、签名 provenance 与 invariant failure 一致性。
+
+policy report 是终态默认生成的治理证明。它把所有 policy verdict、scope、effect、evidence linkage 和 block/warn 摘要固定成独立 artifact；如果 workspace trust registry 为 `policy-report` scope 提供 signer policy 和 key，daemon 会为该 report 附加签名。`workflow.policyReport` 用于读取该文档，`workflow.verifyPolicyReport` 用于校验 payload digest、签名 provenance 与 verdict 列表一致性。
+
+release dossier 是更高层的单一发布档案。它把 `releaseArtifacts`、`verifyRun` 摘要、policy verdict 摘要、trust registry 和 benchmark source registry 组合成单一证明包；如果 workspace trust registry 为 `release-dossier` scope 提供了 signer policy 和 key，daemon 会为 dossier 附加签名。`workflow.releaseDossier` 用于读取该文档，`workflow.verifyReleaseDossier` 用于校验 payload digest、签名 provenance 与 verifyRun 摘要一致性。
+
+release bundle 是最终统一发布包。它把 `releaseArtifacts`、`release dossier`、verifyRun 摘要、trust registry 和 benchmark source registry 收成单一 artifact；如果 workspace trust registry 为 `release-bundle` scope 提供了 signer policy 和 key，daemon 会为 bundle 附加签名。`workflow.releaseBundle` 用于读取该文档，`workflow.verifyReleaseBundle` 用于校验 payload digest、签名 provenance、release dossier 摘要与 verifyRun 摘要一致性。
+
+transparency ledger 是 workspace 级长期证明链。它是 append-only 的本地 hash chain，每条 entry 至少固定 `runId`、`certificationRecordDigest`、`releaseBundleDigest`、`previousEntryDigest` 和 `entryDigest`，用于把单次 certification record 扩展成可长期追溯的透明账本。`workflow.transparencyLedger` 用于读取当前 ledger，`workflow.verifyTransparencyLedger` 用于校验整条 hash chain。
+
+## 📊 Benchmark 状态
+
+公开 benchmark 和第三方互操作结果仍在补齐中。当前仓库已经切到可复现的 benchmark harness 语义，默认运行 workspace manifest 启用的本地 benchmark suites，以及 `benchmark-dataset.json` 中的 compiled-workflow case 和 trace-bundle case、类型检查、测试和 trace bundle 导出能力，不再给出自评式 “SOTA 评分”。
 
 ## 📚 文档
 
 - [Quick Start](docs/QUICK_START.md) — 5 分钟上手
 - [API Cookbook](docs/API_COOKBOOK.md) — 10 个场景代码示例
+- [Antigravity Contract](docs/ANTIGRAVITY_CONTRACT.md) — 插件命令与 daemon API 契约
 - [Architecture](docs/ARCHITECTURE.md) — 系统架构详解
 - [Contributing](CONTRIBUTING.md) — 贡献指南
 

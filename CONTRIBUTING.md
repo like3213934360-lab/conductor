@@ -1,4 +1,4 @@
-# 🤝 Contributing to Conductor AGC
+# 🤝 Contributing to Antigravity Workflow Runtime
 
 欢迎贡献！以下指南帮助你快速参与项目。
 
@@ -13,8 +13,8 @@
 ### 安装
 
 ```bash
-git clone https://github.com/anthropic/conductor-agc.git
-cd conductor-agc
+git clone https://github.com/like3213934360-lab/conductor.git
+cd conductor
 npm install
 ```
 
@@ -22,7 +22,7 @@ npm install
 
 ```bash
 # 构建全部包 (顺序: shared → core → persistence → mcp-server)
-npm run build:conductor
+npm run build:runtime
 
 # 单独构建
 npm run build:shared
@@ -30,7 +30,7 @@ npm run build:core
 npm run build:persistence
 
 # 类型检查 (不输出文件)
-npx tsc -p packages/conductor-core/tsconfig.json --noEmit
+npx tsc -p packages/antigravity-core/tsconfig.json --noEmit
 ```
 
 ### 测试
@@ -40,7 +40,7 @@ npx tsc -p packages/conductor-core/tsconfig.json --noEmit
 npx vitest run
 
 # 运行指定文件
-npx vitest run packages/conductor-core/src/__tests__/federation.test.ts
+npx vitest run packages/antigravity-core/src/__tests__/federation.test.ts
 
 # Watch 模式
 npx vitest --watch
@@ -50,25 +50,22 @@ npx vitest --watch
 
 ```
 packages/
-├── conductor-shared/       # 共享类型、Zod Schema、Event Projector
-├── conductor-core/         # 核心引擎 (17 模块)
+├── antigravity-shared/     # 共享类型、Zod Schema、Event Projector
+├── antigravity-core/       # 核心运行时
 │   └── src/
 │       ├── contracts/      # 接口定义 (依赖倒置)
 │       ├── dag/            # DAG 引擎
 │       ├── governance/     # 治理网关
 │       ├── risk/           # 风险路由
-│       ├── plugin/         # 插件系统
-│       ├── federation/     # P2P 联邦
-│       ├── reflexion/      # 反思循环
-│       ├── benchmark/      # 基准评估
-│       ├── optimization/   # Prompt 优化
+│       ├── federation/     # Agent card / handoff primitives
 │       ├── observability/  # OTel Tracer
-│       ├── cli/            # CLI 工具
 │       └── __tests__/      # 测试
-├── conductor-persistence/  # 持久化层
-├── conductor-mcp-server/   # MCP Server
-├── conductor-hub-vscode/   # VS Code 扩展
-└── conductor-hub-webview/  # Dashboard UI
+├── antigravity-persistence/ # 持久化层
+├── antigravity-model-core/  # Host-facing 模型编排
+├── antigravity-daemon/      # 权威 daemon runtime
+├── antigravity-mcp-server/ # MCP Server
+├── antigravity-vscode/     # VS Code / Antigravity 宿主层
+└── antigravity-webview/    # Dashboard UI
 ```
 
 ## 编码规范
@@ -84,17 +81,17 @@ packages/
 
 - 所有外部依赖通过 `contracts/` 目录定义接口
 - 实现类在各自包中提供
-- 依赖倒置: core 不直接依赖 persistence/hub
+- 依赖倒置: core 不直接依赖 persistence / model runtime
 
 ### 命名约定
 
 | 类型 | 约定 | 示例 |
 |------|------|------|
-| 接口 | I + PascalCase | `IEventStore`, `IFederationTransport` |
-| 类 | PascalCase | `GovernanceGateway`, `SwarmRouter` |
+| 接口 | I + PascalCase | `IEventStoreReader`, `IHistoryStorage` |
+| 类 | PascalCase | `GovernanceGateway`, `AntigravityDaemonRuntime` |
 | 类型 | PascalCase | `AgentCard`, `FederationMessage` |
 | 常量 | UPPER_SNAKE | `DEFAULT_CONFIG`, `STATUS_COLORS` |
-| 文件 | kebab-case | `agent-card.ts`, `swarm-router.ts` |
+| 文件 | kebab-case | `agent-card.ts`, `workflow-orchestrator.ts` |
 
 ## 提交 PR 流程
 
@@ -115,7 +112,7 @@ git checkout -b feat/your-feature
 
 ```bash
 # 必须通过
-npx tsc -p packages/conductor-core/tsconfig.json --noEmit
+npx tsc -p packages/antigravity-core/tsconfig.json --noEmit
 npx vitest run
 ```
 
@@ -151,22 +148,6 @@ git commit -m "docs(readme): update SOTA rating table"
 - **Bug 修复**: 必须有回归测试
 - **覆盖率**: 核心路径 100%，边界情况尽可能覆盖
 - **命名**: `describe('模块名')` + `it('应...', ...)` (中文描述)
-
-## 插件开发
-
-参考 [API Cookbook #2](docs/API_COOKBOOK.md#2-编写插件-plugin) 了解如何编写插件。
-
-核心接口:
-
-```typescript
-interface ConductorPlugin {
-  manifest: PluginManifest  // 插件声明
-  hooks?: Partial<ConductorHooks>  // 生命周期钩子
-  rules?: GovernanceControlContribution[]  // 治理控制
-  activate?(ctx: PluginActivationContext): Promise<void>
-  deactivate?(): Promise<void>
-}
-```
 
 ## 架构决策记录
 
