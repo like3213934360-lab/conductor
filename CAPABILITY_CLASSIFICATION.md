@@ -1,45 +1,76 @@
 # Capability Classification
 
-> Authoritative reference for which capabilities are **stable** (in daemon mainline) versus **experimental** (code exists but not on default authority path).
+> Authoritative capability boundary for the current repository state.  
+> Classification is based on the **default daemon authority runtime path**, not on whether a class, helper, builder, or test exists.
 
-## Stable
+> Current baseline: acceptance audit dated 2026-03-13 (post-remediation).  
+> Current overall result: **已通过 — P0 主链未闭环问题已全部修复**.  
+> Stable means "on the default mainline and affecting real runtime behavior".  
+> Anything not meeting that bar is explicitly marked as `experimental`, `diagnostics-only`, `scaffolding`, or `not-mainline`.
 
-These capabilities are on the daemon authority runtime default path and form real correctness / governance / replay / release constraints.
+## Stable / Default Mainline
 
-| Capability | Entry Point | Constraint |
-|-----------|------------|-----------|
-| DAG Engine (CyclicDagEngine) | `runtime.ts` → `@anthropic/antigravity-core` | Node execution orchestration |
-| Governance Gateway (GaaS) | `runtime.ts` → `GovernanceGateway` | 4 lifecycle interception points |
-| Event Sourcing (JsonlEventStore) | `runtime.ts` → `@anthropic/antigravity-persistence` | Immutable event log, replay |
-| Policy Engine | `runtime.ts` → `DaemonPolicyEngine` | Rule evaluation, preflight/release gates |
-| Authority Runtime Kernel | `runtime.ts` → `AuthorityRuntimeKernel` | Lifecycle phase enforcement |
-| Remote Worker Directory | `runtime.ts` → `RemoteWorkerDirectory` | A2A-style federation + strict trust mode |
-| Trust Registry | `runtime.ts` → `TrustRegistryStore` | Signer policy, key lifecycle |
-| HITL / Human Approval Gate | `runtime.ts` → `deriveHumanApprovalRequirement` | Approval gating |
-| Release Artifacts + Verifiers | `runtime.ts` → artifact builders + verifiers | Attestation chain |
-| Transparency Ledger + Proof Graph | `runtime.ts` → `DaemonLedger` | Tamper-evident ledger |
-| Checkpoint + Snapshot | `runtime.ts` → `SqliteCheckpointStore` | Recovery, fold memoization |
-| UpcastingEventStore (PR-18) | `runtime.ts` → `UpcastingEventStore` wrapping `JsonlEventStore` | Schema evolution on read path |
+These capabilities are on the daemon default path and form real runtime constraints today.
 
-## Experimental
+| Capability | Entry Point | Status | Notes |
+|-----------|------------|--------|-------|
+| DagEngine-based daemon runtime | `runtime.ts` → `DagEngine` | ✅ 通过 | Default runtime uses `DagEngine`. `CyclicDagEngine` is not the default engine. |
+| AuthorityRuntimeKernel lifecycle orchestration | `runtime.ts` → `AuthorityRuntimeKernel` | ✅ 通过 | `drain -> terminal -> finalize` coordinated through kernel. |
+| Daemon-owned transition / skip / forceQueue authority | `runtime.ts` → `onTransition` | ✅ 通过 | Default runtime path delegates to daemon authority. |
+| JsonlEventStore + UpcastingEventStore read path | `runtime.ts` → `UpcastingEventStore(JsonlEventStore)` | ✅ 通过 | Upcasting is on the default read path. |
+| Multi-chain event upcasting | `daemon-upcasting-registry.ts` | ✅ 通过 | 3 chains registered and consumed by default read path. |
+| Callback auth + freshness + replay protection | `remote-worker.ts` | ✅ 通过 | Active at ingress. |
+| Trust Registry + strict delegation filter | `trust-registry.ts`, `remote-worker.ts` | ✅ 通过 | `strictTrustMode` changes delegable worker set. |
+| RuntimeTelemetrySink hook surface | `runtime.ts` → `RuntimeTelemetrySink` | ✅ 通过 | Key hooks wired + `onShadowCompareDrift` / `onRecoveryDiagnostics` optional methods. |
+| Daemon / MCP standalone build and smoke lanes | `package.json`, `smoke.mjs` | ✅ 通过 | Pass. |
+| Release artifact export / verify chain | 6 artifact types | ✅ 通过 | All builders receive `VerificationSnapshot`, `snapshotDigest` is non-empty. |
+| **GovernanceGateway default governance mainline** | `runtime.ts` → `GovernanceGateway.evaluateDaemonLifecycleStage()` | ✅ 通过 | **唯一权威入口**，5 个决策点全部经由 gateway。 |
+| **Durable domain event dual-write** | `runtime.ts` → `JsonlDaemonDomainEventLog` | ✅ 通过 | JSONL 持久化，`recordPolicyVerdict()` 双写 ledger + domain event。 |
+| **VerificationSnapshot production artifact chain** | `runtime.ts` → `buildVerificationSnapshot()` | ✅ 通过 | 在 `evaluateTerminalDecision()` 冻结，注入 4 个 artifact builder。 |
+| **proofGraphDigest / cross-artifact binding** | certification record → `snapshotDigest` | ✅ 通过 | Frozen snapshot digest 绑定全部终端 artifact。 |
+| **Shadow compare with durable source** | `runtime.ts` → `refreshSnapshot()` | ✅ 通过 | 读模式 gate 默认 `shadow`，durable JSONL 数据源。 |
+| **Recovery diagnostics in default path** | `runtime.ts` → `loadState()` | ✅ 通过 | 使用 `loadRunStateWithDiagnostics()`，异常推送 timeline/telemetry。 |
 
-These capabilities have working code and tests but are **not** on the daemon default authority path and do **not** form correctness constraints.
+## Partial Mainline
 
-| Capability | Code Location | Why Experimental |
-|-----------|--------------|-----------------|
-| Benchmark Harness | `daemon/benchmark-harness.ts` | Internal evaluation harness — not a correctness constraint, not an external benchmark platform |
-| Benchmark Source Registry | `daemon/benchmark-source-registry.ts` | Evidence-backed dataset registry — in snapshot but not a release gate |
-| Interop Harness | `daemon/interop-harness.ts` | Experimental diagnostic harness — not a correctness constraint |
-| Memory Manager | `persistence/MemoryManager` | SQLite keyword recall, record-only — not in analyze/route/verify decision path |
-| OTel / DagEngineTracer | `core/observability/dag-tracer.ts` | Structural tracer, no `@opentelemetry` SDK, not imported by daemon |
-| Formal Verifier (StateInvariantVerifier) | `core/dag/formal-verifier.ts` | Conformance asset — in core library, not in daemon runtime path |
-| Formal Verifier (BoundedModelChecker) | `core/dag/model-checker.ts` | Conformance asset — in core library, not in daemon runtime path |
+| Capability | Status | Notes |
+|-----------|--------|-------|
+| Domain event v2 scaffold | ✅ 通过 | v2 fields exist, default writes remain v1. Not a correctness gap. |
 
-## Frozen
+## Experimental / Diagnostics-Only / Not-Mainline
 
-Retained as code assets but not on any active mainline path. Not recommended for new integrations.
+| Capability | Status | Positioning |
+|-----------|--------|-------------|
+| CyclicDagEngine | Not-mainline | Exists, not default engine. Core barrel does not expose as stable. |
+| Benchmark Harness | Experimental | Internal evaluation harness. Not a correctness constraint. |
+| Benchmark Source Registry | Experimental | Experimental registry surface. |
+| Interop Harness | Experimental | Diagnostic harness, not default authority runtime. |
+| Memory Manager keyword recall | Experimental | Not injected into analyze/route/verify/policy decisions. |
+| OTel / DagEngineTracer | Experimental | Not imported by daemon runtime. |
 
-| Capability | Code Location | Why Frozen |
-|-----------|--------------|-----------|
-| VectorMemory | `persistence/memory/vector-memory.ts` | Code exists, not exported from barrel, not imported by daemon runtime |
-| VectorMemoryLayer | `persistence/memory/vector-memory.ts` | Internal to VectorMemory, no embedding provider wired |
+## Frozen / Not Recommended
+
+| Capability | Status | Positioning |
+|-----------|--------|-------------|
+| VectorMemory | Frozen | Not exported, not imported by daemon runtime. |
+| VectorMemoryLayer | Frozen | Internal to `VectorMemory`. |
+
+## Conformance Assets / Library-Only Utilities
+
+These capabilities remain useful as conformance assets, but not as daemon mainline runtime features.
+
+| Capability | Status | Positioning |
+|-----------|--------|-------------|
+| StateInvariantVerifier | Conformance asset | `@experimental`, not used by daemon runtime. |
+| BoundedModelChecker | Conformance asset | `@experimental`, not used by daemon runtime. |
+
+## Prohibited Stable Claims
+
+The following must **not** be described as stable or mainline:
+
+- CyclicDagEngine as default runtime capability
+- VectorMemory as production feature
+
+> **Note**: GovernanceGateway, VerificationSnapshot, proofGraphDigest, shadow compare, and recovery diagnostics are now **confirmed mainline** as of the 2026-03-13 remediation.
+
+For the current acceptance result, see [ACCEPTANCE_AUDIT_STATUS.md](ACCEPTANCE_AUDIT_STATUS.md).

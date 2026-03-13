@@ -6,13 +6,23 @@
  * 2. buildEventDerivedProjection() — folds daemon domain events into projection
  * 3. ShadowCompareResult — structured mismatch diagnostics
  * 4. shadowCompare() — legacy vs event-derived structured comparison
+ * 5. ShadowCompareReadMode — read mode abstraction for progressive cutover
  *
- * Constraints:
- * - Does NOT change any read path (refreshSnapshot, verifyRun)
- * - Legacy snapshot remains authoritative
- * - This is diagnostics-only, for migration validation
+ * Read modes:
+ * - legacy: ledger only, event log not read (pre-migration)
+ * - shadow: dual-read, ledger authoritative, event-derived compared (default)
+ * - primary: event-derived authoritative, ledger compared (requires parity gate pass)
  */
 import type { DaemonDomainEventEnvelope } from './daemon-domain-events.js'
+
+// ─── Read Mode ───────────────────────────────────────────────────────────────
+
+/**
+ * Shadow compare read mode — controls which projection source is authoritative.
+ */
+export type ShadowCompareReadMode = 'legacy' | 'shadow' | 'primary'
+
+export const DEFAULT_SHADOW_COMPARE_READ_MODE: ShadowCompareReadMode = 'shadow'
 
 // ─── Event-Derived Projection ────────────────────────────────────────────────
 

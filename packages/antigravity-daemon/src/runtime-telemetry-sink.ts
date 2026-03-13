@@ -26,6 +26,10 @@ export interface RuntimeTelemetrySink {
   onRemoteCallback(runId: string, meta: { workerId: string; nodeId?: string }): void
   /** Run recovered from incomplete state */
   onRecovery(runId: string, meta: { recoveredNodes: number }): void
+  /** PR-08E: Shadow compare detected projection drift */
+  onShadowCompareDrift?(runId: string, meta: { readMode: string; mismatchCount: number }): void
+  /** PR-18E: Recovery diagnostics detected replay anomalies */
+  onRecoveryDiagnostics?(runId: string, meta: { eventCount: number; upcastErrorCount: number; unknownTypeCount: number; emptyStream: boolean; eventTypes: string[] }): void
 }
 
 // ─── NoOp Default ────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DagEngine, GovernanceGateway } from '@anthropic/antigravity-core'
+import { DagEngine, GovernanceGateway, TrustFactorService, getDefaultControlPack } from '@anthropic/antigravity-core'
 import type { DaemonLifecycleStage, DaemonStageVerdict } from '@anthropic/antigravity-core'
 import { WorkflowRunDriver, evaluateTransition, AntigravityModelService, type NodeExecutionResult } from '@anthropic/antigravity-model-core'
 import { JsonlEventStore, MemoryManager, SqliteCheckpointStore, SqliteClient, runMigrations, UpcastingEventStore } from '@anthropic/antigravity-persistence'
@@ -10,11 +10,12 @@ import { createCheckpointId, createEventId, createISODateTime } from '@anthropic
 import { buildRunSnapshot, writeRunProjection } from './projection.js'
 import { AuthorityRuntimeKernel, LifecyclePhase, type LifecycleHooks, type TerminalDecision } from './authority-runtime-kernel.js'
 import { createDaemonDomainEvent, DaemonDomainEventTypes, type DaemonDomainEventType, type DaemonDomainEventLog } from './daemon-domain-events.js'
-import { InMemoryDaemonDomainEventLog } from './in-memory-domain-event-log.js'
+import { buildVerificationSnapshot, type VerificationSnapshot } from './verification-snapshot.js'
+import { JsonlDaemonDomainEventLog } from './jsonl-domain-event-log.js'
 import { DaemonLedger } from './ledger.js'
 import { createDaemonUpcastingRegistry } from './daemon-upcasting-registry.js'
 import { BenchmarkHarness } from './benchmark-harness.js'
-import { buildEventDerivedProjection, shadowCompare, type LegacyProjectionInput } from './event-derived-projection.js'
+import { buildEventDerivedProjection, shadowCompare, type LegacyProjectionInput, type ShadowCompareReadMode, DEFAULT_SHADOW_COMPARE_READ_MODE } from './event-derived-projection.js'
 import {
   evaluateRulesAgainstFacts,
   createFactsForPreflight,
@@ -22,7 +23,6 @@ import {
   createFactsForHumanGate,
   createFactsForApproval,
   createFactsForResume,
-  type PolicyEvaluationContext,
 } from './policy-engine.js'
 import { BenchmarkSourceRegistryStore } from './benchmark-source-registry.js'
 import { InteropHarness } from './interop-harness.js'
@@ -93,7 +93,7 @@ import {
   PolicyVerdict,
   type BenchmarkSourceRegistrySnapshot,
 } from './schema.js'
-import { bootstrapDaemonRun, loadRunStateFromEvents } from './run-bootstrap.js'
+import { bootstrapDaemonRun, loadRunStateFromEvents, loadRunStateWithDiagnostics } from './run-bootstrap.js'
 import { compileWorkflowDefinition, createRunRequest, resolveWorkflowDefinition } from './workflow-definition.js'
 import { buildReleaseArtifactsSummary, createVerifyRunReport } from './run-verifier.js'
 import {
@@ -183,6 +183,8 @@ export interface DaemonConfig {
   strictTrustMode?: boolean
   /** PR-19: optional telemetry sink for unified observability (default: NoOp) */
   telemetrySink?: RuntimeTelemetrySink
+  /** PR-08E: shadow compare read mode (default: 'shadow') */
+  shadowCompareReadMode?: ShadowCompareReadMode
 }
 
 interface ActiveRunContext {
@@ -259,14 +261,18 @@ export class AntigravityDaemonRuntime {
   private readonly policyEngine: DaemonPolicyEngine
   private readonly benchmarkSourceRegistry: BenchmarkSourceRegistryStore
   private readonly activeRuns = new Map<string, ActiveRunContext>()
+  /** PR-12: frozen verification snapshots per run — built once at finalization time */
+  private readonly verificationSnapshots = new Map<string, VerificationSnapshot>()
   /** PR-04: lifecycle coordinator — manages phase boundaries for authority runs */
   private readonly lifecycleKernel = new AuthorityRuntimeKernel()
-  /** PR-07: daemon domain event log for dual-write alongside legacy ledger */
-  private readonly domainEventLog: DaemonDomainEventLog = new InMemoryDaemonDomainEventLog()
-  /** PR-11: gateway governance flag — set to false to revert to direct evaluateX paths */
-  private readonly useGatewayGovernance = true
+  /** PR-07E: durable JSONL domain event log for dual-write alongside legacy ledger */
+  private readonly domainEventLog: DaemonDomainEventLog
+  /** PR-11: GovernanceGateway — authoritative owner of all daemon governance decisions */
+  private readonly governanceGateway: GovernanceGateway
   /** PR-19: unified telemetry sink */
   private readonly telemetrySink: RuntimeTelemetrySink
+  /** PR-08E: shadow compare read mode — controls projection source authority */
+  private readonly shadowCompareReadMode: ShadowCompareReadMode
 
   constructor(config: DaemonConfig) {
     this.config = config
@@ -278,6 +284,12 @@ export class AntigravityDaemonRuntime {
     })
     runMigrations(this.sqliteClient.getDatabase())
     this.ledger = new DaemonLedger(this.sqliteClient.getDatabase())
+    this.governanceGateway = new GovernanceGateway(
+      new TrustFactorService(),
+      getDefaultControlPack(),
+    )
+    this.domainEventLog = new JsonlDaemonDomainEventLog(this.config.dataDir)
+    this.shadowCompareReadMode = this.config.shadowCompareReadMode ?? DEFAULT_SHADOW_COMPARE_READ_MODE
     this.eventStore = new UpcastingEventStore(
       new JsonlEventStore({ dataDir: this.config.dataDir }),
       createDaemonUpcastingRegistry(),
@@ -432,16 +444,9 @@ export class AntigravityDaemonRuntime {
     this.activeRuns.set(start.runId, context)
     this.ledger.upsertWorkflowDefinition(definition)
 
-    const preflightVerdict = this.policyEngine.evaluatePreflight({
-      runId: start.runId,
-      governance: start.governance,
-      drScore: start.drScore.score,
-      evaluatedAt: startedAt,
-    })
-    this.recordPolicyVerdict(start.runId, 'policy.preflight', preflightVerdict)
-
-    // PR-10: parallel daemon stage hook — diagnostics only, does not affect main path
-    this.invokeDaemonStageHook('daemon:preflight', start.runId, 'preflight', 'preflight', startedAt,
+    // PR-11: governance gateway cutover — preflight via gateway
+    const preflightVerdict = this.evaluateGovernanceStage(
+      'daemon:preflight', start.runId, 'preflight', 'preflight', startedAt,
       createFactsForPreflight({
         runId: start.runId,
         governance: start.governance,
@@ -450,6 +455,7 @@ export class AntigravityDaemonRuntime {
       }),
       'Preflight checks passed under the active policy pack.',
     )
+    this.recordPolicyVerdict(start.runId, 'policy.preflight', preflightVerdict)
 
     this.ledger.appendTimeline(start.runId, 'run.started', undefined, {
       goal: invocation.goal,
@@ -674,10 +680,11 @@ export class AntigravityDaemonRuntime {
       comment: parsed.comment,
       evaluatedAt: now,
     }
-    const verdict = this.useGatewayGovernance
-      ? this.evaluateViaGateway('daemon:approval', parsed.runId, 'approval', `approval:${parsed.gateId}`, now,
-          createFactsForApproval(approvalInput), `Approval gate ${parsed.gateId} passed under the active policy pack.`)
-      : this.policyEngine.evaluateApproval(approvalInput)
+    // PR-11: governance gateway cutover — approval via gateway
+    const verdict = this.evaluateGovernanceStage(
+      'daemon:approval', parsed.runId, 'approval', `approval:${parsed.gateId}`, now,
+      createFactsForApproval(approvalInput), `Approval gate ${parsed.gateId} passed under the active policy pack.`,
+    )
     this.recordPolicyVerdict(parsed.runId, 'policy.approval', verdict, parsed.gateId)
     this.ledger.appendTimeline(parsed.runId, 'gate.approved', parsed.gateId, {
       approvedBy: parsed.approvedBy,
@@ -746,10 +753,11 @@ export class AntigravityDaemonRuntime {
       comment: parsed.comment,
       evaluatedAt: now,
     }
-    const resumeVerdict = this.useGatewayGovernance
-      ? this.evaluateViaGateway('daemon:approval', parsed.runId, 'resume', 'resume', now,
-          createFactsForResume(resumeInput), 'Resume checks passed under the active policy pack.')
-      : this.policyEngine.evaluateResume(resumeInput)
+    // PR-11: governance gateway cutover — resume via gateway
+    const resumeVerdict = this.evaluateGovernanceStage(
+      'daemon:approval', parsed.runId, 'resume', 'resume', now,
+      createFactsForResume(resumeInput), 'Resume checks passed under the active policy pack.',
+    )
     this.recordPolicyVerdict(parsed.runId, 'policy.resume', resumeVerdict)
     await this.ensureRunCompletedEvent(parsed.runId, 'completed')
     this.ledger.appendTimeline(parsed.runId, 'run.resumed', undefined, {
@@ -1418,6 +1426,7 @@ export class AntigravityDaemonRuntime {
           policyVerdicts: this.ledger.listPolicyVerdicts(runId),
           trustRegistry: this.getTrustRegistry(),
           benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
+          verificationSnapshot: this.verificationSnapshots.get(runId),
         }),
         generatedAt,
       )
@@ -1534,6 +1543,7 @@ export class AntigravityDaemonRuntime {
       policyVerdicts,
       trustRegistry: this.getTrustRegistry(),
       benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
+      verificationSnapshot: this.verificationSnapshots.get(runId),
     })
     const document = createReleaseDossierDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1702,6 +1712,7 @@ export class AntigravityDaemonRuntime {
       certificationRecord: run.snapshot.certificationRecord ?? this.getPlannedCertificationRecordSummary(runId),
       trustRegistry: this.getTrustRegistry(),
       benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
+      verificationSnapshot: this.verificationSnapshots.get(runId),
     })
     const document = createReleaseBundleDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1794,6 +1805,8 @@ export class AntigravityDaemonRuntime {
         agentCardSha256: worker.agentCardSha256,
         verificationSummary: worker.verification?.summary,
       })),
+      // PR-12: inject frozen verification snapshot for snapshotDigest
+      verificationSnapshot: this.verificationSnapshots.get(runId),
     })
     const document = createCertificationRecordDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -2257,56 +2270,10 @@ export class AntigravityDaemonRuntime {
    * PR-10: Invoke daemon lifecycle stage hook via GovernanceGateway.
    *
    * This is diagnostics-only — the verdict is logged to timeline
-   * but does not replace the existing policyEngine.evaluateX path.
-   * The hook uses PR-09's evaluateRulesAgainstFacts pure evaluator.
+   * Replaces both invokeDaemonStageHook (diagnostics-only) and evaluateViaGateway (conditional helper).
+   * GovernanceGateway is the authoritative policy decision point for all daemon lifecycle stages.
    */
-  private invokeDaemonStageHook(
-    stage: DaemonLifecycleStage,
-    runId: string,
-    ruleScope: string,
-    verdictScope: string,
-    evaluatedAt: string,
-    facts: Record<string, unknown>,
-    fallbackMessage: string,
-  ): void {
-    try {
-      const rules = this.policyEngine.exportPack().rules
-      const context: PolicyEvaluationContext = {
-        runId,
-        ruleScope,
-        verdictScope,
-        evaluatedAt,
-        facts,
-        fallbackMessage,
-      }
-      const verdict = evaluateRulesAgainstFacts(rules, context)
-      const stageVerdict: DaemonStageVerdict = {
-        stage,
-        effect: verdict.effect,
-        rationale: verdict.rationale,
-        verdictId: verdict.verdictId,
-        evaluatedAt: verdict.evaluatedAt,
-        scope: verdict.scope,
-      }
-      this.ledger.appendTimeline(runId, 'governance.stage_hook', 'system', {
-        stage: stageVerdict.stage,
-        effect: stageVerdict.effect,
-        verdictId: stageVerdict.verdictId,
-        scope: stageVerdict.scope,
-      }, evaluatedAt)
-    } catch {
-      // Stage hook is diagnostics-only; never crash the main path
-    }
-  }
-
-  /**
-   * PR-11: Evaluate policy via gateway stage — authoritative when useGatewayGovernance=true.
-   *
-   * Uses PR-09's evaluateRulesAgainstFacts pure evaluator with facts from adapters.
-   * Returns a PolicyVerdict compatible with recordPolicyVerdict.
-   * Logs governance.stage_verdict with stage metadata to timeline.
-   */
-  private evaluateViaGateway(
+  private evaluateGovernanceStage(
     stage: DaemonLifecycleStage,
     runId: string,
     ruleScope: string,
@@ -2315,25 +2282,35 @@ export class AntigravityDaemonRuntime {
     facts: Record<string, unknown>,
     fallbackMessage: string,
   ): PolicyVerdict {
-    const rules = this.policyEngine.exportPack().rules
-    const context: PolicyEvaluationContext = {
+    const pack = this.policyEngine.exportPack()
+    const stageVerdict = this.governanceGateway.evaluateDaemonLifecycleStage({
+      stage,
       runId,
       ruleScope,
       verdictScope,
       evaluatedAt,
       facts,
       fallbackMessage,
-    }
-    const verdict = evaluateRulesAgainstFacts(rules, context)
+      rules: pack.rules,
+      evaluator: evaluateRulesAgainstFacts,
+    })
     // Log stage-tagged verdict to timeline for audit
     this.ledger.appendTimeline(runId, 'governance.stage_verdict', 'system', {
-      stage,
-      effect: verdict.effect,
-      verdictId: verdict.verdictId,
-      scope: verdict.scope,
-      rationale: verdict.rationale,
+      stage: stageVerdict.stage,
+      effect: stageVerdict.effect,
+      verdictId: stageVerdict.verdictId,
+      scope: stageVerdict.scope,
+      rationale: stageVerdict.rationale,
     }, evaluatedAt)
-    return verdict
+    return {
+      verdictId: stageVerdict.verdictId,
+      runId,
+      scope: stageVerdict.scope,
+      effect: stageVerdict.effect as PolicyVerdict['effect'],
+      rationale: stageVerdict.rationale,
+      evidenceIds: [],
+      evaluatedAt: stageVerdict.evaluatedAt,
+    }
   }
 
   /**
@@ -2346,10 +2323,11 @@ export class AntigravityDaemonRuntime {
     // PR-11: gateway cutover for release
     const releaseEvaluatedAt = createISODateTime()
     const releaseInput = { runId, decision: releaseDecision, evaluatedAt: releaseEvaluatedAt }
-    const releaseVerdict = this.useGatewayGovernance
-      ? this.evaluateViaGateway('daemon:terminal-release', runId, 'release', 'release', releaseEvaluatedAt,
-          createFactsForRelease(releaseInput), 'Release checks passed under the active policy pack.')
-      : this.policyEngine.evaluateRelease(releaseInput)
+    // PR-11: governance gateway cutover — release via gateway
+    const releaseVerdict = this.evaluateGovernanceStage(
+      'daemon:terminal-release', runId, 'release', 'release', releaseEvaluatedAt,
+      createFactsForRelease(releaseInput), 'Release checks passed under the active policy pack.',
+    )
     this.recordPolicyVerdict(runId, 'policy.release', releaseVerdict)
     if (releaseVerdict.effect === 'block') {
       await this.ensureRunCompletedEvent(runId, 'paused')
@@ -2364,13 +2342,13 @@ export class AntigravityDaemonRuntime {
     }
 
     const humanGate = deriveHumanApprovalRequirement(state)
-    // PR-11: gateway cutover for human-gate
+    // PR-11: governance gateway cutover — human-gate via gateway
     const humanGateEvaluatedAt = createISODateTime()
     const humanGateInput = { runId, requirement: humanGate, evaluatedAt: humanGateEvaluatedAt }
-    const humanGateVerdict = this.useGatewayGovernance
-      ? this.evaluateViaGateway('daemon:terminal-release', runId, 'human-gate', 'human-gate', humanGateEvaluatedAt,
-          createFactsForHumanGate(humanGateInput), 'Human gate checks passed under the active policy pack.')
-      : this.policyEngine.evaluateHumanGate(humanGateInput)
+    const humanGateVerdict = this.evaluateGovernanceStage(
+      'daemon:terminal-release', runId, 'human-gate', 'human-gate', humanGateEvaluatedAt,
+      createFactsForHumanGate(humanGateInput), 'Human gate checks passed under the active policy pack.',
+    )
     this.recordPolicyVerdict(runId, 'policy.human-gate', humanGateVerdict, 'HITL')
     if (humanGate.required) {
       await this.ensureRunCompletedEvent(runId, 'paused')
@@ -2392,6 +2370,21 @@ export class AntigravityDaemonRuntime {
       completedAt: createISODateTime(),
     })
     // Artifact verification — can still block run after finalization
+    // PR-12: build verification snapshot once before any artifact finalization
+    const verifyReport = await this.verifyRun(runId)
+    const run = await this.getRequiredRun(runId)
+    const verdicts = this.ledger.listPolicyVerdicts(runId)
+    const verificationSnapshot = buildVerificationSnapshot({
+      run,
+      verifyReport,
+      verdicts,
+      generatedAt: createISODateTime(),
+    })
+    this.verificationSnapshots.set(runId, verificationSnapshot)
+    this.ledger.appendTimeline(runId, 'verification.snapshot.built', undefined, {
+      snapshotDigest: verificationSnapshot.snapshotDigest,
+      verificationOk: verificationSnapshot.verification.ok,
+    }, verificationSnapshot.generatedAt)
     const finalizedArtifacts = await this.finalizeTraceBundle(runId)
     await this.finalizePolicyReport(runId)
     const finalizedInvariantReport = await this.finalizeInvariantReport(runId)
@@ -2890,6 +2883,19 @@ export class AntigravityDaemonRuntime {
       policyPackId: pack.packId,
       policyPackVersion: pack.version,
     }, verdict.evaluatedAt)
+    // PR-07E: dual-write verdict to durable domain event log
+    void this.emitDomainEvent(runId, DaemonDomainEventTypes.POLICY_VERDICT_RECORDED, {
+      nodeId: nodeId ?? undefined,
+      verdictType: timelineKind,
+      verdict: verdict.effect,
+      details: {
+        verdictId: verdict.verdictId,
+        scope: verdict.scope,
+        rationale: verdict.rationale,
+        policyPackId: pack.packId,
+        policyPackVersion: pack.version,
+      },
+    }, nodeId)
   }
 
   private syncPolicySkippedNodes(
@@ -3176,54 +3182,71 @@ export class AntigravityDaemonRuntime {
         : undefined,
     })
 
-    // PR-08: shadow compare — parallel event-derived projection vs legacy
-    // diagnostics only, does not change the snapshot or authoritative verdict
-    try {
-      const domainEvents = await this.domainEventLog.load(runId)
-      if (domainEvents.length > 0) {
-        const eventProjection = buildEventDerivedProjection(domainEvents)
-        const legacyInput: LegacyProjectionInput = {
-          receipts: (this.ledger.listExecutionReceipts(runId) ?? []).map(r => ({
-            receiptId: r.receiptId,
-            nodeId: r.nodeId,
-            model: r.model,
-            status: r.status as string,
-            outputHash: r.outputHash ?? '',
-            durationMs: r.durationMs,
-          })),
-          completionSessions: completionSessions.map(s => ({
-            leaseId: s.leaseId,
-            nodeId: s.nodeId,
-            attempt: s.attempt,
-            phase: s.phase,
-            status: s.receipt?.status,
-            outputHash: s.receipt?.outputHash,
-          })),
-          handoffs: [], // handoffs not separately tracked in legacy ledger
-          skips: (this.ledger.listSkipDecisions(runId) ?? []).map(s => ({
-            nodeId: s.nodeId,
-            reason: s.reason,
-            strategyId: s.strategyId,
-          })),
-          verdicts: latestTribunalVerdict
-            ? [{ nodeId: latestTribunalVerdict.nodeId, verdict: latestTribunalVerdict.verdict }]
-            : [],
+    // PR-08E: shadow compare — read mode gated
+    // legacy: skip shadow compare entirely
+    // shadow: dual-read, ledger authoritative, event-derived compared (default)
+    // primary: event-derived authoritative, ledger compared (parity gate)
+    if (this.shadowCompareReadMode !== 'legacy') {
+      try {
+        const domainEvents = await this.domainEventLog.load(runId)
+        if (domainEvents.length > 0) {
+          const eventProjection = buildEventDerivedProjection(domainEvents)
+          const legacyInput: LegacyProjectionInput = {
+            receipts: (this.ledger.listExecutionReceipts(runId) ?? []).map(r => ({
+              receiptId: r.receiptId,
+              nodeId: r.nodeId,
+              model: r.model,
+              status: r.status as string,
+              outputHash: r.outputHash ?? '',
+              durationMs: r.durationMs,
+            })),
+            completionSessions: completionSessions.map(s => ({
+              leaseId: s.leaseId,
+              nodeId: s.nodeId,
+              attempt: s.attempt,
+              phase: s.phase,
+              status: s.receipt?.status,
+              outputHash: s.receipt?.outputHash,
+            })),
+            handoffs: [], // handoffs not separately tracked in legacy ledger
+            skips: (this.ledger.listSkipDecisions(runId) ?? []).map(s => ({
+              nodeId: s.nodeId,
+              reason: s.reason,
+              strategyId: s.strategyId,
+            })),
+            verdicts: latestTribunalVerdict
+              ? [{ nodeId: latestTribunalVerdict.nodeId, verdict: latestTribunalVerdict.verdict }]
+              : [],
+          }
+          const compareResult = shadowCompare(legacyInput, eventProjection)
+          if (!compareResult.match) {
+            this.ledger.appendTimeline(runId, 'shadow_compare.drift', 'system', {
+              readMode: this.shadowCompareReadMode,
+              mismatchCount: compareResult.mismatches.length,
+              mismatches: compareResult.mismatches.slice(0, 10), // cap for readability
+              legacyCounts: compareResult.legacyCounts,
+              eventDerivedCounts: compareResult.eventDerivedCounts,
+            }, createISODateTime())
+            this.telemetrySink.onShadowCompareDrift?.(runId, {
+              readMode: this.shadowCompareReadMode,
+              mismatchCount: compareResult.mismatches.length,
+            })
+          } else {
+            // PR-08E: parity gate — log successful parity for primary readiness
+            this.ledger.appendTimeline(runId, 'shadow_compare.parity', 'system', {
+              readMode: this.shadowCompareReadMode,
+              legacyCounts: compareResult.legacyCounts,
+              eventDerivedCounts: compareResult.eventDerivedCounts,
+            }, createISODateTime())
+          }
         }
-        const compareResult = shadowCompare(legacyInput, eventProjection)
-        if (!compareResult.match) {
-          this.ledger.appendTimeline(runId, 'shadow_compare.drift', 'system', {
-            mismatchCount: compareResult.mismatches.length,
-            mismatches: compareResult.mismatches.slice(0, 10), // cap for readability
-            legacyCounts: compareResult.legacyCounts,
-            eventDerivedCounts: compareResult.eventDerivedCounts,
-          }, createISODateTime())
-        }
+      } catch (compareError) {
+        // Shadow compare is diagnostics-only; never crash refreshSnapshot
+        this.ledger.appendTimeline(runId, 'shadow_compare.error', 'system', {
+          readMode: this.shadowCompareReadMode,
+          error: compareError instanceof Error ? compareError.message : String(compareError),
+        }, createISODateTime())
       }
-    } catch (compareError) {
-      // Shadow compare is diagnostics-only; never crash refreshSnapshot
-      this.ledger.appendTimeline(runId, 'shadow_compare.error', 'system', {
-        error: compareError instanceof Error ? compareError.message : String(compareError),
-      }, createISODateTime())
     }
 
     this.ledger.upsertRun(invocation, definition, snapshot)
@@ -3231,8 +3254,28 @@ export class AntigravityDaemonRuntime {
     return snapshot
   }
 
+  /**
+   * PR-18E: Load run state with diagnostics — pushes replay health to timeline/telemetry.
+   * Returns the same WorkflowState as before; diagnostics are side-effect only.
+   */
   private async loadState(runId: string): Promise<WorkflowState> {
-    return loadRunStateFromEvents(this.eventStore, runId)
+    const { state, diagnostics } = await loadRunStateWithDiagnostics(this.eventStore, runId)
+    // Push diagnostics to timeline (fire-and-forget, never crash)
+    try {
+      if (diagnostics.upcastErrorCount > 0 || diagnostics.unknownTypeCount > 0 || diagnostics.emptyStream) {
+        this.ledger.appendTimeline(runId, 'recovery.diagnostics', 'system', {
+          eventCount: diagnostics.eventCount,
+          upcastErrorCount: diagnostics.upcastErrorCount,
+          unknownTypeCount: diagnostics.unknownTypeCount,
+          emptyStream: diagnostics.emptyStream,
+          eventTypes: diagnostics.eventTypes,
+        }, createISODateTime())
+        this.telemetrySink.onRecoveryDiagnostics?.(runId, diagnostics)
+      }
+    } catch {
+      // diagnostics push is never allowed to crash the main path
+    }
+    return state
   }
 
   private getPlannedCertificationRecordSummary(runId: string): NonNullable<RunSnapshot['certificationRecord']> {

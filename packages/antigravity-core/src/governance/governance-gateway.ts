@@ -109,14 +109,56 @@ export class GovernanceGateway {
   // ── 4 个拦截点 ────────────────────────────────────────────────────────────
 
   /**
-   * PR-10: Daemon lifecycle stage hook.
+   * PR-11: Authoritative daemon lifecycle stage evaluation.
    *
-   * Evaluates policy rules against facts for a specific daemon lifecycle stage.
-   * Uses the pure evaluator from PR-09 (evaluateRulesAgainstFacts).
-   * Returns a DaemonStageVerdict with stage metadata.
+   * This is the SINGLE ENTRY POINT for all daemon governance decisions.
+   * The daemon runtime delegates all governance stages here instead of
+   * calling evaluateRulesAgainstFacts directly.
+   *
+   * Input contract:
+   *  - stage: which daemon lifecycle phase (preflight, release, etc.)
+   *  - evaluator: the pure rule evaluator function
+   *  - context: runId + facts + scope + timing
+   *
+   * Output contract:
+   *  - DaemonStageVerdict with stage provenance and effect
    *
    * This is a pure computation — no state mutation on the gateway.
-   * The caller (daemon runtime) decides whether to use the verdict.
+   * The caller (daemon runtime) uses the verdict to drive run behavior.
+   */
+  evaluateDaemonLifecycleStage(input: {
+    stage: DaemonLifecycleStage
+    runId: string
+    ruleScope: string
+    verdictScope: string
+    evaluatedAt: string
+    facts: Record<string, unknown>
+    fallbackMessage: string
+    rules: readonly { ruleId: string; scope: string; enabled?: boolean; effect: string; when?: unknown; message?: string; description?: string; evidenceFactKey?: string }[]
+    evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string; evidenceIds?: string[]; runId?: string }
+  }): DaemonStageVerdict {
+    const context = {
+      runId: input.runId,
+      ruleScope: input.ruleScope,
+      verdictScope: input.verdictScope,
+      evaluatedAt: input.evaluatedAt,
+      facts: input.facts,
+      fallbackMessage: input.fallbackMessage,
+    }
+    const verdict = input.evaluator(input.rules as any, context)
+    return {
+      stage: input.stage,
+      effect: verdict.effect,
+      rationale: verdict.rationale,
+      verdictId: verdict.verdictId,
+      evaluatedAt: verdict.evaluatedAt,
+      scope: verdict.scope,
+    }
+  }
+
+  /**
+   * @deprecated Use evaluateDaemonLifecycleStage instead.
+   * Kept for backward compatibility with existing tests.
    */
   evaluateDaemonStage(
     stage: DaemonLifecycleStage,
@@ -124,15 +166,17 @@ export class GovernanceGateway {
     evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string },
     context: { runId: string; ruleScope: string; verdictScope: string; evaluatedAt: string; facts: Record<string, unknown>; fallbackMessage: string },
   ): DaemonStageVerdict {
-    const verdict = evaluator(rules as any, context)
-    return {
+    return this.evaluateDaemonLifecycleStage({
       stage,
-      effect: verdict.effect,
-      rationale: verdict.rationale,
-      verdictId: verdict.verdictId,
-      evaluatedAt: verdict.evaluatedAt,
-      scope: verdict.scope,
-    }
+      runId: context.runId,
+      ruleScope: context.ruleScope,
+      verdictScope: context.verdictScope,
+      evaluatedAt: context.evaluatedAt,
+      facts: context.facts,
+      fallbackMessage: context.fallbackMessage,
+      rules: rules as any,
+      evaluator,
+    })
   }
 
   /**
