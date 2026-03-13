@@ -1331,6 +1331,8 @@ export class RemoteWorkerDirectory {
   private refreshedAt = new Date(0).toISOString()
   /** PR-14: strict trust mode — only verified workers can be delegated */
   private readonly strictTrustMode: boolean
+  /** P1-B: remote worker failure policy — 'fallback' (default) or 'fail-closed' */
+  private readonly federationFailPolicy: 'fallback' | 'fail-closed'
 
   constructor(
     configPath: string,
@@ -1338,10 +1340,13 @@ export class RemoteWorkerDirectory {
     private readonly transport: RemoteWorkerTransport = DEFAULT_REMOTE_WORKER_TRANSPORT,
     /** PR-14: enable strict trust mode (default: false for backward compat) */
     strictTrustMode: boolean = false,
+    /** P1-B: federation failure policy (default: 'fallback' for backward compat) */
+    federationFailPolicy: 'fallback' | 'fail-closed' = 'fallback',
   ) {
     this.configPath = configPath
     this.trustRegistry = trustRegistry
     this.strictTrustMode = strictTrustMode
+    this.federationFailPolicy = federationFailPolicy
   }
 
   async refresh(): Promise<void> {
@@ -1657,7 +1662,7 @@ export class RemoteWorkerDirectory {
         continue
       }
       const local = registry.get(step.id) ?? createLocalExecutor(step.id as WorkflowNodeId)
-      registry.register(new RemoteAwareNodeExecutor(step.id as WorkflowNodeId, step.capability, local, this))
+      registry.register(new RemoteAwareNodeExecutor(step.id as WorkflowNodeId, step.capability, local, this, this.federationFailPolicy))
     }
     return registry
   }

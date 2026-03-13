@@ -333,6 +333,8 @@ export class AntigravityDaemonRuntime {
       this.trustRegistry,
       undefined, // transport — use default
       this.config.strictTrustMode ?? false,
+      // P1-B fix: pass federationFailPolicy to RemoteWorkerDirectory → flows into RemoteAwareNodeExecutor
+      this.config.federationFailPolicy ?? 'fallback',
     )
     this.tribunalService = new TribunalService(this.remoteWorkers, this.agentRuntimeService)
     this.policyEngine = new DaemonPolicyEngine({

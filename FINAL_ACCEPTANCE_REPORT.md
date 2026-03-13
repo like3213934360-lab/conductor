@@ -3,9 +3,9 @@
 | 项目 | 内容 |
 |------|------|
 | 判定 | **验收通过** |
-| 签发日期 | 2026-03-13 |
-| 代码基线 | Round 4 整改后 commit `97028a9` |
-| 测试基线 | 474 / 474 pass · 60 test files · 0 skip |
+| 签发日期 | 2026-03-14 |
+| 代码基线 | Round 5 整改后代码 |
+| 测试基线 | 483 / 483 pass · 61 test files · 0 skip |
 | 文档性质 | 本仓库整改验收周期的权威结论文档 |
 
 ---
@@ -46,7 +46,7 @@
 1. 上述 10 个审计项已按验收基线完成修复
 2. 默认主链阻塞项（A1–A4、B2–B4、C2）已全部闭环
 3. 显式配置增强项（B1 strictTrustMode / federationFailPolicy、C3 strictReplayMode）已按真实可达边界完成接线与配置声明
-4. 474 / 474 tests 全绿（60 test files），无 skip、无 pending
+4. 483 / 483 tests 全绿（61 test files），无 skip、无 pending
 5. 复验过程中未发现伪修复、回归或文档口径抢跑
 6. 无 P0 / P1 未闭环项；仅余 3 项非阻塞 P2 改进建议（见第 7 节）
 
@@ -78,8 +78,8 @@
 
 | 能力 | 配置路径 | 默认值 | 边界说明 |
 |------|----------|--------|----------|
-| strictTrustMode | VSCode Settings `antigravity.strictTrustMode` / env `ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE` | `false` | 启用后未签名 worker 不可委派。VSCode `contributes.configuration` 已声明，键名与运行时读取逻辑一致。配置路径验证通过 |
-| federationFailPolicy | VSCode Settings `antigravity.federationFailPolicy` / env `ANTIGRAVITY_DAEMON_FEDERATION_FAIL_POLICY` | `'fallback'` | 设为 `fail-closed` 时远程失败将阻断节点执行。VSCode `contributes.configuration` 已声明。配置路径验证通过 |
+| strictTrustMode | VSCode Settings `antigravity.strictTrustMode` / env `ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE` | `false` | 启用后未签名 worker 不可委派。全链路已验证：VSCode setting → workflow-orchestrator → process-host env → main.ts env 读取 → host.ts → DaemonConfig → RemoteWorkerDirectory。`config-bridge.spec.ts` 覆盖 |
+| federationFailPolicy | VSCode Settings `antigravity.federationFailPolicy` / env `ANTIGRAVITY_DAEMON_FEDERATION_FAIL_POLICY` | `'fallback'` | 设为 `fail-closed` 时远程失败将阻断节点执行。全链路已验证：VSCode setting → env → main.ts → host.ts → DaemonConfig → runtime → RemoteWorkerDirectory → RemoteAwareNodeExecutor 第 5 参数。`config-bridge.spec.ts` 覆盖 |
 | strictReplayMode | `DaemonConfig.strictReplayMode`（编程 API） | `false` | 已完成运行时接线（`DaemonConfig` → `UpcastingEventStore` 构造），运行时行为由 `strict-replay-mode.test.ts` 4 条测试覆盖。当前仅通过编程 API 暴露，**尚未提供 env 变量或 VSCode 用户入口**。此为非阻塞增强边界，不影响本次验收判定 |
 
 ## 5. 已完成整改项总表
@@ -90,8 +90,8 @@
 | A2 | gateId validation + SQLite 持久化 | Round 3 + Round 4 | `gate-persistence.spec.ts`（4 条集成测试） | ✅ |
 | A3 | empty approver rejection | Round 3 | `governance-enforcement.spec.ts` | ✅ |
 | A4 | 文档口径修正 | Round 3 + Round 4 | 跨文档一致性审查 | ✅ |
-| B1 | VSCode `contributes.configuration` 声明 | Round 4 | 配置路径验证 + 键名一致性审查 | ✅ |
-| B2 | federationFailPolicy 环境变量全链路 | Round 3 | `runtime-contract` + `process-host` 接线审查 | ✅ |
+| B1 | VSCode `contributes.configuration` 声明 + subprocess 配置桥 | Round 4 + Round 5 | `config-bridge.spec.ts`（9 条测试） + 配置路径验证 | ✅ |
+| B2 | federationFailPolicy 环境变量全链路 + 执行器传递 | Round 3 + Round 5 | `config-bridge.spec.ts` + `runtime-contract` → `process-host` → `main.ts` → `host.ts` → `runtime` → `RemoteWorkerDirectory` → `RemoteAwareNodeExecutor` 接线审查 | ✅ |
 | B3 | release-critical 签名默认值 | Round 3 | 默认策略审查（6 个 scope） | ✅ |
 | B4 | bootstrap gateway 统一 | Round 4 | 运行时接线审查 + fallback 语义审查 | ✅ |
 | C2 | 透明账本 chain integrity throw | Round 3 | 代码路径审查 | ✅ |
@@ -100,10 +100,16 @@
 ## 6. 测试与验证结果
 
 ```
-Test Files  60 passed (60)
-     Tests  474 passed (474)
-  Duration  2.45s
+Test Files  61 passed (61)
+     Tests  483 passed (483)
+  Duration  2.48s
 ```
+
+Round 5 新增测试：
+
+| 测试文件 | 测试数 | 覆盖范围 |
+|----------|--------|----------|
+| `config-bridge.spec.ts` | 9 | subprocess env→DaemonConfig 桥 · strictTrustMode env 转换 · federationFailPolicy env 转换 · fail-closed 阻断行为 · fallback 兼容行为 · 全链路类型检查 |
 
 Round 4 新增测试：
 

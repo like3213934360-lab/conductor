@@ -10,6 +10,10 @@ export interface LaunchAntigravityDaemonHostOptions {
   callbackHost?: string
   callbackPort?: number
   callbackBaseUrl?: string
+  /** P1-A: strict trust mode — only verified workers can be delegated (default: false) */
+  strictTrustMode?: boolean
+  /** P1-A: remote worker failure policy — 'fallback' (default) or 'fail-closed' */
+  federationFailPolicy?: 'fallback' | 'fail-closed'
 }
 
 export interface AntigravityDaemonHost {
@@ -36,6 +40,9 @@ export async function launchAntigravityDaemonHost(
     dataDir: paths.dataDir,
     projectionPath: paths.projectionPath,
     socketPath: paths.socketPath,
+    // P1-A fix: pass security config through to daemon runtime
+    strictTrustMode: options.strictTrustMode,
+    federationFailPolicy: options.federationFailPolicy,
   })
   await runtime.initialize()
 
