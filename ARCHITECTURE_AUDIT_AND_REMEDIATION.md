@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | Active，整改已全部落地，P0 主链未闭环问题已全部修复 |
+| 状态 | 历史过程文档 — 整改已全部落地，最终验收通过。权威结论见 [FINAL_ACCEPTANCE_REPORT.md](FINAL_ACCEPTANCE_REPORT.md) |
 | 最后更新时间 | 2026-03-13 |
 | 适用范围 | `antigravity-daemon` authority runtime、`antigravity-core` 运行时能力、`antigravity-model-core` 执行泵、`antigravity-persistence` 事实源与投影、`antigravity-vscode`/`antigravity-mcp-server` 壳层与发布边界 |
 | 关联材料 | 仓库深度审计结论；修复方案总计划；相关 README、架构说明、runtime / governance / federation / artifact 实现代码 |
@@ -13,7 +13,7 @@
 
 已确认的工程验证结果：
 
-- `npm test`：通过，459/459（含 4 条 runtime 主链证据测试与 13 条 component 级主链佐证测试）
+- `npm test`：通过，474/474（含 Round 4 新增 8 条整改测试）
 - `npm run smoke:daemon`：通过
 - `npm run smoke:mcp`：通过
 
@@ -28,7 +28,9 @@
 - 当前**建议归档**
 - 残留 P2 级问题不影响系统正确性
 
-当前权威验收状态见 [ACCEPTANCE_AUDIT_STATUS.md](ACCEPTANCE_AUDIT_STATUS.md)。
+当前权威验收状态见 [FINAL_ACCEPTANCE_REPORT.md](FINAL_ACCEPTANCE_REPORT.md)。
+
+> **本文档性质**：本文为历史整改过程文档，记录了审计发现、整改设计、实施计划和 roadmap。当前验收状态以 `FINAL_ACCEPTANCE_REPORT.md` 为准。
 
 ## 1. 背景
 

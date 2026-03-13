@@ -3,8 +3,8 @@
 > Authoritative capability boundary for the current repository state.  
 > Classification is based on the **default daemon authority runtime path**, not on whether a class, helper, builder, or test exists.
 
-> Current baseline: acceptance audit dated 2026-03-13 (post-remediation round 2).  
-> Current overall result: **整改中 — P0 治理执法已加固，P1 配置/文档/联邦待完善**.  
+> Current baseline: acceptance audit dated 2026-03-13 (post-remediation round 4 — final acceptance).  
+> Current overall result: **验收通过 — P0/P1/P2 全部修复并验证**.  
 > Stable means "on the default mainline and affecting real runtime behavior".  
 > Anything not meeting that bar is explicitly marked as `experimental`, `diagnostics-only`, `scaffolding`, or `not-mainline`.
 
@@ -23,19 +23,22 @@ These capabilities are on the daemon default path and form real runtime constrai
 | RuntimeTelemetrySink hook surface | `runtime.ts` → `RuntimeTelemetrySink` | ✅ 通过 | Key hooks wired + `onShadowCompareDrift` / `onRecoveryDiagnostics` optional methods. |
 | Daemon / MCP standalone build and smoke lanes | `package.json`, `smoke.mjs` | ✅ 通过 | Pass. |
 | Release artifact export / verify chain | 6 snapshot-carrying terminal artifact types | ✅ 通过 | Policy / invariant / attestation / dossier / bundle / certification all receive `VerificationSnapshot`; `snapshotDigest` is non-empty. |
-| **GovernanceGateway governance evaluation** | `runtime.ts` → `GovernanceGateway.evaluateDaemonLifecycleStage()` | ✅ 加固 | 7 个评估点全部接入 gateway；release + bootstrap preflight 强制执法；preflight/approval/resume/human-gate 已补充 verdict enforcement。 |
+| **GovernanceGateway governance evaluation** | `runtime.ts` → `GovernanceGateway.evaluateDaemonLifecycleStage()` | ✅ 通过 | 7 个评估点全部接入 gateway；全阶段 verdict enforcement；bootstrap 统一 gateway。 |
 | **VerificationSnapshot production artifact chain** | `runtime.ts` → terminal artifact finalization | ✅ 通过 | 在终态 finalization 前冻结，注入 6 个 snapshot-carrying terminal artifacts。 |
 | **proofGraphDigest / cross-artifact binding** | certification record + transparency ledger | ✅ 通过 | 基于完整终态 artifact 集计算并写入 certification record / transparency ledger。 |
 | **Recovery diagnostics in default path** | `runtime.ts` → `loadState()` | ✅ 通过 | 使用 `loadRunStateWithDiagnostics()`，异常推送 timeline/telemetry。 |
+| **Active gate SQLite persistence** | `runtime.ts` → `ledger.upsertActiveGate()` / `initialize()` restore | ✅ 通过 | daemon 重启后 gate 状态从 SQLite 恢复，gateId 校验持续生效。 |
+| **Bootstrap gateway unified** | `runtime.ts` → `bootstrapDaemonRun(deps.gateway)` | ✅ 通过 | runtime 默认路径传入 `this.governanceGateway`，不再创建独立网关实例。 |
 
 ## Partial Mainline / Configurable
 
 | Capability | Status | Notes |
 |-----------|--------|-------|
 | Domain event v2 scaffold | ✅ 通过 | v2 fields exist, default writes remain v1. Not a correctness gap. |
-| **Trust Registry + strict delegation filter** | ⚠️ 部分 | `strictTrustMode` 代码存在且 env 通路已建立 (`ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE`)；**默认关闭**。需显式配置启用。 |
+| **Trust Registry + strict delegation filter** | ✅ 部分 | `strictTrustMode` 代码存在且 env 通路已建立 + **VSCode `contributes.configuration` 声明**；**默认关闭**。需显式配置启用。 |
 | **Domain-event dual-write** | ⚠️ 部分 | JSONL 持久化审计副本 (fail-open)；SQLite ledger 仍为默认权威 snapshot 来源。不是 canonical source。 |
 | **Shadow compare read mode** | ⚠️ 部分 | 读模式 gate 默认 `shadow`，ledger 权威；event-derived 仅比对，未完成 primary cutover。 |
+| **Strict replay mode** | ✅ 部分 | `DaemonConfig.strictReplayMode` → `UpcastingEventStore` 构造。编程 API 可达，**无 env/VSCode 用户入口**。默认关闭。 |
 
 ## Experimental / Diagnostics-Only / Not-Mainline
 
@@ -72,4 +75,4 @@ The following must **not** be described as stable or mainline:
 - domain-event JSONL as "canonical source" (it is a fail-open audit copy)
 - GovernanceGateway as "unique authoritative enforcement" without qualifying which stages enforce
 
-For the current acceptance result, see [ACCEPTANCE_AUDIT_STATUS.md](ACCEPTANCE_AUDIT_STATUS.md).
+For the current acceptance result, see [FINAL_ACCEPTANCE_REPORT.md](FINAL_ACCEPTANCE_REPORT.md).

@@ -1,14 +1,14 @@
 # Antigravity Daemon 整改落地状态总表
 
 > 文件名沿用历史命名。  
-> 当前口径基于 2026-03-13 最终验收审计（post-remediation）。  
-> 当前结论：**已通过 — P0 主链未闭环问题已全部修复，建议归档**。
+> 当前口径基于 2026-03-13 最终验收审计（post-remediation round 4 — final acceptance）。  
+> 当前结论：**验收通过 — P0/P1/P2 全部修复并验证，建议归档**。
 
 ## 1. 总体状态
 
 整改已全部落地，关键工程验证结果成立：
 
-- `npm test`：通过，459/459
+- `npm test`：通过，474/474（含新增 8 条 Round 4 整改测试）
 - `npm run smoke:daemon`：通过
 - `npm run smoke:mcp`：通过
 - runtime 主链证据测试：4/4 通过（`runtime-mainline-evidence.spec.ts`）
@@ -20,7 +20,7 @@
 2. ✅ domain-event dual-write 已切换为 durable JSONL — `JsonlDaemonDomainEventLog` + verdict 全覆盖双写
 3. ✅ `VerificationSnapshot` / `proofGraphDigest` 已进入生产 artifact 主链 — 6 个 snapshot-carrying 终态 artifact 共享 frozen snapshot，certification + transparency 带同一 `proofGraphDigest`
 
-当前权威验收结论见 [ACCEPTANCE_AUDIT_STATUS.md](ACCEPTANCE_AUDIT_STATUS.md)。
+当前权威验收结论见 [FINAL_ACCEPTANCE_REPORT.md](FINAL_ACCEPTANCE_REPORT.md)。
 
 ## 2. PR 落地状态
 
