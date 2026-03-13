@@ -3241,7 +3241,7 @@ export class AntigravityDaemonRuntime {
           }
         }
       } catch (compareError) {
-        // Shadow compare is diagnostics-only; never crash refreshSnapshot
+        // Shadow compare is fire-and-forget; never crash refreshSnapshot
         this.ledger.appendTimeline(runId, 'shadow_compare.error', 'system', {
           readMode: this.shadowCompareReadMode,
           error: compareError instanceof Error ? compareError.message : String(compareError),
