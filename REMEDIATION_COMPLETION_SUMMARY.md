@@ -1,14 +1,14 @@
 # Antigravity Daemon 整改落地状态总表
 
 > 文件名沿用历史命名。  
-> 当前口径基于 2026-03-13 最终验收审计（post-remediation round 4 — final acceptance）。  
+> 当前口径基于 2026-03-14 最终验收审计（post-remediation round 5 — config bridge closure, final acceptance）。  
 > 当前结论：**验收通过 — P0/P1/P2 全部修复并验证，建议归档**。
 
 ## 1. 总体状态
 
 整改已全部落地，关键工程验证结果成立：
 
-- `npm test`：通过，474/474（含新增 8 条 Round 4 整改测试）
+- `npm test`：通过，483/483（含 Round 4 + Round 5 整改测试共 17 条）
 - `npm run smoke:daemon`：通过
 - `npm run smoke:mcp`：通过
 - runtime 主链证据测试：4/4 通过（`runtime-mainline-evidence.spec.ts`）

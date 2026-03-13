@@ -3,7 +3,7 @@
 > Authoritative capability boundary for the current repository state.  
 > Classification is based on the **default daemon authority runtime path**, not on whether a class, helper, builder, or test exists.
 
-> Current baseline: acceptance audit dated 2026-03-13 (post-remediation round 4 — final acceptance).  
+> Current baseline: acceptance audit dated 2026-03-14 (post-remediation round 5 — config bridge closure, final acceptance).  
 > Current overall result: **验收通过 — P0/P1/P2 全部修复并验证**.  
 > Stable means "on the default mainline and affecting real runtime behavior".  
 > Anything not meeting that bar is explicitly marked as `experimental`, `diagnostics-only`, `scaffolding`, or `not-mainline`.
@@ -35,7 +35,8 @@ These capabilities are on the daemon default path and form real runtime constrai
 | Capability | Status | Notes |
 |-----------|--------|-------|
 | Domain event v2 scaffold | ✅ 通过 | v2 fields exist, default writes remain v1. Not a correctness gap. |
-| **Trust Registry + strict delegation filter** | ✅ 部分 | `strictTrustMode` 代码存在且 env 通路已建立 + **VSCode `contributes.configuration` 声明**；**默认关闭**。需显式配置启用。 |
+| **Trust Registry + strict delegation filter** | ✅ 部分 | `strictTrustMode` 全链路已验证：VSCode Settings → env → `main.ts` → `host.ts` → DaemonConfig → `RemoteWorkerDirectory`；**默认关闭**。需显式配置启用。 |
+| **Federation fail policy** | ✅ 部分 | `federationFailPolicy` 全链路已验证：VSCode Settings → env → `main.ts` → `host.ts` → DaemonConfig → `RemoteWorkerDirectory` → `RemoteAwareNodeExecutor`。默认 `'fallback'`，配置为 `'fail-closed'` 时远程失败阻断节点执行。 |
 | **Domain-event dual-write** | ⚠️ 部分 | JSONL 持久化审计副本 (fail-open)；SQLite ledger 仍为默认权威 snapshot 来源。不是 canonical source。 |
 | **Shadow compare read mode** | ⚠️ 部分 | 读模式 gate 默认 `shadow`，ledger 权威；event-derived 仅比对，未完成 primary cutover。 |
 | **Strict replay mode** | ✅ 部分 | `DaemonConfig.strictReplayMode` → `UpcastingEventStore` 构造。编程 API 可达，**无 env/VSCode 用户入口**。默认关闭。 |

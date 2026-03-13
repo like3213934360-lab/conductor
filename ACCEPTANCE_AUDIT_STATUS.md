@@ -1,8 +1,8 @@
 # Acceptance Audit Status
 
 > Authoritative current acceptance status for the remediation program.  
-> Baseline date: 2026-03-13.  
-> Last updated: 2026-03-13 (remediation round 4 — final closure).
+> Baseline date: 2026-03-14.  
+> Last updated: 2026-03-14 (remediation round 5 — config bridge closure, final acceptance).
 
 ## 1. 总体验收结论
 
@@ -25,8 +25,8 @@
 
 | # | 修复项 | 状态 |
 |---|--------|------|
-| B1 | `strictTrustMode` + `federationFailPolicy` 用户通路 — VSCode `contributes.configuration` 声明 + MCP env → daemon spawn | ✅ |
-| B2 | `federationFailPolicy` 环境变量全链路 — `runtime-contract.ts` + `process-host.ts` → daemon config | ✅ |
+| B1 | `strictTrustMode` + `federationFailPolicy` 用户通路 — VSCode `contributes.configuration` 声明 + subprocess env → `main.ts` 读取 → `host.ts` → DaemonConfig 全链路 | ✅ |
+| B2 | `federationFailPolicy` 全链路 — env → `main.ts` → `host.ts` → `DaemonConfig` → `runtime` → `RemoteWorkerDirectory` → `RemoteAwareNodeExecutor` 第 5 参数 | ✅ |
 | B3 | 制品签名默认强化 — 6 个 release-critical scope `requireSignature: true` | ✅ |
 | B4 | Bootstrap 网关统一 — `runtime.ts` 默认路径传入 `this.governanceGateway` 到 `bootstrapDaemonRun` | ✅ |
 
@@ -63,3 +63,4 @@
 | `gate-persistence.spec.ts` | P1-1 (test) |
 | `strict-replay-mode.test.ts` | C3 (test) |
 | `governance-enforcement.spec.ts` | P0 (test) |
+| `config-bridge.spec.ts` | B1, B2 (test, Round 5) |

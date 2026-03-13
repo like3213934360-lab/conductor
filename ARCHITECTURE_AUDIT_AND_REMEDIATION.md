@@ -13,7 +13,7 @@
 
 已确认的工程验证结果：
 
-- `npm test`：通过，474/474（含 Round 4 新增 8 条整改测试）
+- `npm test`：通过，483/483（含 Round 4 + Round 5 整改测试共 17 条）
 - `npm run smoke:daemon`：通过
 - `npm run smoke:mcp`：通过
 
