@@ -79,6 +79,15 @@ export interface DrainOptions {
     strategyId?: string
     triggerCondition?: string
   }) => void | Promise<void>
+  /**
+   * PR-05: Daemon-side transition authority hook.
+   * When provided, the driver delegates skip/forceQueue/route decisions to the daemon.
+   * The hook receives the completed node's id, result, and current state, and must
+   * return the TransitionDecision the daemon wants applied.
+   * When absent, the driver falls back to its internal evaluateTransition() (legacy path).
+   */
+  onTransition?: (nodeId: string, result: NodeExecutionResult, state: WorkflowState) =>
+    Promise<TransitionDecision> | TransitionDecision
 }
 
 /** WorkflowRunDriver 依赖注入 */
@@ -464,9 +473,15 @@ export class WorkflowRunDriver {
         // F. 完成协议通过后，发射 NODE_COMPLETED + CHECKPOINT（原子补偿）
         await this.safeEmitNodeCompletedWithCheckpoint(runId, nodeId, result, lease)
 
-        // G. 条件路由
-        const transition = evaluateTransition(nodeId, result.output, state)
-        await this.applyTransition(runId, nodeId, transition, opts)
+        // G. 条件路由 — PR-05: delegate transition authority to daemon when hook provided
+        if (opts.onTransition) {
+          const transition = await opts.onTransition(nodeId, result, state)
+          await this.applyTransition(runId, nodeId, transition, opts)
+        } else {
+          // Legacy path: driver-internal transition (retained for backwards compatibility)
+          const transition = evaluateTransition(nodeId, result.output, state)
+          await this.applyTransition(runId, nodeId, transition, opts)
+        }
 
         return { status: 'completed' }
       } catch (err) {

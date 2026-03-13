@@ -25,6 +25,8 @@ import type {
   ModelCandidate,
   ReleaseDecision,
   ActionOutcome,
+  DaemonLifecycleStage,
+  DaemonStageVerdict,
 } from './governance-types.js'
 import type { TrustFactorService } from './trust-factor.js'
 import type { AssuranceEngine } from './assurance-engine.js'
@@ -105,6 +107,33 @@ export class GovernanceGateway {
   }
 
   // ── 4 个拦截点 ────────────────────────────────────────────────────────────
+
+  /**
+   * PR-10: Daemon lifecycle stage hook.
+   *
+   * Evaluates policy rules against facts for a specific daemon lifecycle stage.
+   * Uses the pure evaluator from PR-09 (evaluateRulesAgainstFacts).
+   * Returns a DaemonStageVerdict with stage metadata.
+   *
+   * This is a pure computation — no state mutation on the gateway.
+   * The caller (daemon runtime) decides whether to use the verdict.
+   */
+  evaluateDaemonStage(
+    stage: DaemonLifecycleStage,
+    rules: readonly import('./governance-types.js').GovernanceControl[],
+    evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string },
+    context: { runId: string; ruleScope: string; verdictScope: string; evaluatedAt: string; facts: Record<string, unknown>; fallbackMessage: string },
+  ): DaemonStageVerdict {
+    const verdict = evaluator(rules as any, context)
+    return {
+      stage,
+      effect: verdict.effect,
+      rationale: verdict.rationale,
+      verdictId: verdict.verdictId,
+      evaluatedAt: verdict.evaluatedAt,
+      scope: verdict.scope,
+    }
+  }
 
   /**
    * 拦截点 1: Preflight — 运行前全局筛查

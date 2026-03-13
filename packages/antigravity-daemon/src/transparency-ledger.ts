@@ -37,6 +37,10 @@ export function appendTransparencyLedgerEntry(input: {
   releaseBundlePath: string
   releaseBundleDigest: string
   recordedAt?: string
+  /** PR-13: verification snapshot digest */
+  snapshotDigest?: string
+  /** PR-13: proof graph digest */
+  proofGraphDigest?: string
 }): TransparencyLedgerEntry {
   const existing = readTransparencyLedgerEntries(input.ledgerPath)
   const last = existing.at(-1)
@@ -51,6 +55,8 @@ export function appendTransparencyLedgerEntry(input: {
     releaseBundleDigest: input.releaseBundleDigest,
     previousEntryDigest: last?.entryDigest,
     recordedAt: input.recordedAt ?? createISODateTime(),
+    snapshotDigest: input.snapshotDigest,
+    proofGraphDigest: input.proofGraphDigest,
   }
   const entry: TransparencyLedgerEntry = {
     ...baseEntry,
@@ -79,6 +85,19 @@ export function verifyTransparencyLedger(ledgerPath: string): VerifyTransparency
     const previous = entries[index - 1]
     if (entry.previousEntryDigest !== previous?.entryDigest) {
       issues.push(`previousEntryDigest:${index}`)
+    }
+  })
+
+  // PR-13: check proof graph consistency — same runId must share same proofGraphDigest
+  const runProofGraphMap = new Map<string, string>()
+  entries.forEach((entry, index) => {
+    if (entry.proofGraphDigest) {
+      const existing = runProofGraphMap.get(entry.runId)
+      if (existing && existing !== entry.proofGraphDigest) {
+        issues.push(`proofGraphDigest:${index}`)
+      } else {
+        runProofGraphMap.set(entry.runId, entry.proofGraphDigest)
+      }
     }
   })
 

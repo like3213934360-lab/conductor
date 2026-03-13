@@ -12,11 +12,13 @@ export * from './contracts/workflow-agent-runtime.js'
 // DAG 引擎
 export * from './dag/topology.js'
 export * from './dag/dag-engine.js'
+/** @experimental Formal verifier — conformance asset, not in daemon mainline */
 export {
   StateInvariantVerifier,
   InvariantViolationError,
   type TransitionProperty,
 } from './dag/formal-verifier.js'
+/** @experimental Bounded model checker — conformance asset, not in daemon mainline */
 export {
   BoundedModelChecker,
   DEFAULT_MODEL_CHECK_CONFIG,
@@ -33,7 +35,7 @@ export * from './risk/risk-router.js'
 // 治理引擎 — Workflow Runtime vNext GaaS (Governance-as-a-Service)
 export * from './governance/index.js'
 
-// Event Sourcing
+// Event Sourcing — @experimental upcasting scaffolding, not used by daemon mainline
 export * from './event-sourcing/upcasting.js'
 
 // Reflexion Actor

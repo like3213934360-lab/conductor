@@ -17,7 +17,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { WorkflowEventEnvelope } from '@anthropic/antigravity-shared'
 import { WorkflowError, WorkflowErrorCode } from '@anthropic/antigravity-shared'
-import type { EventStore, AppendEventsInput, LoadEventsQuery } from '@anthropic/antigravity-core/src/contracts/event-store.js'
+import type { EventStore, AppendEventsInput, LoadEventsQuery } from '@anthropic/antigravity-core'
 import { appendJsonlLines, readJsonlStream, readLastJsonlLine } from './stream-utils.js'
 import { withFileLock } from './file-lock.js'
 

@@ -13,8 +13,7 @@
  * - EventStoreDB: projection-based upcasting
  */
 import type { WorkflowEventEnvelope } from '@anthropic/antigravity-shared'
-import type { EventStore, AppendEventsInput, LoadEventsQuery } from '@anthropic/antigravity-core/src/contracts/event-store.js'
-import type { UpcastingRegistry } from '@anthropic/antigravity-core/src/event-sourcing/upcasting.js'
+import type { EventStore, AppendEventsInput, LoadEventsQuery, UpcastingRegistry } from '@anthropic/antigravity-core'
 
 /**
  * UpcastingEventStore — 读路径自动升级装饰器
@@ -32,16 +31,15 @@ export class UpcastingEventStore implements EventStore {
     return this.inner.append(input)
   }
 
-  /** 加载事件 — 读取后自动 upcast */
+  /** 加载事件 — 读取后自动 upcast (resilient: per-event error isolation) */
   async load(query: LoadEventsQuery): Promise<WorkflowEventEnvelope[]> {
     const events = await this.inner.load(query)
-    return this.registry.upcastAll(events)
+    return this.resilientUpcastAll(events)
   }
 
-  /** 流式加载 — 逐条 upcast */
+  /** 流式加载 — 逐条 upcast (resilient) */
   async *loadStream(query: LoadEventsQuery): AsyncIterable<WorkflowEventEnvelope> {
     if (!this.inner.loadStream) {
-      // 回退到 load()
       const events = await this.load(query)
       for (const event of events) {
         yield event
@@ -49,7 +47,7 @@ export class UpcastingEventStore implements EventStore {
       return
     }
     for await (const event of this.inner.loadStream(query)) {
-      yield this.registry.upcast(event)
+      yield this.resilientUpcast(event)
     }
   }
 
@@ -62,5 +60,29 @@ export class UpcastingEventStore implements EventStore {
   /** 检查是否存在 — 直接委托 */
   async exists(runId: string): Promise<boolean> {
     return this.inner.exists(runId)
+  }
+
+  // ─── PR-18E: Resilient upcast helpers ────────────────────────────────
+
+  /** Per-event upcast with error isolation — never crash the read path */
+  private resilientUpcast(event: WorkflowEventEnvelope): WorkflowEventEnvelope {
+    try {
+      return this.registry.upcast(event)
+    } catch {
+      // Return original event with diagnostic marker in payload
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          _upcastError: true,
+          _upcastErrorType: event.type,
+        },
+      }
+    }
+  }
+
+  /** Batch resilient upcast */
+  private resilientUpcastAll(events: WorkflowEventEnvelope[]): WorkflowEventEnvelope[] {
+    return events.map(e => this.resilientUpcast(e))
   }
 }

@@ -201,3 +201,46 @@ export interface GovernanceControlResult {
   message: string
   nodeId?: string
 }
+
+// ── PR-10: Daemon Lifecycle Stages ────────────────────────────────────────────
+
+/**
+ * DaemonLifecycleStage — stages available for daemon governance hooks.
+ *
+ * These map to daemon runtime lifecycle phases:
+ * - daemon:preflight — before run starts
+ * - daemon:skip-authorize — before a node is policy-skipped
+ * - daemon:terminal-release — before final release decision
+ * - daemon:node-observe — after node completion
+ * - daemon:lease-authorize — before lease issuance
+ * - daemon:approval — before human approval gate
+ */
+export type DaemonLifecycleStage =
+  | 'daemon:preflight'
+  | 'daemon:skip-authorize'
+  | 'daemon:terminal-release'
+  | 'daemon:node-observe'
+  | 'daemon:lease-authorize'
+  | 'daemon:approval'
+
+/**
+ * DaemonStageVerdict — policy verdict with stage metadata.
+ *
+ * Extends PolicyVerdict semantics with stage provenance,
+ * so downstream systems can distinguish which lifecycle phase
+ * produced a given verdict.
+ */
+export interface DaemonStageVerdict {
+  /** Which daemon lifecycle stage produced this verdict */
+  stage: DaemonLifecycleStage
+  /** Verdict effect (from policy evaluator) */
+  effect: string
+  /** Human-readable rationale */
+  rationale: string[]
+  /** Stable verdict ID */
+  verdictId: string
+  /** When evaluation occurred */
+  evaluatedAt: string
+  /** Scope from policy evaluator */
+  scope: string
+}

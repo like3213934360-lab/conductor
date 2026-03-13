@@ -343,6 +343,8 @@
     "test": "vitest run --config vitest.config.ts",
     "check:contracts": "vitest run --config vitest.config.ts packages/antigravity-daemon/src/__tests__/server-manifest.spec.ts packages/antigravity-daemon/src/__tests__/runtime-recovery.spec.ts packages/antigravity-daemon/src/__tests__/release-surface.spec.ts packages/antigravity-daemon/src/__tests__/formal-specs.spec.ts packages/antigravity-vscode/src/__tests__/workflow-contract.spec.ts",
     "coverage": "vitest run --config vitest.config.ts --coverage",
+    "smoke:daemon": "npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run smoke --prefix packages/antigravity-daemon",
+    "smoke:mcp": "npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run build:antigravity-mcp && npm run smoke --prefix packages/antigravity-mcp-server",
     "ci": "npm run typecheck:all && npm test && npm run build",
     "turbo:build": "turbo run build",
     "turbo:typecheck": "turbo run typecheck",

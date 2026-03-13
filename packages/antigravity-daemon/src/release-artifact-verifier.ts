@@ -33,6 +33,8 @@ import {
   TRACE_BUNDLE_SECTIONS,
   verifyTraceBundleIntegrity,
 } from './trace-bundle-integrity.js'
+import { verifyCrossArtifactConsistency, computeProofGraphDigest } from './cross-artifact-verifier.js'
+import type { CrossArtifactInput, CrossArtifactVerificationReport } from './cross-artifact-verifier.js'
 
 export interface ArtifactSignatureEvaluator {
   evaluateHmacSignatureEnvelope: TrustRegistryStore['evaluateHmacSignatureEnvelope']
@@ -52,6 +54,8 @@ export function verifyPolicyReportArtifactWithEvaluator(
   reportPath: string,
   verdicts: PolicyVerdict[],
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyPolicyReport; document: PolicyReportDocument } {
   if (!fs.existsSync(reportPath)) {
     throw new Error(`Policy report not found: ${reportPath}`)
@@ -60,7 +64,7 @@ export function verifyPolicyReportArtifactWithEvaluator(
   const document = PolicyReportDocumentSchema.parse(
     JSON.parse(fs.readFileSync(reportPath, 'utf8')),
   )
-  const payloadVerification = verifyPolicyReportDocument(document, run, verdicts)
+  const payloadVerification = verifyPolicyReportDocument(document, run, verdicts, expectedSnapshotDigest)
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'policy-report',
     payload: serializePolicyReportSignable(document),
@@ -108,6 +112,8 @@ export function verifyInvariantReportArtifactWithEvaluator(
   releaseArtifacts: RunSnapshot['releaseArtifacts'],
   invariantFailures: string[],
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyInvariantReport; document: InvariantReportDocument } {
   if (!fs.existsSync(reportPath)) {
     throw new Error(`Invariant report not found: ${reportPath}`)
@@ -116,7 +122,7 @@ export function verifyInvariantReportArtifactWithEvaluator(
   const document = InvariantReportDocumentSchema.parse(
     JSON.parse(fs.readFileSync(reportPath, 'utf8')),
   )
-  const payloadVerification = verifyInvariantReportDocument(document, run, releaseArtifacts, invariantFailures)
+  const payloadVerification = verifyInvariantReportDocument(document, run, releaseArtifacts, invariantFailures, expectedSnapshotDigest)
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'invariant-report',
     payload: serializeInvariantReportSignable(document),
@@ -229,6 +235,8 @@ export function verifyReleaseAttestationArtifactWithEvaluator(
   attestationPath: string,
   traceBundleReport: VerifyTraceBundleReport,
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyReleaseAttestationReport; document: ReleaseAttestationDocument } {
   if (!fs.existsSync(attestationPath)) {
     throw new Error(`Release attestation not found: ${attestationPath}`)
@@ -237,7 +245,7 @@ export function verifyReleaseAttestationArtifactWithEvaluator(
   const document = ReleaseAttestationDocumentSchema.parse(
     JSON.parse(fs.readFileSync(attestationPath, 'utf8')),
   )
-  const payloadVerification = verifyReleaseAttestationDocument(document, traceBundleReport)
+  const payloadVerification = verifyReleaseAttestationDocument(document, traceBundleReport, expectedSnapshotDigest)
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'release-attestation',
     payload: serializeReleaseAttestationSignable(document),
@@ -283,6 +291,8 @@ export function verifyReleaseDossierArtifactWithEvaluator(
   dossierPath: string,
   verifyRunReport: VerifyRunReport,
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyReleaseDossierReport; document: ReleaseDossierDocument } {
   if (!fs.existsSync(dossierPath)) {
     throw new Error(`Release dossier not found: ${dossierPath}`)
@@ -291,7 +301,7 @@ export function verifyReleaseDossierArtifactWithEvaluator(
   const document = ReleaseDossierDocumentSchema.parse(
     JSON.parse(fs.readFileSync(dossierPath, 'utf8')),
   )
-  const payloadVerification = verifyReleaseDossierDocument(document, run, verifyRunReport)
+  const payloadVerification = verifyReleaseDossierDocument(document, run, verifyRunReport, expectedSnapshotDigest)
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'release-dossier',
     payload: serializeReleaseDossierSignable(document),
@@ -343,6 +353,8 @@ export function verifyReleaseBundleArtifactWithEvaluator(
   invariantReport: RunSnapshot['invariantReport'],
   certificationRecord: RunSnapshot['certificationRecord'],
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyReleaseBundleReport; document: ReleaseBundleDocument } {
   if (!fs.existsSync(bundlePath)) {
     throw new Error(`Release bundle not found: ${bundlePath}`)
@@ -359,6 +371,7 @@ export function verifyReleaseBundleArtifactWithEvaluator(
     invariantReport,
     run.snapshot.releaseDossier,
     certificationRecord,
+    expectedSnapshotDigest,
   )
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'release-bundle',
@@ -405,6 +418,8 @@ export function verifyCertificationRecordArtifactWithEvaluator(
   recordPath: string,
   expectedPayload: CertificationRecordPayload,
   signatureEvaluator: ArtifactSignatureEvaluator,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): { report: VerifyCertificationRecordReport; document: CertificationRecordDocument } {
   if (!fs.existsSync(recordPath)) {
     throw new Error(`Certification record not found: ${recordPath}`)
@@ -413,7 +428,7 @@ export function verifyCertificationRecordArtifactWithEvaluator(
   const document = CertificationRecordDocumentSchema.parse(
     JSON.parse(fs.readFileSync(recordPath, 'utf8')),
   )
-  const payloadVerification = verifyCertificationRecordDocument(document, run, expectedPayload)
+  const payloadVerification = verifyCertificationRecordDocument(document, run, expectedPayload, expectedSnapshotDigest)
   const signatureVerification = signatureEvaluator.evaluateHmacSignatureEnvelope({
     scope: 'certification-record',
     payload: serializeCertificationRecordSignable(document),
@@ -443,4 +458,30 @@ export function verifyCertificationRecordArtifactWithEvaluator(
       verifiedAt: createISODateTime(),
     },
   }
+}
+
+/**
+ * PR-13: Verify cross-artifact consistency and compute proof graph digest.
+ *
+ * This is the production entry point for cross-artifact verification.
+ * It takes artifact payloads from a completed verification pass and:
+ * 1. Checks all artifacts share the same runId and snapshotDigest
+ * 2. Computes a proofGraphDigest binding all artifacts + snapshot
+ *
+ * Returns the cross-artifact report and the computed proofGraphDigest
+ * (undefined if no snapshotDigest is available).
+ */
+export function verifyArtifactChainConsistency(input: {
+  artifacts: CrossArtifactInput[]
+  snapshotDigest?: string
+}): { crossArtifactReport: CrossArtifactVerificationReport; proofGraphDigest?: string } {
+  const crossArtifactReport = verifyCrossArtifactConsistency(input.artifacts)
+  let proofGraphDigest: string | undefined
+  if (input.snapshotDigest) {
+    proofGraphDigest = computeProofGraphDigest({
+      snapshotDigest: input.snapshotDigest,
+      artifactDigests: input.artifacts.map(a => ({ kind: a.kind, payloadDigest: a.payloadDigest })),
+    })
+  }
+  return { crossArtifactReport, proofGraphDigest }
 }

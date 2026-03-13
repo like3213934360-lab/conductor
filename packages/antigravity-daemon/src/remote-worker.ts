@@ -65,6 +65,8 @@ const RemoteWorkerConfigEntrySchema = z.object({
   pollIntervalMs: z.number().int().positive().default(1_000),
   maxPollAttempts: z.number().int().positive().default(30),
   callbackTimeoutMs: z.number().int().positive().default(60_000),
+  /** PR-03: Maximum allowed clock skew for callback timestamp freshness (ms). Default 5 minutes. */
+  maxCallbackSkewMs: z.number().int().positive().default(300_000),
   bearerToken: z.string().optional(),
   enabled: z.boolean().default(true),
   minTrustScore: z.number().min(0).max(100).default(0),
@@ -109,8 +111,8 @@ export interface RemoteWorkerTaskRequest {
     auth: {
       scheme: 'hmac-sha256'
       secret: string
-      signatureHeader: typeof CALLBACK_SIGNATURE_HEADER
-      timestampHeader: typeof CALLBACK_TIMESTAMP_HEADER
+      signatureHeader: string
+      timestampHeader: string
       signatureEncoding: 'hex'
     }
   } | null
@@ -194,15 +196,22 @@ interface RemoteWorkerEntry {
   lastError?: string
 }
 
+/** PR-02: Frozen callback auth config derived from verified agent-card advertisement */
+interface ResolvedCallbackAuthConfig {
+  readonly scheme: 'hmac-sha256'
+  readonly signatureHeader: string
+  readonly timestampHeader: string
+  readonly signatureEncoding: 'hex'
+}
+
 interface ResolvedTaskProtocol {
   source: 'agent-card'
   selectedResponseMode: RemoteWorkerLifecycle
   supportedResponseModes: RemoteWorkerLifecycle[]
   statusEndpointTemplate?: string
   streamEndpointTemplate?: string
-  callbackAuthScheme?: 'hmac-sha256'
-  callbackSignatureHeader?: string
-  callbackTimestampHeader?: string
+  /** PR-02: Frozen callback auth surface from discovery. undefined for non-callback workers. */
+  callbackAuth?: ResolvedCallbackAuthConfig
 }
 
 interface PendingRemoteWorkerCallback {
@@ -212,6 +221,10 @@ interface PendingRemoteWorkerCallback {
   workerId: string
   callbackSecret: string
   expiresAt: string
+  /** PR-02: Frozen auth config for this pending callback, used by ingress verification */
+  callbackAuthConfig: ResolvedCallbackAuthConfig
+  /** PR-03: Maximum allowed clock skew for timestamp freshness check */
+  maxCallbackSkewMs: number
   timeout: NodeJS.Timeout
   promise: Promise<RemoteWorkerTaskCompletedResponse>
   resolve: (value: RemoteWorkerTaskCompletedResponse) => void
@@ -223,6 +236,8 @@ interface RemoteWorkerCallbackLease {
   callbackUrl: string
   expiresAt: string
   callbackSecret: string
+  /** PR-02: Frozen auth config from discovery, carried through lease for task request construction */
+  callbackAuthConfig: ResolvedCallbackAuthConfig
   wait(signal?: AbortSignal): Promise<RemoteWorkerTaskCompletedResponse>
   dispose(): void
 }
@@ -912,9 +927,13 @@ function resolveTaskProtocol(
     supportedResponseModes: callbackCapableModes.length > 0 ? callbackCapableModes : ['inline'],
     statusEndpointTemplate: verifiedProtocol.statusEndpointTemplate,
     streamEndpointTemplate: verifiedProtocol.streamEndpointTemplate,
-    callbackAuthScheme: callbackAuth ? CALLBACK_AUTH_SCHEME : undefined,
-    callbackSignatureHeader: callbackAuth?.signatureHeader ?? CALLBACK_SIGNATURE_HEADER,
-    callbackTimestampHeader: callbackAuth?.timestampHeader ?? CALLBACK_TIMESTAMP_HEADER,
+    // PR-02: freeze callback auth surface from verified agent-card advertisement
+    callbackAuth: callbackAuth ? {
+      scheme: CALLBACK_AUTH_SCHEME,
+      signatureHeader: callbackAuth.signatureHeader ?? CALLBACK_SIGNATURE_HEADER,
+      timestampHeader: callbackAuth.timestampHeader ?? CALLBACK_TIMESTAMP_HEADER,
+      signatureEncoding: 'hex',
+    } satisfies ResolvedCallbackAuthConfig : undefined,
   }
 }
 
@@ -1306,16 +1325,23 @@ export class RemoteWorkerDirectory {
   private readonly workers = new Map<string, RemoteWorkerEntry>()
   private readonly discoveryIssues = new Map<string, RemoteWorkerDiscoveryIssue>()
   private readonly pendingCallbacks = new Map<string, PendingRemoteWorkerCallback>()
+  /** PR-03: Replay cache — completed callback tokens mapped to receivedAt timestamp */
+  private readonly completedCallbackTokens = new Map<string, string>()
   private callbackIngressBaseUrl?: string
   private refreshedAt = new Date(0).toISOString()
+  /** PR-14: strict trust mode — only verified workers can be delegated */
+  private readonly strictTrustMode: boolean
 
   constructor(
     configPath: string,
     trustRegistry: TrustRegistryStore,
     private readonly transport: RemoteWorkerTransport = DEFAULT_REMOTE_WORKER_TRANSPORT,
+    /** PR-14: enable strict trust mode (default: false for backward compat) */
+    strictTrustMode: boolean = false,
   ) {
     this.configPath = configPath
     this.trustRegistry = trustRegistry
+    this.strictTrustMode = strictTrustMode
   }
 
   async refresh(): Promise<void> {
@@ -1375,6 +1401,8 @@ export class RemoteWorkerDirectory {
       refreshedAt: this.refreshedAt,
       workers: Array.from(this.workers.values()).map(worker => this.toSnapshot(worker)),
       discoveryIssues: Array.from(this.discoveryIssues.values()),
+      /** PR-14: expose current trust mode */
+      trustMode: this.strictTrustMode ? 'strict' as const : 'relaxed' as const,
     }
   }
 
@@ -1392,6 +1420,16 @@ export class RemoteWorkerDirectory {
     rawBody: string,
     headers: Record<string, string | string[] | undefined>,
   ): RemoteWorkerCallbackReceipt {
+    // PR-03: Replay protection — check completed tokens BEFORE pending lookup
+    // so that duplicates of already-completed callbacks get 409, not 410
+    const previousReceivedAt = this.completedCallbackTokens.get(callbackToken)
+    if (previousReceivedAt) {
+      throw new RemoteWorkerCallbackError(
+        `Remote worker callback ${callbackToken} rejected: duplicate delivery (originally received at ${previousReceivedAt})`,
+        409,
+      )
+    }
+
     const pending = this.pendingCallbacks.get(callbackToken)
     if (!pending) {
       throw new RemoteWorkerCallbackError(`Unknown or expired remote worker callback token: ${callbackToken}`, 410)
@@ -1403,8 +1441,10 @@ export class RemoteWorkerDirectory {
       throw new RemoteWorkerCallbackError(`Remote worker callback token expired for task ${pending.taskId}`, 410)
     }
 
-    const timestamp = getHeaderValue(headers, CALLBACK_TIMESTAMP_HEADER)
-    const signature = getHeaderValue(headers, CALLBACK_SIGNATURE_HEADER)
+    // PR-02: use frozen callback auth config instead of hardcoded constants
+    const resolvedAuth = pending.callbackAuthConfig
+    const timestamp = getHeaderValue(headers, resolvedAuth.timestampHeader)
+    const signature = getHeaderValue(headers, resolvedAuth.signatureHeader)
     if (!timestamp || !signature) {
       throw new RemoteWorkerCallbackError(
         `Remote worker callback ${callbackToken} is missing signed callback headers`,
@@ -1431,6 +1471,18 @@ export class RemoteWorkerDirectory {
       )
     }
 
+    // PR-03: Freshness check — reject stale or future-skewed timestamps
+    const timestampMs = Date.parse(timestamp)
+    const nowMs = Date.now()
+    const deltaMs = Math.abs(nowMs - timestampMs)
+    if (deltaMs > pending.maxCallbackSkewMs) {
+      const direction = timestampMs < nowMs ? 'stale' : 'skewed'
+      throw new RemoteWorkerCallbackError(
+        `Remote worker callback ${callbackToken} rejected: timestamp is ${direction} (delta=${deltaMs}ms, max=${pending.maxCallbackSkewMs}ms)`,
+        401,
+      )
+    }
+
     const normalized = normalizeTaskResponse(payload, pending.taskId)
     if (normalized.status === 'accepted' || normalized.status === 'running') {
       throw new RemoteWorkerCallbackError(
@@ -1440,6 +1492,8 @@ export class RemoteWorkerDirectory {
     }
 
     this.deletePendingCallback(callbackToken)
+    // PR-03: Record completed token for replay detection
+    this.completedCallbackTokens.set(callbackToken, receivedAt)
     if (normalized.status === 'failed') {
       pending.reject(new Error(normalized.error))
     } else if (normalized.status === 'completed') {
@@ -1498,8 +1552,8 @@ export class RemoteWorkerDirectory {
     })
 
     const startedAt = Date.now()
-    const callbackLease = selected.taskProtocol.selectedResponseMode === 'callback'
-      ? this.createCallbackLease(ctx.runId, selected.card.id, taskId, selected.config.callbackTimeoutMs)
+    const callbackLease = selected.taskProtocol.selectedResponseMode === 'callback' && selected.taskProtocol.callbackAuth
+      ? this.createCallbackLease(ctx.runId, selected.card.id, taskId, selected.config.callbackTimeoutMs, selected.taskProtocol.callbackAuth, selected.config.maxCallbackSkewMs)
       : undefined
     try {
       const initial = normalizeTaskResponse(await this.transport.requestJson<unknown>({
@@ -1528,12 +1582,13 @@ export class RemoteWorkerDirectory {
             callbackUrl: callbackLease.callbackUrl,
             expiresAt: callbackLease.expiresAt,
             deliveryMode: 'post-json',
+            // PR-02: use frozen auth config from discovery
             auth: {
-              scheme: CALLBACK_AUTH_SCHEME,
+              scheme: callbackLease.callbackAuthConfig.scheme,
               secret: callbackLease.callbackSecret,
-              signatureHeader: CALLBACK_SIGNATURE_HEADER,
-              timestampHeader: CALLBACK_TIMESTAMP_HEADER,
-              signatureEncoding: 'hex',
+              signatureHeader: callbackLease.callbackAuthConfig.signatureHeader,
+              timestampHeader: callbackLease.callbackAuthConfig.timestampHeader,
+              signatureEncoding: callbackLease.callbackAuthConfig.signatureEncoding,
             },
           } : null,
           handoff,
@@ -1618,6 +1673,35 @@ export class RemoteWorkerDirectory {
     return RemoteWorkerConfigSchema.parse(JSON.parse(raw))
   }
 
+  /**
+   * PR-14: Compute delegation eligibility with reason.
+   * Returns { delegable, blockReason } reflecting the current trust mode.
+   */
+  private getDelegationEligibility(worker: RemoteWorkerEntry): {
+    delegable: boolean
+    blockReason?: 'worker_not_healthy' | 'trust_score_below_min' | 'verification_not_verified'
+  } {
+    if (worker.card.health !== 'healthy') {
+      return { delegable: false, blockReason: 'worker_not_healthy' }
+    }
+    if (worker.card.trustScore < worker.config.minTrustScore) {
+      return { delegable: false, blockReason: 'trust_score_below_min' }
+    }
+    if (this.strictTrustMode && worker.verification.summary !== 'verified') {
+      return { delegable: false, blockReason: 'verification_not_verified' }
+    }
+    return { delegable: true }
+  }
+
+  /**
+   * PR-14: Check if a worker passes delegation criteria for the current trust mode.
+   * In strict mode, only 'verified' workers are delegable.
+   * In relaxed mode, both 'verified' and 'warning' workers are delegable.
+   */
+  private isDelegable(worker: RemoteWorkerEntry): boolean {
+    return this.getDelegationEligibility(worker).delegable
+  }
+
   private selectWorkersByCapability(
     step: { id: string; capability: string },
     limit?: number,
@@ -1628,6 +1712,8 @@ export class RemoteWorkerDirectory {
       .filter(worker => worker.card.capabilities.some(capability => capability.id === step.capability))
       .filter(worker => worker.config.allowCapabilities.length === 0 || worker.config.allowCapabilities.includes(step.capability))
       .filter(worker => worker.config.preferredNodeIds.length === 0 || worker.config.preferredNodeIds.includes(step.id))
+      // PR-14: strict trust mode — only verified workers can be delegated
+      .filter(worker => this.isDelegable(worker))
       .sort((left, right) => right.card.trustScore - left.card.trustScore)
 
     return typeof limit === 'number'
@@ -1669,8 +1755,8 @@ export class RemoteWorkerDirectory {
       },
     })
 
-    const callbackLease = worker.taskProtocol.selectedResponseMode === 'callback'
-      ? this.createCallbackLease(task.runId, worker.card.id, taskId, worker.config.callbackTimeoutMs)
+    const callbackLease = worker.taskProtocol.selectedResponseMode === 'callback' && worker.taskProtocol.callbackAuth
+      ? this.createCallbackLease(task.runId, worker.card.id, taskId, worker.config.callbackTimeoutMs, worker.taskProtocol.callbackAuth, worker.config.maxCallbackSkewMs)
       : undefined
 
     try {
@@ -1705,12 +1791,13 @@ export class RemoteWorkerDirectory {
             callbackUrl: callbackLease.callbackUrl,
             expiresAt: callbackLease.expiresAt,
             deliveryMode: 'post-json',
+            // PR-02: use frozen auth config from discovery
             auth: {
-              scheme: CALLBACK_AUTH_SCHEME,
+              scheme: callbackLease.callbackAuthConfig.scheme,
               secret: callbackLease.callbackSecret,
-              signatureHeader: CALLBACK_SIGNATURE_HEADER,
-              timestampHeader: CALLBACK_TIMESTAMP_HEADER,
-              signatureEncoding: 'hex',
+              signatureHeader: callbackLease.callbackAuthConfig.signatureHeader,
+              timestampHeader: callbackLease.callbackAuthConfig.timestampHeader,
+              signatureEncoding: callbackLease.callbackAuthConfig.signatureEncoding,
             },
           } : null,
           handoff,
@@ -1729,7 +1816,7 @@ export class RemoteWorkerDirectory {
     }
   }
 
-  private createCallbackLease(runId: string, workerId: string, taskId: string, timeoutMs: number): RemoteWorkerCallbackLease {
+  private createCallbackLease(runId: string, workerId: string, taskId: string, timeoutMs: number, callbackAuthConfig: ResolvedCallbackAuthConfig, maxCallbackSkewMs: number): RemoteWorkerCallbackLease {
     if (!this.callbackIngressBaseUrl) {
       throw new Error(`Remote worker ${workerId} requires callback delivery before callback ingress is configured`)
     }
@@ -1755,6 +1842,8 @@ export class RemoteWorkerDirectory {
       workerId,
       callbackSecret,
       expiresAt,
+      callbackAuthConfig,
+      maxCallbackSkewMs,
       timeout,
       promise,
       resolve: resolveCallback,
@@ -1766,6 +1855,7 @@ export class RemoteWorkerDirectory {
       callbackUrl: `${this.callbackIngressBaseUrl}/remote-worker-callbacks/${encodeURIComponent(callbackToken)}`,
       expiresAt,
       callbackSecret,
+      callbackAuthConfig,
       wait: async (signal?: AbortSignal) => {
         if (!signal) {
           return promise
@@ -1834,9 +1924,10 @@ export class RemoteWorkerDirectory {
       callbackUrlTemplate: worker.taskProtocol.selectedResponseMode === 'callback' && this.callbackIngressBaseUrl
         ? `${this.callbackIngressBaseUrl}/remote-worker-callbacks/{callbackToken}`
         : undefined,
-      callbackAuthScheme: worker.taskProtocol.callbackAuthScheme,
-      callbackSignatureHeader: worker.taskProtocol.callbackSignatureHeader,
-      callbackTimestampHeader: worker.taskProtocol.callbackTimestampHeader,
+      callbackAuthScheme: worker.taskProtocol.callbackAuth?.scheme,
+      callbackSignatureHeader: worker.taskProtocol.callbackAuth?.signatureHeader,
+      callbackTimestampHeader: worker.taskProtocol.callbackAuth?.timestampHeader,
+      callbackSignatureEncoding: worker.taskProtocol.callbackAuth?.signatureEncoding,
       pollIntervalMs: worker.taskProtocol.selectedResponseMode === 'inline' || worker.taskProtocol.selectedResponseMode === 'callback'
         ? undefined
         : worker.config.pollIntervalMs,
@@ -1846,6 +1937,9 @@ export class RemoteWorkerDirectory {
       callbackTimeoutMs: worker.taskProtocol.selectedResponseMode === 'callback'
         ? worker.config.callbackTimeoutMs
         : undefined,
+      maxCallbackSkewMs: worker.taskProtocol.selectedResponseMode === 'callback'
+        ? worker.config.maxCallbackSkewMs
+        : undefined,
       capabilities: worker.card.capabilities.map(capability => capability.id),
       health: worker.card.health as AgentHealthStatus,
       trustScore: worker.card.trustScore,
@@ -1853,6 +1947,10 @@ export class RemoteWorkerDirectory {
       preferredNodeIds: worker.config.preferredNodeIds,
       verification: worker.verification,
       lastError: worker.lastError,
+      ...(() => {
+        const { delegable, blockReason } = this.getDelegationEligibility(worker)
+        return { delegable, delegationBlockReason: blockReason }
+      })(),
     }
   }
 }

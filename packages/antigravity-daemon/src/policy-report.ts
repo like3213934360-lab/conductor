@@ -5,6 +5,8 @@ import type {
 } from './schema.js'
 import type { HmacSignatureEnvelope } from './trust-registry.js'
 import { canonicalJsonStringify, sha256Hex } from './trace-bundle-integrity.js'
+import type { VerificationSnapshot } from './verification-snapshot.js'
+import { extractRunIdentity } from './verification-snapshot.js'
 
 export const POLICY_REPORT_VERSION = '1.0.0' as const
 
@@ -33,6 +35,8 @@ export interface PolicyReportPayload {
     allowCount: number
     blockedScopes: string[]
   }
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest?: string
 }
 
 export interface PolicyReportDocument {
@@ -71,17 +75,22 @@ function summarizeVerdicts(verdicts: readonly PolicyVerdict[]): PolicyReportPayl
 export function buildPolicyReportPayload(input: {
   run: RunDetails
   verdicts: PolicyVerdict[]
+  /** PR-12: optional verification snapshot for unified source */
+  verificationSnapshot?: VerificationSnapshot
 }): PolicyReportPayload {
+  const run = input.verificationSnapshot
+    ? extractRunIdentity(input.verificationSnapshot)
+    : {
+        runId: input.run.snapshot.runId,
+        workflowId: input.run.snapshot.workflowId,
+        workflowVersion: input.run.snapshot.workflowVersion,
+        workflowTemplate: input.run.snapshot.workflowTemplate,
+        status: input.run.snapshot.status,
+        verdict: input.run.snapshot.verdict,
+        completedAt: input.run.snapshot.completedAt,
+      }
   return {
-    run: {
-      runId: input.run.snapshot.runId,
-      workflowId: input.run.snapshot.workflowId,
-      workflowVersion: input.run.snapshot.workflowVersion,
-      workflowTemplate: input.run.snapshot.workflowTemplate,
-      status: input.run.snapshot.status,
-      verdict: input.run.snapshot.verdict,
-      completedAt: input.run.snapshot.completedAt,
-    },
+    run,
     verdicts: input.verdicts.map(verdict => ({
       verdictId: verdict.verdictId,
       scope: verdict.scope,
@@ -91,6 +100,7 @@ export function buildPolicyReportPayload(input: {
       evaluatedAt: verdict.evaluatedAt,
     })),
     summary: summarizeVerdicts(input.verdicts),
+    snapshotDigest: input.verificationSnapshot?.snapshotDigest,
   }
 }
 
@@ -122,6 +132,8 @@ export function verifyPolicyReportDocument(
   document: PolicyReportDocument,
   run: RunDetails,
   verdicts: PolicyVerdict[],
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): PolicyReportVerificationReport {
   const issues: string[] = []
   const payloadDigest = sha256Hex(canonicalJsonStringify(document.payload))
@@ -131,6 +143,10 @@ export function verifyPolicyReportDocument(
   }
   if (document.payload.run.runId !== run.snapshot.runId) {
     issues.push('runId')
+  }
+  // PR-13: snapshotDigest consistency check
+  if (expectedSnapshotDigest && document.payload.snapshotDigest && document.payload.snapshotDigest !== expectedSnapshotDigest) {
+    issues.push('snapshotDigest')
   }
   const documentVerdictIds = new Set(document.payload.verdicts.map(verdict => verdict.verdictId))
   const relevantVerdicts = verdicts.filter(verdict => documentVerdictIds.has(verdict.verdictId))

@@ -1,7 +1,8 @@
+/** @experimental Benchmark harness — evaluation tool, not a correctness constraint */
 export * from './benchmark-harness.js'
-export * from './benchmark-dataset.js'
-export * from './benchmark-dataset-loader.js'
-export * from './benchmark-source-registry.js'
+/** @experimental */ export * from './benchmark-dataset.js'
+/** @experimental */ export * from './benchmark-dataset-loader.js'
+/** @experimental */ export * from './benchmark-source-registry.js'
 export * from './client.js'
 export * from './evidence-policy.js'
 export * from './host.js'
@@ -22,6 +23,7 @@ export {
   verifyInvariantReportDocument,
   summarizeInvariantReportArtifact,
 } from './invariant-report.js'
+/** @experimental Interop harness — diagnostic tool, not a correctness constraint */
 export * from './interop-harness.js'
 export * from './manifest.js'
 export * from './manifest-driven-harness.js'

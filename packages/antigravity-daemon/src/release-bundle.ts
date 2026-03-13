@@ -13,6 +13,8 @@ import type {
 import { ReleaseBundlePayloadSchema } from './schema.js'
 import type { HmacSignatureEnvelope } from './trust-registry.js'
 import { canonicalJsonStringify, sha256Hex } from './trace-bundle-integrity.js'
+import type { VerificationSnapshot } from './verification-snapshot.js'
+import { extractRunIdentity } from './verification-snapshot.js'
 
 export const RELEASE_BUNDLE_VERSION = '1.0.0' as const
 
@@ -54,6 +56,8 @@ export interface ReleaseBundlePayload {
     trustPolicyId: string
     digestSha256?: string
   }
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest?: string
 }
 
 export interface ReleaseBundleDocument {
@@ -116,17 +120,22 @@ export function buildReleaseBundlePayload(input: {
   certificationRecord?: CertificationRecordArtifactSummary
   trustRegistry: TrustRegistrySnapshot
   benchmarkSourceRegistry: BenchmarkSourceRegistrySnapshot
+  /** PR-12: optional verification snapshot for unified source */
+  verificationSnapshot?: VerificationSnapshot
 }): ReleaseBundlePayload {
+  const run = input.verificationSnapshot
+    ? extractRunIdentity(input.verificationSnapshot)
+    : {
+        runId: input.run.snapshot.runId,
+        workflowId: input.run.snapshot.workflowId,
+        workflowVersion: input.run.snapshot.workflowVersion,
+        workflowTemplate: input.run.snapshot.workflowTemplate,
+        status: input.run.snapshot.status,
+        verdict: input.run.snapshot.verdict,
+        completedAt: input.run.snapshot.completedAt,
+      }
   return {
-    run: {
-      runId: input.run.snapshot.runId,
-      workflowId: input.run.snapshot.workflowId,
-      workflowVersion: input.run.snapshot.workflowVersion,
-      workflowTemplate: input.run.snapshot.workflowTemplate,
-      status: input.run.snapshot.status,
-      verdict: input.run.snapshot.verdict,
-      completedAt: input.run.snapshot.completedAt,
-    },
+    run,
     releaseArtifacts: normalizeReleaseArtifactsForBundle(input.verifyRunReport.releaseArtifacts),
     policyReport: normalizeArtifactRefSummary(input.policyReport),
     invariantReport: normalizeArtifactRefSummary(input.invariantReport),
@@ -143,6 +152,7 @@ export function buildReleaseBundlePayload(input: {
       trustPolicyId: input.benchmarkSourceRegistry.trustPolicyId,
       digestSha256: input.benchmarkSourceRegistry.digestSha256,
     },
+    snapshotDigest: input.verificationSnapshot?.snapshotDigest,
   }
 }
 
@@ -179,6 +189,8 @@ export function verifyReleaseBundleDocument(
   invariantReport?: InvariantReportArtifactSummary,
   releaseDossier?: ReleaseDossierArtifactSummary,
   certificationRecord?: CertificationRecordArtifactSummary,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): ReleaseBundleVerificationReport {
   const issues: string[] = []
   const payloadDigest = sha256Hex(canonicalJsonStringify(document.payload))
@@ -188,6 +200,10 @@ export function verifyReleaseBundleDocument(
   }
   if (document.payload.run.runId !== run.snapshot.runId) {
     issues.push('runId')
+  }
+  // PR-13: snapshotDigest consistency check
+  if (expectedSnapshotDigest && document.payload.snapshotDigest && document.payload.snapshotDigest !== expectedSnapshotDigest) {
+    issues.push('snapshotDigest')
   }
   if (
     canonicalJsonStringify(document.payload.releaseArtifacts) !==

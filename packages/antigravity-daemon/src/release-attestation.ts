@@ -7,6 +7,8 @@ import type {
 } from './schema.js'
 import type { HmacSignatureEnvelope } from './trust-registry.js'
 import { canonicalJsonStringify, sha256Hex } from './trace-bundle-integrity.js'
+import type { VerificationSnapshot } from './verification-snapshot.js'
+import { extractRunIdentity } from './verification-snapshot.js'
 
 export const RELEASE_ATTESTATION_VERSION = '1.0.0' as const
 
@@ -47,6 +49,8 @@ export interface ReleaseAttestationPayload {
     trustPolicyId: string
     digestSha256?: string
   }
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest?: string
 }
 
 export interface ReleaseAttestationDocument {
@@ -75,15 +79,28 @@ export function buildReleaseAttestationPayload(input: {
   policyVerdicts: PolicyVerdict[]
   trustRegistry: TrustRegistrySnapshot
   benchmarkSourceRegistry: BenchmarkSourceRegistrySnapshot
+  /** PR-12: optional verification snapshot for unified source */
+  verificationSnapshot?: VerificationSnapshot
 }): ReleaseAttestationPayload {
+  const runIdentity = input.verificationSnapshot
+    ? extractRunIdentity(input.verificationSnapshot)
+    : {
+        runId: input.run.snapshot.runId,
+        workflowId: input.run.snapshot.workflowId,
+        workflowVersion: input.run.snapshot.workflowVersion,
+        workflowTemplate: input.run.snapshot.workflowTemplate,
+        status: input.run.snapshot.status,
+        verdict: input.run.snapshot.verdict,
+        completedAt: input.run.snapshot.completedAt,
+      }
   return {
-    runId: input.run.snapshot.runId,
-    workflowId: input.run.snapshot.workflowId,
-    workflowVersion: input.run.snapshot.workflowVersion,
-    workflowTemplate: input.run.snapshot.workflowTemplate,
-    status: input.run.snapshot.status,
-    verdict: input.run.snapshot.verdict,
-    completedAt: input.run.snapshot.completedAt,
+    runId: runIdentity.runId,
+    workflowId: runIdentity.workflowId,
+    workflowVersion: runIdentity.workflowVersion,
+    workflowTemplate: runIdentity.workflowTemplate,
+    status: runIdentity.status,
+    verdict: runIdentity.verdict,
+    completedAt: runIdentity.completedAt,
     traceBundle: {
       bundlePath: input.traceBundleReport.bundlePath,
       actualBundleDigest: input.traceBundleReport.actualBundleDigest,
@@ -113,6 +130,7 @@ export function buildReleaseAttestationPayload(input: {
       trustPolicyId: input.benchmarkSourceRegistry.trustPolicyId,
       digestSha256: input.benchmarkSourceRegistry.digestSha256,
     },
+    snapshotDigest: input.verificationSnapshot?.snapshotDigest,
   }
 }
 
@@ -140,12 +158,21 @@ export function createReleaseAttestationDocument(payload: ReleaseAttestationPayl
   }
 }
 
-export function verifyReleaseAttestationDocument(document: ReleaseAttestationDocument, traceBundleReport: VerifyTraceBundleReport): ReleaseAttestationVerificationReport {
+export function verifyReleaseAttestationDocument(
+  document: ReleaseAttestationDocument,
+  traceBundleReport: VerifyTraceBundleReport,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
+): ReleaseAttestationVerificationReport {
   const issues: string[] = []
   const payloadDigest = sha256Hex(canonicalJsonStringify(document.payload))
   const payloadDigestOk = payloadDigest === document.payloadDigest
   if (!payloadDigestOk) {
     issues.push('payloadDigest')
+  }
+  // PR-13: snapshotDigest consistency check
+  if (expectedSnapshotDigest && document.payload.snapshotDigest && document.payload.snapshotDigest !== expectedSnapshotDigest) {
+    issues.push('snapshotDigest')
   }
   if (document.payload.traceBundle.actualBundleDigest !== traceBundleReport.actualBundleDigest) {
     issues.push('traceBundleDigest')

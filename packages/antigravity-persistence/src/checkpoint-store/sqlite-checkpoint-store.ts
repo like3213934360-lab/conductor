@@ -12,7 +12,7 @@ import type {
   CheckpointStore,
   SaveCheckpointInput,
   LoadCheckpointQuery,
-} from '@anthropic/antigravity-core/src/contracts/checkpoint-store.js'
+} from '@anthropic/antigravity-core'
 
 /**
  * 基于 SQLite 的 CheckpointStore 实现

@@ -1310,4 +1310,732 @@ describe('RemoteWorkerDirectory', () => {
     expect(listing.discoveryIssues[0]?.expectedAdvertisementSchemaVersion).toBe('a2a.agent-card.v3')
     expect(listing.discoveryIssues[0]?.error).toMatch(/agent-card/)
   })
+
+  // PR-02: Callback auth alignment tests
+
+  it('PR-02: snapshot captures frozen callback auth config including signatureEncoding', async () => {
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 200,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (_req, res) => {
+      res.writeHead(404)
+      res.end()
+    })
+
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const listing = directory.list()
+    expect(listing.discoveryIssues).toEqual([])
+    expect(listing.workers[0]?.callbackAuthScheme).toBe('hmac-sha256')
+    expect(listing.workers[0]?.callbackSignatureHeader).toBe('x-antigravity-callback-signature')
+    expect(listing.workers[0]?.callbackTimestampHeader).toBe('x-antigravity-callback-timestamp')
+    expect(listing.workers[0]?.callbackSignatureEncoding).toBe('hex')
+  })
+
+  it('PR-02: custom (non-default) callback headers round-trip through lease and ingress', async () => {
+    let directoryRef: RemoteWorkerDirectory | undefined
+    let callbackPayload: {
+      callbackToken: string
+      callbackUrl: string
+      auth: {
+        scheme: string
+        secret: string
+        signatureHeader: string
+        timestampHeader: string
+        signatureEncoding: string
+      }
+    } | undefined
+
+    const CUSTOM_SIG_HEADER = 'x-custom-sig'
+    const CUSTOM_TS_HEADER = 'x-custom-ts'
+
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 250,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: CUSTOM_SIG_HEADER,
+          timestampHeader: CUSTOM_TS_HEADER,
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          taskId: string
+          callback: {
+            callbackToken: string
+            callbackUrl: string
+            auth: {
+              scheme: string
+              secret: string
+              signatureHeader: string
+              timestampHeader: string
+              signatureEncoding: string
+            }
+          } | null
+        }
+        callbackPayload = payload.callback ?? undefined
+        setTimeout(() => {
+          const rawBody = JSON.stringify({
+            status: 'completed',
+            taskId: payload.taskId,
+            output: { assuranceVerdict: 'PASS', lifecycle: 'callback-custom-headers' },
+            model: 'remote-custom-header-worker',
+          })
+          const timestamp = new Date().toISOString()
+          const signature = createHmac('sha256', payload.callback?.auth.secret ?? '')
+            .update(`${timestamp}.${rawBody}`)
+            .digest('hex')
+          directoryRef?.receiveCallback(
+            payload.callback?.callbackToken ?? 'missing',
+            JSON.parse(rawBody),
+            rawBody,
+            {
+              // Use the custom headers from the frozen auth config
+              [payload.callback?.auth.timestampHeader ?? 'fallback']: timestamp,
+              [payload.callback?.auth.signatureHeader ?? 'fallback']: signature,
+            },
+          )
+        }, 5)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          status: 'accepted',
+          taskId: payload.taskId,
+          responseMode: 'callback',
+        }))
+        return
+      }
+
+      res.writeHead(404)
+      res.end()
+    })
+
+    directoryRef = directory
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+
+    // Verify snapshot has custom headers
+    const listing = directory.list()
+    expect(listing.workers[0]?.callbackSignatureHeader).toBe(CUSTOM_SIG_HEADER)
+    expect(listing.workers[0]?.callbackTimestampHeader).toBe(CUSTOM_TS_HEADER)
+
+    const result = await directory.delegate({
+      id: 'VERIFY',
+      capability: 'verification',
+    }, createContext())
+
+    // Verify the lease carried the custom headers
+    expect(callbackPayload?.auth.signatureHeader).toBe(CUSTOM_SIG_HEADER)
+    expect(callbackPayload?.auth.timestampHeader).toBe(CUSTOM_TS_HEADER)
+    expect(callbackPayload?.auth.signatureEncoding).toBe('hex')
+    expect(callbackPayload?.auth.scheme).toBe('hmac-sha256')
+
+    // Verify the callback completed successfully (ingress used custom headers)
+    expect(result?.output.lifecycle).toBe('callback-custom-headers')
+    expect(result?.model).toBe('remote-custom-header-worker')
+  })
+
+  it('PR-02: callback lease task request carries resolved auth config fields', async () => {
+    let capturedAuth: {
+      scheme: string
+      signatureHeader: string
+      timestampHeader: string
+      signatureEncoding: string
+    } | undefined
+
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 200,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          taskId: string
+          callback: {
+            callbackToken: string
+            auth: {
+              scheme: string
+              secret: string
+              signatureHeader: string
+              timestampHeader: string
+              signatureEncoding: string
+            }
+          } | null
+        }
+        capturedAuth = payload.callback?.auth
+          ? {
+              scheme: payload.callback.auth.scheme,
+              signatureHeader: payload.callback.auth.signatureHeader,
+              timestampHeader: payload.callback.auth.timestampHeader,
+              signatureEncoding: payload.callback.auth.signatureEncoding,
+            }
+          : undefined
+
+        // Return inline to avoid needing callback resolution
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          status: 'completed',
+          taskId: payload.taskId,
+          output: { assuranceVerdict: 'PASS' },
+          model: 'remote-auth-check',
+        }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    await directory.delegate({
+      id: 'VERIFY',
+      capability: 'verification',
+    }, createContext())
+
+    // The task request should carry the resolved auth config, not hardcoded constants
+    expect(capturedAuth).toBeDefined()
+    expect(capturedAuth?.scheme).toBe('hmac-sha256')
+    expect(capturedAuth?.signatureHeader).toBe('x-antigravity-callback-signature')
+    expect(capturedAuth?.timestampHeader).toBe('x-antigravity-callback-timestamp')
+    expect(capturedAuth?.signatureEncoding).toBe('hex')
+  })
+
+  it('PR-02: non-callback workers have no callbackAuth in snapshot', async () => {
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'inline',
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['inline'],
+        preferredResponseMode: 'inline',
+      },
+    }, async (_req, res) => {
+      res.writeHead(404)
+      res.end()
+    })
+
+    const listing = directory.list()
+    expect(listing.discoveryIssues).toEqual([])
+    expect(listing.workers[0]?.callbackAuthScheme).toBeUndefined()
+    expect(listing.workers[0]?.callbackSignatureHeader).toBeUndefined()
+    expect(listing.workers[0]?.callbackTimestampHeader).toBeUndefined()
+    expect(listing.workers[0]?.callbackSignatureEncoding).toBeUndefined()
+  })
+
+  // PR-03: Callback freshness and replay protection tests
+
+  it('PR-03: normal callback within freshness window succeeds', async () => {
+    let directoryRef: RemoteWorkerDirectory | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 300_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          taskId: string
+          callback: { callbackToken: string; auth: { secret: string; timestampHeader: string; signatureHeader: string } } | null
+        }
+        setTimeout(() => {
+          const rawBody = JSON.stringify({
+            status: 'completed',
+            taskId: payload.taskId,
+            output: { assuranceVerdict: 'PASS', lifecycle: 'callback-fresh' },
+            model: 'fresh-worker',
+          })
+          const timestamp = new Date().toISOString()
+          const signature = createHmac('sha256', payload.callback?.auth.secret ?? '')
+            .update(`${timestamp}.${rawBody}`)
+            .digest('hex')
+          directoryRef?.receiveCallback(
+            payload.callback?.callbackToken ?? '',
+            JSON.parse(rawBody),
+            rawBody,
+            {
+              [payload.callback?.auth.timestampHeader ?? '']: timestamp,
+              [payload.callback?.auth.signatureHeader ?? '']: signature,
+            },
+          )
+        }, 5)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: payload.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directoryRef = directory
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const result = await directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    expect(result?.output.lifecycle).toBe('callback-fresh')
+    expect(result?.model).toBe('fresh-worker')
+  })
+
+  it('PR-03: stale timestamp (past beyond skew) is rejected', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 1_000, // 1 second skew for testing
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    // Start delegation but don't await yet — we need to manually send the callback
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    // Wait for the request to be captured
+    await new Promise(r => setTimeout(r, 30))
+    expect(capturedPayload).toBeDefined()
+
+    const rawBody = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS' },
+      model: 'stale-worker',
+    })
+    // Use a timestamp 10 seconds in the past (beyond 1s skew window)
+    const staleTimestamp = new Date(Date.now() - 10_000).toISOString()
+    const signature = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${staleTimestamp}.${rawBody}`)
+      .digest('hex')
+    expect(() =>
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody),
+        rawBody,
+        {
+          'x-antigravity-callback-timestamp': staleTimestamp,
+          'x-antigravity-callback-signature': signature,
+        },
+      ),
+    ).toThrow(/stale/)
+    // Clean up
+    delegatePromise.catch(() => {})
+  })
+
+  it('PR-03: future timestamp (beyond skew) is rejected', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 1_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    await new Promise(r => setTimeout(r, 30))
+    expect(capturedPayload).toBeDefined()
+
+    const rawBody = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS' },
+      model: 'future-worker',
+    })
+    // Use a timestamp 10 seconds in the future (beyond 1s skew window)
+    const futureTimestamp = new Date(Date.now() + 10_000).toISOString()
+    const signature = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${futureTimestamp}.${rawBody}`)
+      .digest('hex')
+    expect(() =>
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody),
+        rawBody,
+        {
+          'x-antigravity-callback-timestamp': futureTimestamp,
+          'x-antigravity-callback-signature': signature,
+        },
+      ),
+    ).toThrow(/skewed/)
+    delegatePromise.catch(() => {})
+  })
+
+  it('PR-03: duplicate delivery of completed token is rejected with 409', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 300_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    await new Promise(r => setTimeout(r, 30))
+    expect(capturedPayload).toBeDefined()
+
+    const rawBody = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS' },
+      model: 'dup-worker',
+    })
+    const timestamp = new Date().toISOString()
+    const signature = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${timestamp}.${rawBody}`)
+      .digest('hex')
+    const headers = {
+      'x-antigravity-callback-timestamp': timestamp,
+      'x-antigravity-callback-signature': signature,
+    }
+
+    // First delivery succeeds
+    const receipt = directory.receiveCallback(
+      capturedPayload!.callback!.callbackToken,
+      JSON.parse(rawBody),
+      rawBody,
+      headers,
+    )
+    expect(receipt.status).toBe('completed')
+    await delegatePromise
+
+    // Second delivery (duplicate) should be rejected with 409
+    try {
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody),
+        rawBody,
+        headers,
+      )
+      expect.unreachable('Should have thrown')
+    } catch (error) {
+      expect((error as Error).message).toMatch(/duplicate delivery/)
+      expect((error as { statusCode?: number }).statusCode).toBe(409)
+    }
+  })
+
+  it('PR-03: replayed token after pending cleanup returns 410 unknown token', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 25, // very short timeout
+      maxCallbackSkewMs: 300_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    // Suppress unhandled rejection from the expected timeout
+    delegatePromise.catch(() => {})
+    // Wait for timeout to expire and clean up pending callback
+    await new Promise(r => setTimeout(r, 50))
+
+    const rawBody = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS' },
+      model: 'replay-worker',
+    })
+    const timestamp = new Date().toISOString()
+    const signature = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${timestamp}.${rawBody}`)
+      .digest('hex')
+
+    try {
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody),
+        rawBody,
+        {
+          'x-antigravity-callback-timestamp': timestamp,
+          'x-antigravity-callback-signature': signature,
+        },
+      )
+      expect.unreachable('Should have thrown')
+    } catch (error) {
+      expect((error as Error).message).toMatch(/Unknown or expired/)
+      expect((error as { statusCode?: number }).statusCode).toBe(410)
+    }
+    delegatePromise.catch(() => {})
+  })
+
+  it('PR-03: same token + different body replay attempt is rejected with 409', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 300_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    await new Promise(r => setTimeout(r, 30))
+
+    // First: deliver successfully
+    const rawBody1 = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS', version: 1 },
+      model: 'v1-worker',
+    })
+    const ts1 = new Date().toISOString()
+    const sig1 = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${ts1}.${rawBody1}`)
+      .digest('hex')
+    directory.receiveCallback(
+      capturedPayload!.callback!.callbackToken,
+      JSON.parse(rawBody1),
+      rawBody1,
+      { 'x-antigravity-callback-timestamp': ts1, 'x-antigravity-callback-signature': sig1 },
+    )
+    await delegatePromise
+
+    // Second: replay with different body (different signature too since body changed)
+    const rawBody2 = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'FAIL', version: 2 },
+      model: 'v2-tampered',
+    })
+    const ts2 = new Date().toISOString()
+    const sig2 = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${ts2}.${rawBody2}`)
+      .digest('hex')
+
+    try {
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody2),
+        rawBody2,
+        { 'x-antigravity-callback-timestamp': ts2, 'x-antigravity-callback-signature': sig2 },
+      )
+      expect.unreachable('Should have thrown')
+    } catch (error) {
+      expect((error as Error).message).toMatch(/duplicate delivery/)
+      expect((error as { statusCode?: number }).statusCode).toBe(409)
+    }
+  })
+
+  it('PR-03: rejected callbacks do not pollute authority state', async () => {
+    let capturedPayload: { taskId: string; callback: { callbackToken: string; auth: { secret: string } } | null } | undefined
+    let directoryRef: RemoteWorkerDirectory | undefined
+    const { directory } = await setupDirectory({
+      preferredResponseMode: 'callback',
+      callbackTimeoutMs: 500,
+      maxCallbackSkewMs: 1_000,
+      taskProtocol: {
+        taskEndpoint: '/a2a/tasks',
+        supportedResponseModes: ['callback', 'poll', 'inline'],
+        preferredResponseMode: 'callback',
+        callback: {
+          authSchemes: ['hmac-sha256'],
+          signatureHeader: 'x-antigravity-callback-signature',
+          timestampHeader: 'x-antigravity-callback-timestamp',
+          signatureEncoding: 'hex',
+        },
+      },
+    }, async (req, res) => {
+      if (req.method === 'POST' && req.url === '/a2a/tasks') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+        capturedPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'accepted', taskId: capturedPayload?.taskId, responseMode: 'callback' }))
+        return
+      }
+      res.writeHead(404)
+      res.end()
+    })
+    directoryRef = directory
+    directory.setCallbackIngressBaseUrl('http://127.0.0.1:45123')
+    const delegatePromise = directory.delegate({ id: 'VERIFY', capability: 'verification' }, createContext())
+    await new Promise(r => setTimeout(r, 30))
+
+    const rawBody = JSON.stringify({
+      status: 'completed',
+      taskId: capturedPayload!.taskId,
+      output: { assuranceVerdict: 'PASS' },
+      model: 'rejection-test',
+    })
+
+    // Try a stale timestamp — should be rejected
+    const staleTs = new Date(Date.now() - 10_000).toISOString()
+    const staleSig = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${staleTs}.${rawBody}`)
+      .digest('hex')
+    expect(() =>
+      directory.receiveCallback(
+        capturedPayload!.callback!.callbackToken,
+        JSON.parse(rawBody),
+        rawBody,
+        { 'x-antigravity-callback-timestamp': staleTs, 'x-antigravity-callback-signature': staleSig },
+      ),
+    ).toThrow(/stale/)
+
+    // Now send a valid callback — it should still work (authority not polluted)
+    const validTs = new Date().toISOString()
+    const validSig = createHmac('sha256', capturedPayload!.callback?.auth.secret ?? '')
+      .update(`${validTs}.${rawBody}`)
+      .digest('hex')
+    const receipt = directoryRef.receiveCallback(
+      capturedPayload!.callback!.callbackToken,
+      JSON.parse(rawBody),
+      rawBody,
+      { 'x-antigravity-callback-timestamp': validTs, 'x-antigravity-callback-signature': validSig },
+    )
+    expect(receipt.status).toBe('completed')
+    expect(receipt.verifiedSignature).toBe(true)
+    const result = await delegatePromise
+    expect(result?.model).toBe('rejection-test')
+  })
 })

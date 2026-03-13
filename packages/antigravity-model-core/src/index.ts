@@ -7,7 +7,7 @@ export type { CliEcosystem, McpServerInfo, ExtensionInfo } from './cli-ecosystem
 export { AntigravityModelService } from './antigravity-model-service.js';
 export { runParallelTasks, formatParallelResults } from './parallel-executor.js';
 export type { SubTask, SubTaskType, SubTaskResult, ParallelExecutionSummary, ExecutorConfig } from './parallel-executor.js';
-export { WorkflowRunDriver } from './workflow-run-driver.js';
+export { WorkflowRunDriver, evaluateTransition } from './workflow-run-driver.js';
 export type { DriverTickResult, DrainOptions, WorkflowRunDriverDeps } from './workflow-run-driver.js';
 export { ProgressReporter, ScopedReporter } from './progress-reporter.js';
 export type { ProgressEvent, ProgressCallback, ProgressPhase } from './progress-reporter.js';

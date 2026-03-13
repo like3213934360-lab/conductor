@@ -55,6 +55,8 @@ const VerifyOutputSchema = z.object({
   assuranceVerdict: z.enum(['PASS', 'REVISE']),
   verdict: z.enum(['AGREE', 'PARTIAL', 'DISAGREE']),
   challengerModelId: z.string().min(1),
+  // PR-01: additive field — pre-extracted model family for distinct-family checks
+  challengerModelFamily: z.string().optional(),
   complianceCheck: z.enum(['PASS', 'WARN', 'VIOLATION']),
   verificationReceiptSummary: z.string().min(40),
   findings: z.array(z.object({
@@ -112,7 +114,12 @@ function extractModelFamily(modelId: string | undefined): string {
 }
 
 function assertDistinctVerifyFamily(output: Record<string, unknown>, state: WorkflowState | null): void {
-  const challengerFamily = extractModelFamily(typeof output.challengerModelId === 'string' ? output.challengerModelId : undefined)
+  // PR-01: prefer pre-extracted challengerModelFamily when available,
+  // fallback to deriving from challengerModelId for legacy data.
+  const challengerFamily =
+    (typeof output.challengerModelFamily === 'string' && output.challengerModelFamily.length > 0)
+      ? output.challengerModelFamily
+      : extractModelFamily(typeof output.challengerModelId === 'string' ? output.challengerModelId : undefined)
   const parallelOutput = state?.nodes.PARALLEL?.output as Record<string, unknown> | undefined
   const upstreamFamilies = [
     extractModelFamily((parallelOutput?.codex as Record<string, unknown> | undefined)?.modelId as string | undefined),

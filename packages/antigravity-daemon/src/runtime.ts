@@ -1,14 +1,29 @@
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { DagEngine } from '@anthropic/antigravity-core'
-import { WorkflowRunDriver, AntigravityModelService, type NodeExecutionResult } from '@anthropic/antigravity-model-core'
-import { JsonlEventStore, MemoryManager, SqliteCheckpointStore, SqliteClient, runMigrations } from '@anthropic/antigravity-persistence'
+import { DagEngine, GovernanceGateway } from '@anthropic/antigravity-core'
+import type { DaemonLifecycleStage, DaemonStageVerdict } from '@anthropic/antigravity-core'
+import { WorkflowRunDriver, evaluateTransition, AntigravityModelService, type NodeExecutionResult } from '@anthropic/antigravity-model-core'
+import { JsonlEventStore, MemoryManager, SqliteCheckpointStore, SqliteClient, runMigrations, UpcastingEventStore } from '@anthropic/antigravity-persistence'
 import type { WorkflowEventEnvelope, WorkflowState } from '@anthropic/antigravity-shared'
 import { createCheckpointId, createEventId, createISODateTime } from '@anthropic/antigravity-shared'
 import { buildRunSnapshot, writeRunProjection } from './projection.js'
+import { AuthorityRuntimeKernel, LifecyclePhase, type LifecycleHooks, type TerminalDecision } from './authority-runtime-kernel.js'
+import { createDaemonDomainEvent, DaemonDomainEventTypes, type DaemonDomainEventType, type DaemonDomainEventLog } from './daemon-domain-events.js'
+import { InMemoryDaemonDomainEventLog } from './in-memory-domain-event-log.js'
 import { DaemonLedger } from './ledger.js'
+import { createDaemonUpcastingRegistry } from './daemon-upcasting-registry.js'
 import { BenchmarkHarness } from './benchmark-harness.js'
+import { buildEventDerivedProjection, shadowCompare, type LegacyProjectionInput } from './event-derived-projection.js'
+import {
+  evaluateRulesAgainstFacts,
+  createFactsForPreflight,
+  createFactsForRelease,
+  createFactsForHumanGate,
+  createFactsForApproval,
+  createFactsForResume,
+  type PolicyEvaluationContext,
+} from './policy-engine.js'
 import { BenchmarkSourceRegistryStore } from './benchmark-source-registry.js'
 import { InteropHarness } from './interop-harness.js'
 import {
@@ -115,6 +130,7 @@ import {
   verifyReleaseDossierArtifact,
   verifyReleaseAttestationArtifact,
   verifyTraceBundleArtifact,
+  verifyArtifactChainConsistency,
 } from './release-artifact-verifier.js'
 import {
   buildPolicyReportPayload,
@@ -156,12 +172,17 @@ import {
   type ReleaseDossierDocument,
 } from './release-dossier.js'
 import { validateWorkflowStepOutput } from './workflow-output-contracts.js'
+import { NoOpTelemetrySink, type RuntimeTelemetrySink } from './runtime-telemetry-sink.js'
 
 export interface DaemonConfig {
   workspaceRoot: string
   dataDir: string
   projectionPath: string
   socketPath: string
+  /** PR-14: enable strict trust mode — only verified workers can be delegated (default: false) */
+  strictTrustMode?: boolean
+  /** PR-19: optional telemetry sink for unified observability (default: NoOp) */
+  telemetrySink?: RuntimeTelemetrySink
 }
 
 interface ActiveRunContext {
@@ -171,6 +192,8 @@ interface ActiveRunContext {
   controller: AbortController
   startedAt: string
   drainPromise?: Promise<void>
+  /** PR-04: current lifecycle phase, managed by AuthorityRuntimeKernel */
+  phase: LifecyclePhase
 }
 
 interface RefreshSnapshotOptions {
@@ -226,7 +249,7 @@ export class AntigravityDaemonRuntime {
   private readonly config: DaemonConfig
   private readonly sqliteClient: SqliteClient
   private readonly ledger: DaemonLedger
-  private readonly eventStore: JsonlEventStore
+  private readonly eventStore: UpcastingEventStore
   private readonly checkpointStore: SqliteCheckpointStore
   private readonly memoryManager: MemoryManager
   private readonly agentRuntimeService: AntigravityModelService
@@ -236,6 +259,14 @@ export class AntigravityDaemonRuntime {
   private readonly policyEngine: DaemonPolicyEngine
   private readonly benchmarkSourceRegistry: BenchmarkSourceRegistryStore
   private readonly activeRuns = new Map<string, ActiveRunContext>()
+  /** PR-04: lifecycle coordinator — manages phase boundaries for authority runs */
+  private readonly lifecycleKernel = new AuthorityRuntimeKernel()
+  /** PR-07: daemon domain event log for dual-write alongside legacy ledger */
+  private readonly domainEventLog: DaemonDomainEventLog = new InMemoryDaemonDomainEventLog()
+  /** PR-11: gateway governance flag — set to false to revert to direct evaluateX paths */
+  private readonly useGatewayGovernance = true
+  /** PR-19: unified telemetry sink */
+  private readonly telemetrySink: RuntimeTelemetrySink
 
   constructor(config: DaemonConfig) {
     this.config = config
@@ -247,7 +278,10 @@ export class AntigravityDaemonRuntime {
     })
     runMigrations(this.sqliteClient.getDatabase())
     this.ledger = new DaemonLedger(this.sqliteClient.getDatabase())
-    this.eventStore = new JsonlEventStore({ dataDir: this.config.dataDir })
+    this.eventStore = new UpcastingEventStore(
+      new JsonlEventStore({ dataDir: this.config.dataDir }),
+      createDaemonUpcastingRegistry(),
+    )
     this.checkpointStore = new SqliteCheckpointStore(this.sqliteClient.getDatabase())
     this.memoryManager = new MemoryManager({ db: this.sqliteClient.getDatabase() })
     this.agentRuntimeService = new AntigravityModelService()
@@ -255,6 +289,8 @@ export class AntigravityDaemonRuntime {
     this.remoteWorkers = new RemoteWorkerDirectory(
       path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_REMOTE_WORKERS_FILE),
       this.trustRegistry,
+      undefined, // transport — use default
+      this.config.strictTrustMode ?? false,
     )
     this.tribunalService = new TribunalService(this.remoteWorkers, this.agentRuntimeService)
     this.policyEngine = new DaemonPolicyEngine({
@@ -264,6 +300,7 @@ export class AntigravityDaemonRuntime {
       path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_BENCHMARK_SOURCE_REGISTRY_FILE),
       this.trustRegistry,
     )
+    this.telemetrySink = config.telemetrySink ?? new NoOpTelemetrySink()
   }
 
   async initialize(): Promise<void> {
@@ -350,6 +387,7 @@ export class AntigravityDaemonRuntime {
       status: receipt.status,
       verifiedSignature: receipt.verifiedSignature,
     }, receipt.receivedAt)
+    this.telemetrySink.onRemoteCallback(receipt.runId, { workerId: receipt.workerId, nodeId: undefined })
     return receipt
   }
 
@@ -384,6 +422,7 @@ export class AntigravityDaemonRuntime {
       driver,
       controller,
       startedAt,
+      phase: LifecyclePhase.Bootstrap,
     }
 
     const start = await bootstrapDaemonRun(createRunRequest(invocation, graph), {
@@ -400,11 +439,24 @@ export class AntigravityDaemonRuntime {
       evaluatedAt: startedAt,
     })
     this.recordPolicyVerdict(start.runId, 'policy.preflight', preflightVerdict)
+
+    // PR-10: parallel daemon stage hook — diagnostics only, does not affect main path
+    this.invokeDaemonStageHook('daemon:preflight', start.runId, 'preflight', 'preflight', startedAt,
+      createFactsForPreflight({
+        runId: start.runId,
+        governance: start.governance,
+        drScore: start.drScore.score,
+        evaluatedAt: startedAt,
+      }),
+      'Preflight checks passed under the active policy pack.',
+    )
+
     this.ledger.appendTimeline(start.runId, 'run.started', undefined, {
       goal: invocation.goal,
       workflow: definition.templateName,
       hostSessionId: invocation.hostSessionId,
     }, startedAt)
+    this.telemetrySink.onRunStarted(start.runId, { goal: invocation.goal, nodeCount: definition.steps.length })
     if (start.route.skippedNodes.length > 0) {
       this.syncPolicySkippedNodes(
         start.runId,
@@ -614,13 +666,18 @@ export class AntigravityDaemonRuntime {
     const parsed = ApproveGateRequestSchema.parse(request)
     const run = await this.getRequiredRun(parsed.runId)
     const now = createISODateTime()
-    const verdict = this.policyEngine.evaluateApproval({
+    // PR-11: gateway cutover for approval
+    const approvalInput = {
       runId: parsed.runId,
       gateId: parsed.gateId,
       approvedBy: parsed.approvedBy,
       comment: parsed.comment,
       evaluatedAt: now,
-    })
+    }
+    const verdict = this.useGatewayGovernance
+      ? this.evaluateViaGateway('daemon:approval', parsed.runId, 'approval', `approval:${parsed.gateId}`, now,
+          createFactsForApproval(approvalInput), `Approval gate ${parsed.gateId} passed under the active policy pack.`)
+      : this.policyEngine.evaluateApproval(approvalInput)
     this.recordPolicyVerdict(parsed.runId, 'policy.approval', verdict, parsed.gateId)
     this.ledger.appendTimeline(parsed.runId, 'gate.approved', parsed.gateId, {
       approvedBy: parsed.approvedBy,
@@ -682,12 +739,17 @@ export class AntigravityDaemonRuntime {
     }
 
     const now = createISODateTime()
-    const resumeVerdict = this.policyEngine.evaluateResume({
+    // PR-11: gateway cutover for resume
+    const resumeInput = {
       runId: parsed.runId,
       approvedBy: parsed.approvedBy,
       comment: parsed.comment,
       evaluatedAt: now,
-    })
+    }
+    const resumeVerdict = this.useGatewayGovernance
+      ? this.evaluateViaGateway('daemon:approval', parsed.runId, 'resume', 'resume', now,
+          createFactsForResume(resumeInput), 'Resume checks passed under the active policy pack.')
+      : this.policyEngine.evaluateResume(resumeInput)
     this.recordPolicyVerdict(parsed.runId, 'policy.resume', resumeVerdict)
     await this.ensureRunCompletedEvent(parsed.runId, 'completed')
     this.ledger.appendTimeline(parsed.runId, 'run.resumed', undefined, {
@@ -1747,6 +1809,26 @@ export class AntigravityDaemonRuntime {
     fs.writeFileSync(recordPath, JSON.stringify(document, null, 2), 'utf8')
 
     const { report } = verifyCertificationRecordArtifact(latestRun, recordPath, payload, this.trustRegistry)
+
+    // PR-13: compute proof graph digest from available artifact payloads
+    const certSnapshotDigest = payload.snapshotDigest
+    const artifactInputs = [
+      { kind: 'certification-record', runId, snapshotDigest: certSnapshotDigest, payloadDigest: document.payloadDigest },
+      { kind: 'release-bundle', runId, snapshotDigest: bundle.document.payload.snapshotDigest, payloadDigest: bundle.document.payloadDigest },
+    ]
+    const { crossArtifactReport, proofGraphDigest } = verifyArtifactChainConsistency({
+      artifacts: artifactInputs,
+      snapshotDigest: certSnapshotDigest,
+    })
+
+    // PR-13: log cross-artifact issues to timeline
+    if (!crossArtifactReport.ok) {
+      this.ledger.appendTimeline(runId, 'certification.cross_artifact.failed', undefined, {
+        issues: crossArtifactReport.issues,
+        proofGraphDigest,
+      }, generatedAt)
+    }
+
     const transparencyLedgerPath = path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_TRANSPARENCY_LEDGER_FILE)
     appendTransparencyLedgerEntry({
       ledgerPath: transparencyLedgerPath,
@@ -1756,12 +1838,14 @@ export class AntigravityDaemonRuntime {
       releaseBundlePath: bundle.bundlePath,
       releaseBundleDigest: bundle.document.payloadDigest,
       recordedAt: generatedAt,
+      snapshotDigest: certSnapshotDigest,
+      proofGraphDigest,
     })
     const ledgerEntries = readTransparencyLedgerEntries(transparencyLedgerPath)
     const ledgerReport = verifyTransparencyLedger(transparencyLedgerPath)
     this.ledger.appendTimeline(runId, 'certification.record.generated', undefined, {
       recordPath,
-      ok: report.ok,
+      ok: report.ok && crossArtifactReport.ok,
       signatureVerified: report.signatureVerified,
       signatureRequired: report.signatureRequired,
       signaturePolicyId: report.signaturePolicyId,
@@ -1848,12 +1932,14 @@ export class AntigravityDaemonRuntime {
       }),
       controller,
       startedAt: run.snapshot.startedAt ?? run.snapshot.createdAt,
+      phase: LifecyclePhase.Bootstrap,
     }
     this.activeRuns.set(run.snapshot.runId, context)
     this.ledger.appendTimeline(run.snapshot.runId, 'run.recovered', undefined, {
       previousStatus: run.snapshot.status,
       authorityOwner: this.getManifest().authorityOwner,
     }, createISODateTime())
+    this.telemetrySink.onRecovery(run.snapshot.runId, { recoveredNodes: Object.keys(run.snapshot.nodes ?? {}).length })
     await this.reconcileCompletionSessions(run.snapshot.runId)
     await this.recoverStaleActiveLease(run.snapshot.runId)
     await this.refreshSnapshot(run.snapshot.runId, context, {
@@ -1868,255 +1954,491 @@ export class AntigravityDaemonRuntime {
   }
 
   private async drainRun(runId: string, context: ActiveRunContext): Promise<void> {
-    try {
-      await context.driver.drain(runId, {
-        signal: context.controller.signal,
-        maxTicks: 40,
-        onNodeStarted: async (nodeId) => {
-          this.ledger.appendTimeline(runId, 'node.started', nodeId, {}, createISODateTime())
-          await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
-        },
-        onNodeComplete: async (nodeId, result, lease) => {
-          const capturedAt = createISODateTime()
-          this.ledger.appendTimeline(runId, 'tribunal.started', nodeId, {
-            leaseId: lease.leaseId,
-            attempt: lease.attempt,
-          }, capturedAt)
-          const tribunalVerdict = await this.tribunalService.evaluate({
-            runId,
-            nodeId,
-            output: result.output,
-            state: await this.loadState(runId),
-            invocation: context.invocation,
-            definition: context.definition,
-            capturedAt,
-          })
-          if (tribunalVerdict) {
-            this.recordTribunalVerdict(runId, tribunalVerdict)
-          }
-          const tribunalSummary = this.buildTribunalSummary(tribunalVerdict)
-          const receipt = createExecutionReceipt({
-            runId,
-            nodeId,
-            result,
-            invocation: context.invocation,
-            definition: context.definition,
-            capturedAt,
-            traceId: crypto.randomUUID(),
-            tribunal: tribunalSummary,
-            judgeReports: tribunalVerdict ? [] : [],
-          })
-          const handoffs = createHandoffEnvelopes({
-            runId,
-            nodeId,
-            definition: context.definition,
-            receipt,
-            capturedAt: receipt.capturedAt,
-          })
-          const pendingCompletionReceipt: StepCompletionReceipt = {
-            leaseId: lease.leaseId,
-            runId,
-            nodeId,
-            attempt: lease.attempt,
-            status: receipt.status,
-            outputHash: receipt.outputHash,
-            model: receipt.model,
-            durationMs: receipt.durationMs,
-            completedAt: receipt.capturedAt,
-          }
-          this.stageCompletionSession(
-            runId,
-            lease,
-            pendingCompletionReceipt,
-            result,
-            tribunalSummary,
-            handoffs,
-            receipt,
-            capturedAt,
-          )
-          await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
-          const preparedSession = await this.prepareStepCompletionReceipt(runId, {
-            leaseId: lease.leaseId,
-            nodeId,
-            attempt: lease.attempt,
-            status: receipt.status,
-            outputHash: receipt.outputHash,
-            model: receipt.model,
-            durationMs: receipt.durationMs,
-            completedAt: receipt.capturedAt,
-          })
-          await this.commitStepCompletionReceipt(runId, {
-            leaseId: lease.leaseId,
-            nodeId,
-            attempt: lease.attempt,
-            status: receipt.status,
-            outputHash: receipt.outputHash,
-            model: receipt.model,
-            durationMs: receipt.durationMs,
-            completedAt: receipt.capturedAt,
-            preparedAt: preparedSession.preparedCompletionReceipt?.preparedAt,
-          })
-          const committedSession = this.ledger.getCompletionSession(runId, lease.leaseId, nodeId, lease.attempt)
-          if (!committedSession) {
-            throw new Error(`Missing committed completion session for ${runId}/${nodeId}`)
-          }
-          this.applyCommittedCompletionArtifacts(runId, committedSession)
-          this.ledger.appendTimeline(runId, 'node.completed', nodeId, {
-            receiptId: receipt.receiptId,
-            model: receipt.model,
-            durationMs: receipt.durationMs,
-          }, createISODateTime())
-          await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
-        },
-        onNodeFailed: async (nodeId, error) => {
-          this.ledger.appendTimeline(runId, 'node.failed', nodeId, {
-            error: error.message,
-          }, createISODateTime())
-          await this.refreshSnapshot(runId, context, {
-            explicitStatus: 'running',
-            verdict: error.message,
-          })
-        },
-        onNodeSkipped: async (nodeId, detail) => {
-          const state = await this.loadState(runId)
-          this.syncPolicySkippedNodes(runId, context.definition, state, new Map([[nodeId, {
-            reason: detail.reason,
-            strategyId: detail.strategyId,
-            triggerCondition: detail.triggerCondition,
-            sourceNodeId: detail.sourceNodeId,
-          }]]))
-          await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
-        },
-      })
-
-      const state = await this.loadState(runId)
-      const releaseDecision = this.evaluateReleaseGate(runId, context.definition, state)
-      const releaseVerdict = this.policyEngine.evaluateRelease({
-        runId,
-        decision: releaseDecision,
-        evaluatedAt: createISODateTime(),
-      })
-      this.recordPolicyVerdict(runId, 'policy.release', releaseVerdict)
-      if (releaseVerdict.effect === 'block') {
-        await this.ensureRunCompletedEvent(runId, 'paused')
-        this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
-          reason: releaseDecision.rationale.join('; '),
-        }, createISODateTime())
-        await this.refreshSnapshot(runId, context, {
-          explicitStatus: 'paused_for_human',
-          verdict: releaseDecision.rationale.join('; '),
-        })
-        await this.finalizeTraceBundle(runId)
-        await this.finalizePolicyReport(runId)
-        await this.finalizeInvariantReport(runId)
-        await this.finalizeReleaseDossier(runId)
-        await this.finalizeReleaseBundle(runId)
-        await this.finalizeCertificationRecord(runId)
-        return
-      }
-
-      const humanGate = deriveHumanApprovalRequirement(state)
-      const humanGateVerdict = this.policyEngine.evaluateHumanGate({
-        runId,
-        requirement: humanGate,
-        evaluatedAt: createISODateTime(),
-      })
-      this.recordPolicyVerdict(runId, 'policy.human-gate', humanGateVerdict, 'HITL')
-      if (humanGate.required) {
-        await this.ensureRunCompletedEvent(runId, 'paused')
-        this.ledger.appendTimeline(runId, 'run.paused_for_human', 'HITL', {
-          reason: humanGate.reason,
-        }, createISODateTime())
-        await this.refreshSnapshot(runId, context, {
-          explicitStatus: 'paused_for_human',
-          verdict: humanGate.reason,
-        })
-        await this.finalizeTraceBundle(runId)
-        await this.finalizePolicyReport(runId)
-        await this.finalizeInvariantReport(runId)
-        await this.finalizeReleaseDossier(runId)
-        await this.finalizeReleaseBundle(runId)
-        await this.finalizeCertificationRecord(runId)
-      } else {
-        this.ledger.appendTimeline(runId, 'run.completed', undefined, {}, createISODateTime())
-        const snapshot = await this.refreshSnapshot(runId, context, {
-          explicitStatus: 'completed',
-          completedAt: createISODateTime(),
-        })
-        const finalizedArtifacts = await this.finalizeTraceBundle(runId)
-        await this.finalizePolicyReport(runId)
-        const finalizedInvariantReport = await this.finalizeInvariantReport(runId)
-        const finalizedDossier = await this.finalizeReleaseDossier(runId)
-        const finalizedBundle = await this.finalizeReleaseBundle(runId)
-        const finalizedCertification = await this.finalizeCertificationRecord(runId)
-        if (
-          finalizedArtifacts.traceBundleVerdict.effect === 'block' ||
-          finalizedArtifacts.releaseAttestationVerdict.effect === 'block' ||
-          !finalizedInvariantReport.invariantReport.ok ||
-          finalizedDossier.releaseDossierVerdict.effect === 'block' ||
-          finalizedBundle.releaseBundleVerdict.effect === 'block' ||
-          !finalizedCertification.certificationRecordReport.ok
-        ) {
-          const rationale = [
-            ...finalizedArtifacts.traceBundleVerdict.rationale,
-            ...finalizedArtifacts.releaseAttestationVerdict.rationale,
-            ...(!finalizedInvariantReport.invariantReport.ok ? finalizedInvariantReport.invariantReport.issues : []),
-            ...finalizedDossier.releaseDossierVerdict.rationale,
-            ...finalizedBundle.releaseBundleVerdict.rationale,
-            ...(!finalizedCertification.certificationRecordReport.ok ? finalizedCertification.certificationRecordReport.issues : []),
-          ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
-          await this.ensureRunCompletedEvent(runId, 'paused')
-          this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
-            reason: rationale.join('; '),
-          }, createISODateTime())
-          await this.refreshSnapshot(runId, context, {
-            explicitStatus: 'paused_for_human',
-            verdict: rationale.join('; '),
-          })
-          return
-        }
-        this.recordRunMemory(context.invocation, context.definition, snapshot)
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (context.controller.signal.aborted) {
-        await this.ensureRunCompletedEvent(runId, 'cancelled')
-        this.ledger.appendTimeline(runId, 'run.cancelled', undefined, {
+    // PR-04: delegate lifecycle to AuthorityRuntimeKernel.
+    // The kernel manages phase transitions; runtime provides hook implementations.
+    const drainFn = () => this.executeDrain(runId, context)
+    const hooks: LifecycleHooks = {
+      onDrainComplete: async (_runId) => this.evaluateTerminalDecision(_runId, context),
+      onDrainCancelled: async (_runId, error) => {
+        const message = error.message
+        await this.ensureRunCompletedEvent(_runId, 'cancelled')
+        this.ledger.appendTimeline(_runId, 'run.cancelled', undefined, {
           reason: message,
         }, createISODateTime())
-        const snapshot = await this.refreshSnapshot(runId, context, {
+        this.telemetrySink.onRunCompleted(_runId, { status: 'cancelled' })
+        const snapshot = await this.refreshSnapshot(_runId, context, {
           explicitStatus: 'cancelled',
           verdict: message,
           completedAt: createISODateTime(),
         })
-        await this.finalizeTraceBundle(runId)
-        await this.finalizePolicyReport(runId)
-        await this.finalizeInvariantReport(runId)
-        await this.finalizeReleaseDossier(runId)
-        await this.finalizeReleaseBundle(runId)
-        await this.finalizeCertificationRecord(runId)
         this.recordRunMemory(context.invocation, context.definition, snapshot)
-      } else {
-        await this.ensureRunCompletedEvent(runId, 'failed')
-        this.ledger.appendTimeline(runId, 'run.failed', undefined, {
+        return { status: 'cancelled' as const, verdict: message, completedAt: createISODateTime() }
+      },
+      onDrainFailed: async (_runId, error) => {
+        const message = error.message
+        await this.ensureRunCompletedEvent(_runId, 'failed')
+        this.ledger.appendTimeline(_runId, 'run.failed', undefined, {
           error: message,
         }, createISODateTime())
-        const snapshot = await this.refreshSnapshot(runId, context, {
+        this.telemetrySink.onRunCompleted(_runId, { status: 'failed' })
+        const snapshot = await this.refreshSnapshot(_runId, context, {
           explicitStatus: 'failed',
           verdict: message,
           completedAt: createISODateTime(),
         })
-        await this.finalizeTraceBundle(runId)
-        await this.finalizePolicyReport(runId)
-        await this.finalizeInvariantReport(runId)
-        await this.finalizeReleaseDossier(runId)
-        await this.finalizeReleaseBundle(runId)
-        await this.finalizeCertificationRecord(runId)
         this.recordRunMemory(context.invocation, context.definition, snapshot)
-      }
-    } finally {
-      this.activeRuns.delete(runId)
+        return { status: 'failed' as const, verdict: message, completedAt: createISODateTime() }
+      },
+      onFinalize: async (_runId, _decision) => {
+        await this.finalizeAllArtifacts(_runId)
+      },
+      onCleanup: (_runId) => {
+        this.activeRuns.delete(_runId)
+      },
     }
+
+    await this.lifecycleKernel.orchestrate(
+      runId,
+      drainFn,
+      hooks,
+      () => context.controller.signal.aborted,
+    )
+  }
+
+  /**
+   * PR-04: Execute the drain pump — calls driver.drain() with node-level hooks.
+   * Separated from lifecycle coordination to keep concerns distinct.
+   */
+  private async executeDrain(runId: string, context: ActiveRunContext): Promise<void> {
+    await context.driver.drain(runId, {
+      signal: context.controller.signal,
+      maxTicks: 40,
+      onNodeStarted: async (nodeId) => {
+        this.ledger.appendTimeline(runId, 'node.started', nodeId, {}, createISODateTime())
+        this.telemetrySink.onNodeStarted(runId, nodeId, { attempt: 1 })
+        await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
+      },
+      onNodeComplete: async (nodeId, result, lease) => {
+        const capturedAt = createISODateTime()
+        this.ledger.appendTimeline(runId, 'tribunal.started', nodeId, {
+          leaseId: lease.leaseId,
+          attempt: lease.attempt,
+        }, capturedAt)
+        const tribunalVerdict = await this.tribunalService.evaluate({
+          runId,
+          nodeId,
+          output: result.output,
+          state: await this.loadState(runId),
+          invocation: context.invocation,
+          definition: context.definition,
+          capturedAt,
+        })
+        if (tribunalVerdict) {
+          this.recordTribunalVerdict(runId, tribunalVerdict)
+          // PR-07: dual-write policy_verdict.recorded
+          await this.emitDomainEvent(runId, DaemonDomainEventTypes.POLICY_VERDICT_RECORDED, {
+            nodeId,
+            verdictType: 'tribunal' as const,
+            verdict: tribunalVerdict.verdict ?? 'recorded',
+            details: { mode: tribunalVerdict.mode, confidence: tribunalVerdict.confidence },
+          }, nodeId)
+        }
+        const tribunalSummary = this.buildTribunalSummary(tribunalVerdict)
+        const receipt = createExecutionReceipt({
+          runId,
+          nodeId,
+          result,
+          invocation: context.invocation,
+          definition: context.definition,
+          capturedAt,
+          traceId: crypto.randomUUID(),
+          tribunal: tribunalSummary,
+          judgeReports: tribunalVerdict ? [] : [],
+        })
+        // PR-07: dual-write receipt.recorded
+        await this.emitDomainEvent(runId, DaemonDomainEventTypes.RECEIPT_RECORDED, {
+          receiptId: receipt.receiptId,
+          nodeId,
+          model: receipt.model ?? 'unknown',
+          status: receipt.status,
+          outputHash: receipt.outputHash,
+          durationMs: receipt.durationMs ?? 0,
+        }, nodeId)
+        const handoffs = createHandoffEnvelopes({
+          runId,
+          nodeId,
+          definition: context.definition,
+          receipt,
+          capturedAt: receipt.capturedAt,
+        })
+        // PR-07: dual-write handoff.recorded for each handoff
+        for (const handoff of handoffs) {
+          await this.emitDomainEvent(runId, DaemonDomainEventTypes.HANDOFF_RECORDED, {
+            handoffId: handoff.handoffId ?? crypto.randomUUID(),
+            nodeId,
+            sourceNodeId: handoff.sourceNodeId ?? nodeId,
+            targetNodeId: handoff.targetNodeId ?? 'unknown',
+          }, nodeId)
+        }
+        const pendingCompletionReceipt: StepCompletionReceipt = {
+          leaseId: lease.leaseId,
+          runId,
+          nodeId,
+          attempt: lease.attempt,
+          status: receipt.status,
+          outputHash: receipt.outputHash,
+          model: receipt.model,
+          durationMs: receipt.durationMs,
+          completedAt: receipt.capturedAt,
+        }
+        this.stageCompletionSession(
+          runId,
+          lease,
+          pendingCompletionReceipt,
+          result,
+          tribunalSummary,
+          handoffs,
+          receipt,
+          capturedAt,
+        )
+        // PR-07: dual-write completion_session.started
+        await this.emitDomainEvent(runId, DaemonDomainEventTypes.COMPLETION_SESSION_STARTED, {
+          leaseId: lease.leaseId,
+          nodeId,
+          attempt: lease.attempt,
+        }, nodeId)
+        await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
+        const preparedSession = await this.prepareStepCompletionReceipt(runId, {
+          leaseId: lease.leaseId,
+          nodeId,
+          attempt: lease.attempt,
+          status: receipt.status,
+          outputHash: receipt.outputHash,
+          model: receipt.model,
+          durationMs: receipt.durationMs,
+          completedAt: receipt.capturedAt,
+        })
+        await this.commitStepCompletionReceipt(runId, {
+          leaseId: lease.leaseId,
+          nodeId,
+          attempt: lease.attempt,
+          status: receipt.status,
+          outputHash: receipt.outputHash,
+          model: receipt.model,
+          durationMs: receipt.durationMs,
+          completedAt: receipt.capturedAt,
+          preparedAt: preparedSession.preparedCompletionReceipt?.preparedAt,
+        })
+        // PR-07: dual-write completion_session.committed
+        await this.emitDomainEvent(runId, DaemonDomainEventTypes.COMPLETION_SESSION_COMMITTED, {
+          leaseId: lease.leaseId,
+          nodeId,
+          attempt: lease.attempt,
+          status: receipt.status,
+          outputHash: receipt.outputHash,
+          model: receipt.model,
+          durationMs: receipt.durationMs,
+        }, nodeId)
+        const committedSession = this.ledger.getCompletionSession(runId, lease.leaseId, nodeId, lease.attempt)
+        if (!committedSession) {
+          throw new Error(`Missing committed completion session for ${runId}/${nodeId}`)
+        }
+        this.applyCommittedCompletionArtifacts(runId, committedSession)
+        this.ledger.appendTimeline(runId, 'node.completed', nodeId, {
+          receiptId: receipt.receiptId,
+          model: receipt.model,
+          durationMs: receipt.durationMs,
+        }, createISODateTime())
+        this.telemetrySink.onNodeCompleted(runId, nodeId, { durationMs: receipt.durationMs, degraded: tribunalVerdict?.mode !== 'remote' })
+        await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
+      },
+      onNodeFailed: async (nodeId, error) => {
+        this.ledger.appendTimeline(runId, 'node.failed', nodeId, {
+          error: error.message,
+        }, createISODateTime())
+        this.telemetrySink.onNodeFailed(runId, nodeId, { error: error.message })
+        await this.refreshSnapshot(runId, context, {
+          explicitStatus: 'running',
+          verdict: error.message,
+        })
+      },
+      onNodeSkipped: async (nodeId, detail) => {
+        const state = await this.loadState(runId)
+        this.syncPolicySkippedNodes(runId, context.definition, state, new Map([[nodeId, {
+          reason: detail.reason,
+          strategyId: detail.strategyId,
+          triggerCondition: detail.triggerCondition,
+          sourceNodeId: detail.sourceNodeId,
+        }]]))
+        await this.refreshSnapshot(runId, context, { explicitStatus: 'running' })
+      },
+      // PR-05: Daemon-authoritative transition hook — driver delegates skip/forceQueue
+      // decisions to daemon instead of evaluating them internally.
+      onTransition: async (nodeId, result, state) => {
+        return this.evaluateNodeTransition(nodeId, result, state, runId)
+      },
+    })
+  }
+
+  /**
+   * PR-05: Daemon-authoritative transition evaluation.
+   * The daemon is the sole owner of skip/forceQueue/route-override decisions.
+   * Uses evaluateTransition() as a pure rule engine, but the authority (decision
+   * to accept/reject) lives here, not in the driver.
+   */
+  private evaluateNodeTransition(
+    nodeId: string,
+    result: NodeExecutionResult,
+    state: WorkflowState,
+    runId: string,
+  ): { skipNodes: Array<{ nodeId: string; reason: string; strategyId?: string; triggerCondition?: string }>; forceQueue: string[] } {
+    const transition = evaluateTransition(nodeId, result.output, state)
+
+    // Record authority provenance in timeline
+    for (const skip of transition.skipNodes) {
+      this.ledger.appendTimeline(runId, 'authority.skip', skip.nodeId, {
+        sourceNodeId: nodeId,
+        reason: skip.reason,
+        strategyId: skip.strategyId,
+        authorityOwner: 'daemon',
+      }, createISODateTime())
+      // PR-07: dual-write skip.authorized
+      void this.emitDomainEvent(runId, DaemonDomainEventTypes.SKIP_AUTHORIZED, {
+        nodeId: skip.nodeId,
+        sourceNodeId: nodeId,
+        reason: skip.reason,
+        strategyId: skip.strategyId,
+        triggerCondition: skip.triggerCondition,
+        authorityOwner: 'daemon',
+      }, skip.nodeId)
+    }
+    for (const fqNodeId of transition.forceQueue) {
+      this.ledger.appendTimeline(runId, 'authority.forceQueue', fqNodeId, {
+        sourceNodeId: nodeId,
+        authorityOwner: 'daemon',
+      }, createISODateTime())
+    }
+
+    return transition
+  }
+
+  /**
+   * PR-07: Emit a daemon domain event — fail-open dual-write helper.
+   *
+   * Legacy ledger writes are authoritative. If the domain event append fails,
+   * the error is recorded in the timeline as `dual_write.failed` and the run
+   * continues. This preserves backward compatibility and allows rollback by
+   * simply not consuming the event log.
+   */
+  private async emitDomainEvent(
+    runId: string,
+    eventType: DaemonDomainEventType,
+    payload: Record<string, unknown>,
+    nodeId?: string,
+  ): Promise<void> {
+    try {
+      const sequence = await this.domainEventLog.getLatestSequence(runId)
+      const event = createDaemonDomainEvent(runId, eventType, sequence + 1, payload, nodeId)
+      await this.domainEventLog.append({
+        runId,
+        events: [event],
+        expectedSequence: sequence,
+      })
+    } catch (error) {
+      // Fail-open: log audit trail but do not crash the run
+      this.ledger.appendTimeline(runId, 'dual_write.failed', nodeId ?? 'system', {
+        eventType,
+        error: error instanceof Error ? error.message : String(error),
+      }, createISODateTime())
+    }
+  }
+
+  /**
+   * PR-10: Invoke daemon lifecycle stage hook via GovernanceGateway.
+   *
+   * This is diagnostics-only — the verdict is logged to timeline
+   * but does not replace the existing policyEngine.evaluateX path.
+   * The hook uses PR-09's evaluateRulesAgainstFacts pure evaluator.
+   */
+  private invokeDaemonStageHook(
+    stage: DaemonLifecycleStage,
+    runId: string,
+    ruleScope: string,
+    verdictScope: string,
+    evaluatedAt: string,
+    facts: Record<string, unknown>,
+    fallbackMessage: string,
+  ): void {
+    try {
+      const rules = this.policyEngine.exportPack().rules
+      const context: PolicyEvaluationContext = {
+        runId,
+        ruleScope,
+        verdictScope,
+        evaluatedAt,
+        facts,
+        fallbackMessage,
+      }
+      const verdict = evaluateRulesAgainstFacts(rules, context)
+      const stageVerdict: DaemonStageVerdict = {
+        stage,
+        effect: verdict.effect,
+        rationale: verdict.rationale,
+        verdictId: verdict.verdictId,
+        evaluatedAt: verdict.evaluatedAt,
+        scope: verdict.scope,
+      }
+      this.ledger.appendTimeline(runId, 'governance.stage_hook', 'system', {
+        stage: stageVerdict.stage,
+        effect: stageVerdict.effect,
+        verdictId: stageVerdict.verdictId,
+        scope: stageVerdict.scope,
+      }, evaluatedAt)
+    } catch {
+      // Stage hook is diagnostics-only; never crash the main path
+    }
+  }
+
+  /**
+   * PR-11: Evaluate policy via gateway stage — authoritative when useGatewayGovernance=true.
+   *
+   * Uses PR-09's evaluateRulesAgainstFacts pure evaluator with facts from adapters.
+   * Returns a PolicyVerdict compatible with recordPolicyVerdict.
+   * Logs governance.stage_verdict with stage metadata to timeline.
+   */
+  private evaluateViaGateway(
+    stage: DaemonLifecycleStage,
+    runId: string,
+    ruleScope: string,
+    verdictScope: string,
+    evaluatedAt: string,
+    facts: Record<string, unknown>,
+    fallbackMessage: string,
+  ): PolicyVerdict {
+    const rules = this.policyEngine.exportPack().rules
+    const context: PolicyEvaluationContext = {
+      runId,
+      ruleScope,
+      verdictScope,
+      evaluatedAt,
+      facts,
+      fallbackMessage,
+    }
+    const verdict = evaluateRulesAgainstFacts(rules, context)
+    // Log stage-tagged verdict to timeline for audit
+    this.ledger.appendTimeline(runId, 'governance.stage_verdict', 'system', {
+      stage,
+      effect: verdict.effect,
+      verdictId: verdict.verdictId,
+      scope: verdict.scope,
+      rationale: verdict.rationale,
+    }, evaluatedAt)
+    return verdict
+  }
+
+  /**
+   * PR-04: Evaluate terminal decision after drain completes successfully.
+   * Handles release gate, human gate, and artifact verification.
+   */
+  private async evaluateTerminalDecision(runId: string, context: ActiveRunContext): Promise<TerminalDecision> {
+    const state = await this.loadState(runId)
+    const releaseDecision = this.evaluateReleaseGate(runId, context.definition, state)
+    // PR-11: gateway cutover for release
+    const releaseEvaluatedAt = createISODateTime()
+    const releaseInput = { runId, decision: releaseDecision, evaluatedAt: releaseEvaluatedAt }
+    const releaseVerdict = this.useGatewayGovernance
+      ? this.evaluateViaGateway('daemon:terminal-release', runId, 'release', 'release', releaseEvaluatedAt,
+          createFactsForRelease(releaseInput), 'Release checks passed under the active policy pack.')
+      : this.policyEngine.evaluateRelease(releaseInput)
+    this.recordPolicyVerdict(runId, 'policy.release', releaseVerdict)
+    if (releaseVerdict.effect === 'block') {
+      await this.ensureRunCompletedEvent(runId, 'paused')
+      this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
+        reason: releaseDecision.rationale.join('; '),
+      }, createISODateTime())
+      await this.refreshSnapshot(runId, context, {
+        explicitStatus: 'paused_for_human',
+        verdict: releaseDecision.rationale.join('; '),
+      })
+      return { status: 'paused_for_human', verdict: releaseDecision.rationale.join('; ') }
+    }
+
+    const humanGate = deriveHumanApprovalRequirement(state)
+    // PR-11: gateway cutover for human-gate
+    const humanGateEvaluatedAt = createISODateTime()
+    const humanGateInput = { runId, requirement: humanGate, evaluatedAt: humanGateEvaluatedAt }
+    const humanGateVerdict = this.useGatewayGovernance
+      ? this.evaluateViaGateway('daemon:terminal-release', runId, 'human-gate', 'human-gate', humanGateEvaluatedAt,
+          createFactsForHumanGate(humanGateInput), 'Human gate checks passed under the active policy pack.')
+      : this.policyEngine.evaluateHumanGate(humanGateInput)
+    this.recordPolicyVerdict(runId, 'policy.human-gate', humanGateVerdict, 'HITL')
+    if (humanGate.required) {
+      await this.ensureRunCompletedEvent(runId, 'paused')
+      this.ledger.appendTimeline(runId, 'run.paused_for_human', 'HITL', {
+        reason: humanGate.reason,
+      }, createISODateTime())
+      await this.refreshSnapshot(runId, context, {
+        explicitStatus: 'paused_for_human',
+        verdict: humanGate.reason,
+      })
+      return { status: 'paused_for_human', verdict: humanGate.reason }
+    }
+
+    // Happy path: run completed
+    this.ledger.appendTimeline(runId, 'run.completed', undefined, {}, createISODateTime())
+    this.telemetrySink.onRunCompleted(runId, { status: 'completed' })
+    const snapshot = await this.refreshSnapshot(runId, context, {
+      explicitStatus: 'completed',
+      completedAt: createISODateTime(),
+    })
+    // Artifact verification — can still block run after finalization
+    const finalizedArtifacts = await this.finalizeTraceBundle(runId)
+    await this.finalizePolicyReport(runId)
+    const finalizedInvariantReport = await this.finalizeInvariantReport(runId)
+    const finalizedDossier = await this.finalizeReleaseDossier(runId)
+    const finalizedBundle = await this.finalizeReleaseBundle(runId)
+    const finalizedCertification = await this.finalizeCertificationRecord(runId)
+    if (
+      finalizedArtifacts.traceBundleVerdict.effect === 'block' ||
+      finalizedArtifacts.releaseAttestationVerdict.effect === 'block' ||
+      !finalizedInvariantReport.invariantReport.ok ||
+      finalizedDossier.releaseDossierVerdict.effect === 'block' ||
+      finalizedBundle.releaseBundleVerdict.effect === 'block' ||
+      !finalizedCertification.certificationRecordReport.ok
+    ) {
+      const rationale = [
+        ...finalizedArtifacts.traceBundleVerdict.rationale,
+        ...finalizedArtifacts.releaseAttestationVerdict.rationale,
+        ...(!finalizedInvariantReport.invariantReport.ok ? finalizedInvariantReport.invariantReport.issues : []),
+        ...finalizedDossier.releaseDossierVerdict.rationale,
+        ...finalizedBundle.releaseBundleVerdict.rationale,
+        ...(!finalizedCertification.certificationRecordReport.ok ? finalizedCertification.certificationRecordReport.issues : []),
+      ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
+      await this.ensureRunCompletedEvent(runId, 'paused')
+      this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
+        reason: rationale.join('; '),
+      }, createISODateTime())
+      await this.refreshSnapshot(runId, context, {
+        explicitStatus: 'paused_for_human',
+        verdict: rationale.join('; '),
+      })
+      return { status: 'paused_for_human', verdict: rationale.join('; ') }
+    }
+    this.recordRunMemory(context.invocation, context.definition, snapshot)
+    return { status: 'completed', completedAt: createISODateTime() }
+  }
+
+  /**
+   * PR-04: Consolidated artifact finalization — replaces the 6-call sequence
+   * that was previously duplicated across 4 terminal branches.
+   */
+  private async finalizeAllArtifacts(runId: string): Promise<void> {
+    await this.finalizeTraceBundle(runId)
+    await this.finalizePolicyReport(runId)
+    await this.finalizeInvariantReport(runId)
+    await this.finalizeReleaseDossier(runId)
+    await this.finalizeReleaseBundle(runId)
+    await this.finalizeCertificationRecord(runId)
   }
 
   private recordRunMemory(
@@ -2853,6 +3175,57 @@ export class AntigravityDaemonRuntime {
           }
         : undefined,
     })
+
+    // PR-08: shadow compare — parallel event-derived projection vs legacy
+    // diagnostics only, does not change the snapshot or authoritative verdict
+    try {
+      const domainEvents = await this.domainEventLog.load(runId)
+      if (domainEvents.length > 0) {
+        const eventProjection = buildEventDerivedProjection(domainEvents)
+        const legacyInput: LegacyProjectionInput = {
+          receipts: (this.ledger.listExecutionReceipts(runId) ?? []).map(r => ({
+            receiptId: r.receiptId,
+            nodeId: r.nodeId,
+            model: r.model,
+            status: r.status as string,
+            outputHash: r.outputHash ?? '',
+            durationMs: r.durationMs,
+          })),
+          completionSessions: completionSessions.map(s => ({
+            leaseId: s.leaseId,
+            nodeId: s.nodeId,
+            attempt: s.attempt,
+            phase: s.phase,
+            status: s.receipt?.status,
+            outputHash: s.receipt?.outputHash,
+          })),
+          handoffs: [], // handoffs not separately tracked in legacy ledger
+          skips: (this.ledger.listSkipDecisions(runId) ?? []).map(s => ({
+            nodeId: s.nodeId,
+            reason: s.reason,
+            strategyId: s.strategyId,
+          })),
+          verdicts: latestTribunalVerdict
+            ? [{ nodeId: latestTribunalVerdict.nodeId, verdict: latestTribunalVerdict.verdict }]
+            : [],
+        }
+        const compareResult = shadowCompare(legacyInput, eventProjection)
+        if (!compareResult.match) {
+          this.ledger.appendTimeline(runId, 'shadow_compare.drift', 'system', {
+            mismatchCount: compareResult.mismatches.length,
+            mismatches: compareResult.mismatches.slice(0, 10), // cap for readability
+            legacyCounts: compareResult.legacyCounts,
+            eventDerivedCounts: compareResult.eventDerivedCounts,
+          }, createISODateTime())
+        }
+      }
+    } catch (compareError) {
+      // Shadow compare is diagnostics-only; never crash refreshSnapshot
+      this.ledger.appendTimeline(runId, 'shadow_compare.error', 'system', {
+        error: compareError instanceof Error ? compareError.message : String(compareError),
+      }, createISODateTime())
+    }
+
     this.ledger.upsertRun(invocation, definition, snapshot)
     writeRunProjection(this.config.projectionPath, snapshot)
     return snapshot

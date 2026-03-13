@@ -87,4 +87,92 @@ describe('workflow output contracts', () => {
       },
     } as any)).toThrow(/requires at least one passing objective oracle/)
   })
+
+  // ── PR-01: challengerModelFamily tests ──────────────────────────────────
+
+  it('accepts VERIFY output with the new optional challengerModelFamily field', () => {
+    const verify = definition.steps.find(step => step.id === 'VERIFY')
+    expect(verify).toBeDefined()
+
+    const output = validateWorkflowStepOutput(verify!, {
+      verdict: 'AGREE',
+      assuranceVerdict: 'PASS',
+      challengerModelId: 'deepseek-v3',
+      challengerModelFamily: 'deepseek',
+      complianceCheck: 'PASS',
+      verificationReceiptSummary: 'Independent verification approved the merged plan with no critical defects.',
+      findings: [],
+      failureReasons: [],
+      oracleResults: [],
+    }, {
+      nodes: {
+        PARALLEL: {
+          output: {
+            codex: { modelId: 'codex' },
+            gemini: { modelId: 'gemini' },
+          },
+        },
+      },
+    } as any)
+
+    expect(output.challengerModelId).toBe('deepseek-v3')
+    expect(output.challengerModelFamily).toBe('deepseek')
+  })
+
+  it('uses challengerModelFamily for distinct-family check when present', () => {
+    const verify = definition.steps.find(step => step.id === 'VERIFY')
+    expect(verify).toBeDefined()
+
+    // challengerModelId starts with 'codex' but challengerModelFamily overrides
+    // to 'independent' — must NOT throw despite modelId prefix matching PARALLEL
+    const output = validateWorkflowStepOutput(verify!, {
+      verdict: 'AGREE',
+      assuranceVerdict: 'PASS',
+      challengerModelId: 'codex-independent-verifier',
+      challengerModelFamily: 'independent',
+      complianceCheck: 'PASS',
+      verificationReceiptSummary: 'Independent verification approved the merged plan with no critical defects.',
+      findings: [],
+      failureReasons: [],
+      oracleResults: [],
+    }, {
+      nodes: {
+        PARALLEL: {
+          output: {
+            codex: { modelId: 'codex' },
+            gemini: { modelId: 'gemini' },
+          },
+        },
+      },
+    } as any)
+
+    expect(output.challengerModelFamily).toBe('independent')
+  })
+
+  it('blocks VERIFY when challengerModelFamily matches a PARALLEL worker family', () => {
+    const verify = definition.steps.find(step => step.id === 'VERIFY')
+    expect(verify).toBeDefined()
+
+    expect(() => validateWorkflowStepOutput(verify!, {
+      verdict: 'AGREE',
+      assuranceVerdict: 'PASS',
+      challengerModelId: 'some-model-id',
+      challengerModelFamily: 'codex',
+      complianceCheck: 'PASS',
+      verificationReceiptSummary: 'Independent verification approved the merged plan with no critical defects.',
+      findings: [],
+      failureReasons: [],
+      oracleResults: [],
+    }, {
+      nodes: {
+        PARALLEL: {
+          output: {
+            codex: { modelId: 'codex' },
+            gemini: { modelId: 'gemini' },
+          },
+        },
+      },
+    } as any)).toThrow(/must be distinct from PARALLEL workers/)
+  })
 })
+

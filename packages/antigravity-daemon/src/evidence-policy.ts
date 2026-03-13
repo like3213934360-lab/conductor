@@ -505,7 +505,12 @@ function requirementSatisfied(
   if (requirement === 'verification-receipt') {
     const verifyOutput = state?.nodes.VERIFY?.output as Record<string, unknown> | undefined
     const analyzeOutput = state?.nodes.ANALYZE?.output as Record<string, unknown> | undefined
-    const challengerFamily = extractModelFamily(typeof verifyOutput?.challengerModelId === 'string' ? verifyOutput.challengerModelId : undefined)
+    // PR-01: prefer pre-extracted challengerModelFamily when available,
+    // fallback to deriving from challengerModelId for legacy data.
+    const challengerFamily =
+      (typeof verifyOutput?.challengerModelFamily === 'string' && (verifyOutput.challengerModelFamily as string).length > 0)
+        ? verifyOutput.challengerModelFamily as string
+        : extractModelFamily(typeof verifyOutput?.challengerModelId === 'string' ? verifyOutput.challengerModelId : undefined)
     const parallelOutput = state?.nodes.PARALLEL?.output as Record<string, unknown> | undefined
     const upstreamFamilies = [
       extractModelFamily((parallelOutput?.codex as Record<string, unknown> | undefined)?.modelId as string | undefined),

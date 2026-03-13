@@ -8,6 +8,8 @@ import type {
 } from './schema.js'
 import type { HmacSignatureEnvelope } from './trust-registry.js'
 import { canonicalJsonStringify, sha256Hex } from './trace-bundle-integrity.js'
+import type { VerificationSnapshot } from './verification-snapshot.js'
+import { extractRunIdentity } from './verification-snapshot.js'
 
 export const CERTIFICATION_RECORD_VERSION = '1.0.0' as const
 
@@ -48,17 +50,22 @@ export function buildCertificationRecordPayload(input: {
     agentCardSha256?: string
     verificationSummary?: 'verified' | 'warning'
   }>
+  /** PR-12: optional verification snapshot for unified source */
+  verificationSnapshot?: VerificationSnapshot
 }): CertificationRecordPayload {
+  const run = input.verificationSnapshot
+    ? extractRunIdentity(input.verificationSnapshot)
+    : {
+        runId: input.run.snapshot.runId,
+        workflowId: input.run.snapshot.workflowId,
+        workflowVersion: input.run.snapshot.workflowVersion,
+        workflowTemplate: input.run.snapshot.workflowTemplate,
+        status: input.run.snapshot.status,
+        verdict: input.run.snapshot.verdict,
+        completedAt: input.run.snapshot.completedAt,
+      }
   return {
-    run: {
-      runId: input.run.snapshot.runId,
-      workflowId: input.run.snapshot.workflowId,
-      workflowVersion: input.run.snapshot.workflowVersion,
-      workflowTemplate: input.run.snapshot.workflowTemplate,
-      status: input.run.snapshot.status,
-      verdict: input.run.snapshot.verdict,
-      completedAt: input.run.snapshot.completedAt,
-    },
+    run,
     releaseBundle: input.releaseBundle,
     releaseDossier: input.run.snapshot.releaseDossier,
     releaseArtifacts: input.run.snapshot.releaseArtifacts,
@@ -80,6 +87,7 @@ export function buildCertificationRecordPayload(input: {
       releaseGateEffect: input.blockedScopes.length > 0 ? 'block' : 'allow',
       blockedScopes: input.blockedScopes,
     },
+    snapshotDigest: input.verificationSnapshot?.snapshotDigest,
   }
 }
 
@@ -111,6 +119,8 @@ export function verifyCertificationRecordDocument(
   document: CertificationRecordDocument,
   run: RunDetails,
   expectedPayload: CertificationRecordPayload,
+  /** PR-13: expected snapshot digest for cross-artifact binding */
+  expectedSnapshotDigest?: string,
 ): CertificationRecordVerificationReport {
   const issues: string[] = []
   const payloadDigest = sha256Hex(canonicalJsonStringify(document.payload))
@@ -120,6 +130,10 @@ export function verifyCertificationRecordDocument(
   }
   if (document.payload.run.runId !== run.snapshot.runId) {
     issues.push('runId')
+  }
+  // PR-13: snapshotDigest consistency check
+  if (expectedSnapshotDigest && document.payload.snapshotDigest && document.payload.snapshotDigest !== expectedSnapshotDigest) {
+    issues.push('snapshotDigest')
   }
   if (canonicalJsonStringify(document.payload) !== canonicalJsonStringify(expectedPayload)) {
     issues.push('payload')

@@ -153,6 +153,8 @@ export type CPDebate = z.infer<typeof CPDebateSchema>
 export const CPVerifySchema = z.object({
   assuranceVerdict: z.enum(['PASS', 'REVISE', 'ESCALATE']),
   challengerModelId: z.string().optional(),
+  // PR-01: pre-extracted model family for distinct-family checks
+  challengerModelFamily: z.string().optional(),
   findings: z.array(z.object({
     type: z.enum(['error', 'warning', 'info']),
     message: z.string(),

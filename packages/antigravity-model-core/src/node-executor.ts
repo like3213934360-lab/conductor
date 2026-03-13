@@ -543,6 +543,26 @@ export class DebateExecutor implements NodeExecutor {
   }
 }
 
+/**
+ * Extract the leading family token from a model identifier.
+ *
+ * Examples:
+ *   'deepseek-v3'    → 'deepseek'
+ *   'codex:2025-03'  → 'codex'
+ *   'gemini/pro'     → 'gemini'
+ *   undefined        → ''
+ *
+ * NOTE: This is intentionally duplicated from evidence-policy.ts to avoid
+ * introducing a reverse dependency from model-core → daemon.
+ */
+function extractVerifyModelFamily(modelId: string | undefined): string {
+  return (modelId ?? '')
+    .trim()
+    .toLowerCase()
+    .split(/[:/@-]/)
+    .find(token => token.length > 0) ?? ''
+}
+
 // ── VERIFY 执行器 ───────────────────────────────────────────────────────────
 
 export class VerifyExecutor implements NodeExecutor {
@@ -602,11 +622,28 @@ export class VerifyExecutor implements NodeExecutor {
         ? 'VIOLATION'
         : 'PASS'
 
+    // PR-01: Derive challenger model identity from the actual runtime call
+    // result instead of hardcoding a fixed model name. This ensures
+    // evidence-policy distinct-family checks and release gate decisions
+    // operate on truthful model metadata.
+    const actualChallengerModelId = result.usedModel ?? 'unknown'
+    const actualChallengerModelFamily = extractVerifyModelFamily(result.usedModel)
+
+    if (!result.usedModel) {
+      console.warn('[VERIFY] WorkflowAskResult.usedModel is missing — falling back to "unknown". This indicates a contract violation in the upstream model client.', {
+        runId: ctx.runId,
+        nodeId: ctx.nodeId,
+        attempt: ctx.attempt,
+        timestamp: new Date().toISOString(),
+      })
+    }
+
     return {
       output: {
         verdict,
         assuranceVerdict: verdict === 'AGREE' ? 'PASS' : verdict === 'DISAGREE' ? 'REVISE' : 'REVISE',
-        challengerModelId: 'deepseek',
+        challengerModelId: actualChallengerModelId,
+        challengerModelFamily: actualChallengerModelFamily,
         complianceCheck: normalizedComplianceCheck,
         verificationReceiptSummary: `Verifier concluded ${verdict} with compliance=${normalizedComplianceCheck}; oraclePass=${oraclePass}; taskClass=${taskClass}.`,
         entropyGain: 15,

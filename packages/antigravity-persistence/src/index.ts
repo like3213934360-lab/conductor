@@ -15,7 +15,7 @@ export { SqliteClient } from './db/sqlite-client.js'
 export type { SqliteClientConfig } from './db/sqlite-client.js'
 export { runMigrations } from './db/migrations.js'
 
-// Memory
+// Memory — @experimental keyword recall, not vector search, not a correctness constraint
 export { MemoryManager } from './memory/memory-manager.js'
 export type { MemoryManagerConfig, MemoryRecall } from './memory/memory-manager.js'
 export { ManifestIndex } from './memory/manifest-index.js'
@@ -29,5 +29,5 @@ export type { SemanticFact, FactQuery } from './memory/semantic-memory.js'
 export { FileLock, withFileLock } from './event-store/file-lock.js'
 export type { FileLockOptions } from './event-store/file-lock.js'
 
-// Upcasting EventStore — Phase 4 装饰器
+// Upcasting EventStore — promoted to stable by PR-18 (daemon default read path)
 export { UpcastingEventStore } from './event-store/upcasting-event-store.js'

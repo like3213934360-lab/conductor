@@ -714,6 +714,8 @@ export const PolicyReportPayloadSchema = z.object({
     allowCount: z.number().int().nonnegative(),
     blockedScopes: z.array(z.string()),
   }),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type PolicyReportPayload = z.infer<typeof PolicyReportPayloadSchema>
@@ -856,6 +858,8 @@ export const ReleaseAttestationPayloadSchema = z.object({
     trustPolicyId: z.string(),
     digestSha256: z.string().optional(),
   }),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type ReleaseAttestationPayload = z.infer<typeof ReleaseAttestationPayloadSchema>
@@ -904,6 +908,8 @@ export const InvariantReportPayloadSchema = z.object({
   }),
   releaseArtifacts: ReleaseArtifactsSchema.default({}),
   invariantFailures: z.array(z.string()),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type InvariantReportPayload = z.infer<typeof InvariantReportPayloadSchema>
@@ -975,6 +981,8 @@ export const ReleaseDossierPayloadSchema = z.object({
     trustPolicyId: z.string(),
     digestSha256: z.string().optional(),
   }),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type ReleaseDossierPayload = z.infer<typeof ReleaseDossierPayloadSchema>
@@ -1042,6 +1050,8 @@ export const ReleaseBundlePayloadSchema = z.object({
     trustPolicyId: z.string(),
     digestSha256: z.string().optional(),
   }),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type ReleaseBundlePayload = z.infer<typeof ReleaseBundlePayloadSchema>
@@ -1087,6 +1097,8 @@ export const CertificationRecordPayloadSchema = z.object({
     releaseGateEffect: z.enum(['allow', 'block']),
     blockedScopes: z.array(z.string()).default([]),
   }),
+  /** PR-12: digest of the verification snapshot this payload was built from */
+  snapshotDigest: z.string().optional(),
 })
 
 export type CertificationRecordPayload = z.infer<typeof CertificationRecordPayloadSchema>
@@ -1128,6 +1140,10 @@ export const TransparencyLedgerEntrySchema = z.object({
   previousEntryDigest: z.string().optional(),
   entryDigest: z.string(),
   recordedAt: z.string(),
+  /** PR-13: verification snapshot digest for proof graph binding */
+  snapshotDigest: z.string().optional(),
+  /** PR-13: proof graph digest binding certification + bundle + snapshot */
+  proofGraphDigest: z.string().optional(),
 })
 
 export type TransparencyLedgerEntry = z.infer<typeof TransparencyLedgerEntrySchema>
@@ -1529,9 +1545,12 @@ export const RemoteWorkerSnapshotSchema = z.object({
   callbackAuthScheme: z.literal('hmac-sha256').optional(),
   callbackSignatureHeader: z.string().optional(),
   callbackTimestampHeader: z.string().optional(),
+  callbackSignatureEncoding: z.literal('hex').optional(),
   pollIntervalMs: z.number().int().positive().optional(),
   maxPollAttempts: z.number().int().positive().optional(),
   callbackTimeoutMs: z.number().int().positive().optional(),
+  /** PR-03: Maximum allowed clock skew for callback timestamp freshness */
+  maxCallbackSkewMs: z.number().int().positive().optional(),
   capabilities: z.array(z.string()),
   health: z.enum(['healthy', 'degraded', 'unreachable', 'unknown']),
   trustScore: z.number(),
@@ -1539,6 +1558,14 @@ export const RemoteWorkerSnapshotSchema = z.object({
   preferredNodeIds: z.array(z.string()).default([]),
   verification: RemoteWorkerVerificationSchema,
   lastError: z.string().optional(),
+  /** PR-14: whether this worker is eligible for delegation under the current trust mode */
+  delegable: z.boolean().default(true),
+  /** PR-14: reason delegation is blocked (present when delegable is false) */
+  delegationBlockReason: z.enum([
+    'worker_not_healthy',
+    'trust_score_below_min',
+    'verification_not_verified',
+  ]).optional(),
 })
 
 export type RemoteWorkerSnapshot = z.infer<typeof RemoteWorkerSnapshotSchema>
@@ -1569,6 +1596,8 @@ export const RemoteWorkerListResponseSchema = z.object({
   refreshedAt: z.string(),
   workers: z.array(RemoteWorkerSnapshotSchema),
   discoveryIssues: z.array(RemoteWorkerDiscoveryIssueSchema).default([]),
+  /** PR-14: current trust mode for delegation decisions */
+  trustMode: z.enum(['strict', 'relaxed']).optional(),
 })
 
 export type RemoteWorkerListResponse = z.infer<typeof RemoteWorkerListResponseSchema>

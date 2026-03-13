@@ -24,7 +24,7 @@ interface PolicyEvaluation {
   evidenceIds?: string[]
 }
 
-type PolicyFacts = Record<string, PolicyFactValue>
+export type PolicyFacts = Record<string, PolicyFactValue>
 
 export interface PreflightPolicyInput {
   runId: string
@@ -501,7 +501,7 @@ function readEvidenceIds(rule: PolicyRule, facts: PolicyFacts): string[] | undef
     .filter((item): item is string => Boolean(item))
 }
 
-function createFactsForPreflight(input: PreflightPolicyInput): PolicyFacts {
+export function createFactsForPreflight(input: PreflightPolicyInput): PolicyFacts {
   return {
     governanceAllowed: input.governance.allowed,
     governanceWorstStatus: input.governance.worstStatus,
@@ -513,7 +513,7 @@ function createFactsForPreflight(input: PreflightPolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForRelease(input: ReleasePolicyInput): PolicyFacts {
+export function createFactsForRelease(input: ReleasePolicyInput): PolicyFacts {
   return {
     releaseDecision: input.decision.effect,
     releaseRationale: input.decision.rationale,
@@ -525,14 +525,14 @@ function createFactsForRelease(input: ReleasePolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForHumanGate(input: HumanGatePolicyInput): PolicyFacts {
+export function createFactsForHumanGate(input: HumanGatePolicyInput): PolicyFacts {
   return {
     humanGateRequired: input.requirement.required,
     humanGateReason: input.requirement.reason ?? 'Human approval required before final release.',
   }
 }
 
-function createFactsForApproval(input: ApprovalPolicyInput): PolicyFacts {
+export function createFactsForApproval(input: ApprovalPolicyInput): PolicyFacts {
   const approvedBy = trimValue(input.approvedBy)
   return {
     gateId: input.gateId,
@@ -542,7 +542,7 @@ function createFactsForApproval(input: ApprovalPolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForResume(input: ResumePolicyInput): PolicyFacts {
+export function createFactsForResume(input: ResumePolicyInput): PolicyFacts {
   const approvedBy = trimValue(input.approvedBy)
   return {
     approvedBy: approvedBy ?? '',
@@ -551,7 +551,7 @@ function createFactsForResume(input: ResumePolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForSkip(input: SkipPolicyInput): PolicyFacts {
+export function createFactsForSkip(input: SkipPolicyInput): PolicyFacts {
   return {
     nodeId: input.nodeId,
     strategyId: input.strategyId,
@@ -563,7 +563,7 @@ function createFactsForSkip(input: SkipPolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForTraceBundle(input: TraceBundlePolicyInput): PolicyFacts {
+export function createFactsForTraceBundle(input: TraceBundlePolicyInput): PolicyFacts {
   const issueList = [
     ...input.report.mismatchedEntries.map(item => `mismatch:${item}`),
     ...input.report.missingEntries.map(item => `missing:${item}`),
@@ -587,7 +587,7 @@ function createFactsForTraceBundle(input: TraceBundlePolicyInput): PolicyFacts {
   }
 }
 
-function createFactsForReleaseAttestation(input: ReleaseAttestationPolicyInput): PolicyFacts {
+export function createFactsForReleaseAttestation(input: ReleaseAttestationPolicyInput): PolicyFacts {
   return {
     releaseAttestationOk: input.ok,
     releaseAttestationPath: input.attestationPath,
@@ -600,7 +600,7 @@ function createFactsForReleaseAttestation(input: ReleaseAttestationPolicyInput):
   }
 }
 
-function createFactsForReleaseDossier(input: ReleaseDossierPolicyInput): PolicyFacts {
+export function createFactsForReleaseDossier(input: ReleaseDossierPolicyInput): PolicyFacts {
   return {
     releaseDossierOk: input.ok,
     releaseDossierPath: input.dossierPath,
@@ -613,7 +613,7 @@ function createFactsForReleaseDossier(input: ReleaseDossierPolicyInput): PolicyF
   }
 }
 
-function createFactsForReleaseBundle(input: ReleaseBundlePolicyInput): PolicyFacts {
+export function createFactsForReleaseBundle(input: ReleaseBundlePolicyInput): PolicyFacts {
   return {
     releaseBundleOk: input.ok,
     releaseBundlePath: input.bundlePath,
@@ -624,6 +624,55 @@ function createFactsForReleaseBundle(input: ReleaseBundlePolicyInput): PolicyFac
       ? `Release bundle verification failed: ${input.issues.join('; ')}`
       : 'Release bundle verification failed.',
   }
+}
+
+/**
+ * PR-09: Typed context for the pure policy evaluator.
+ * This is the stable interface that GovernanceGateway (PR-10+) will use.
+ */
+export interface PolicyEvaluationContext {
+  runId: string
+  ruleScope: string
+  verdictScope: string
+  evaluatedAt: string
+  facts: PolicyFacts
+  fallbackMessage: string
+}
+
+/**
+ * PR-09: Pure policy evaluator — no side effects, no state mutation.
+ *
+ * Takes rules and facts, returns a PolicyVerdict.
+ * This can be called independently by GovernanceGateway without
+ * needing a DaemonPolicyEngine instance.
+ */
+export function evaluateRulesAgainstFacts(
+  rules: readonly PolicyRule[],
+  context: PolicyEvaluationContext,
+): PolicyVerdict {
+  const scopeRules = rules.filter(rule => rule.scope === context.ruleScope && rule.enabled !== false)
+  const evaluations: PolicyEvaluation[] = []
+
+  for (const rule of scopeRules) {
+    if (rule.when && !evaluateCondition(rule.when, context.facts)) {
+      continue
+    }
+    const rationaleText = renderTemplate(rule.message ?? rule.description, context.facts)
+    evaluations.push({
+      effect: rule.effect,
+      rationale: [rationaleText],
+      evidenceIds: readEvidenceIds(rule, context.facts),
+    })
+  }
+
+  if (evaluations.length === 0) {
+    evaluations.push({
+      effect: 'allow',
+      rationale: [context.fallbackMessage],
+    })
+  }
+
+  return mergeEvaluations(context.runId, context.verdictScope, context.evaluatedAt, evaluations)
 }
 
 export class DaemonPolicyEngine {
@@ -775,36 +824,8 @@ export class DaemonPolicyEngine {
     })
   }
 
-  private evaluateScope(params: {
-    runId: string
-    ruleScope: string
-    verdictScope: string
-    evaluatedAt: string
-    facts: PolicyFacts
-    fallbackMessage: string
-  }): PolicyVerdict {
-    const rules = this.pack.rules.filter(rule => rule.scope === params.ruleScope && rule.enabled !== false)
-    const evaluations: PolicyEvaluation[] = []
-
-    for (const rule of rules) {
-      if (rule.when && !evaluateCondition(rule.when, params.facts)) {
-        continue
-      }
-      const rationaleText = renderTemplate(rule.message ?? rule.description, params.facts)
-      evaluations.push({
-        effect: rule.effect,
-        rationale: [rationaleText],
-        evidenceIds: readEvidenceIds(rule, params.facts),
-      })
-    }
-
-    if (evaluations.length === 0) {
-      evaluations.push({
-        effect: 'allow',
-        rationale: [params.fallbackMessage],
-      })
-    }
-
-    return mergeEvaluations(params.runId, params.verdictScope, params.evaluatedAt, evaluations)
+  private evaluateScope(params: PolicyEvaluationContext): PolicyVerdict {
+    // PR-09: delegate to pure evaluator
+    return evaluateRulesAgainstFacts(this.pack.rules, params)
   }
 }

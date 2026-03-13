@@ -307,3 +307,65 @@ export async function loadRunStateFromEvents(
   const events = await eventStore.load({ runId })
   return projectStateFromEvents(runId, events)
 }
+
+// ─── PR-18E: Diagnostics wrapper ─────────────────────────────────────────────
+
+/** Diagnostics returned alongside the projected state */
+export interface ReplayDiagnostics {
+  /** Total events loaded from store */
+  eventCount: number
+  /** Events that had upcast errors (payload._upcastError === true) */
+  upcastErrorCount: number
+  /** Events with unknown type (skipped by projector) */
+  unknownTypeCount: number
+  /** Whether the stream was completely empty */
+  emptyStream: boolean
+  /** Event types seen in the stream */
+  eventTypes: string[]
+}
+
+export interface ReplayResult {
+  state: WorkflowState
+  diagnostics: ReplayDiagnostics
+}
+
+/**
+ * Load run state from events with diagnostics.
+ *
+ * Same as loadRunStateFromEvents but returns structured diagnostics
+ * for observability: event counts, upcast errors, unknown types, empty streams.
+ */
+export async function loadRunStateWithDiagnostics(
+  eventStore: EventStore,
+  runId: string,
+): Promise<ReplayResult> {
+  const events = await eventStore.load({ runId })
+
+  const knownTypes = new Set([
+    'RUN_CREATED', 'RUN_CONTEXT_CAPTURED', 'NODE_QUEUED', 'NODE_STARTED',
+    'NODE_HEARTBEAT', 'NODE_COMPLETED', 'NODE_FAILED', 'NODE_SKIPPED',
+    'RISK_ASSESSED', 'COMPLIANCE_EVALUATED', 'CHECKPOINT_SAVED',
+    'ROUTE_DECIDED', 'RUN_VERIFIED', 'RUN_COMPLETED',
+  ])
+
+  let upcastErrorCount = 0
+  let unknownTypeCount = 0
+  const eventTypes: string[] = []
+
+  for (const event of events) {
+    if (!eventTypes.includes(event.type)) eventTypes.push(event.type)
+    if ((event.payload as Record<string, unknown>)._upcastError === true) upcastErrorCount++
+    if (!knownTypes.has(event.type)) unknownTypeCount++
+  }
+
+  return {
+    state: projectStateFromEvents(runId, events),
+    diagnostics: {
+      eventCount: events.length,
+      upcastErrorCount,
+      unknownTypeCount,
+      emptyStream: events.length === 0,
+      eventTypes,
+    },
+  }
+}
