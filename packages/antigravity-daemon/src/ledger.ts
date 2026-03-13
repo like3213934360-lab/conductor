@@ -138,6 +138,21 @@ function ensureDaemonSchema(db: Database.Database): void {
       ON daemonCompletionSessions(runId, updatedAt);
   `)
 
+  apply(4, `
+    CREATE TABLE IF NOT EXISTS daemonActiveGates (
+      runId TEXT PRIMARY KEY,
+      gateId TEXT NOT NULL,
+      pauseReason TEXT NOT NULL,
+      pausedAt TEXT NOT NULL
+    );
+  `)
+}
+
+interface ActiveGateRow {
+  runId: string
+  gateId: string
+  pauseReason: string
+  pausedAt: string
 }
 
 interface RunRow {
@@ -182,6 +197,9 @@ export class DaemonLedger {
   private readonly upsertCompletionSessionStmt: Database.Statement
   private readonly getCompletionSessionStmt: Database.Statement
   private readonly listCompletionSessionsStmt: Database.Statement
+  private readonly upsertActiveGateStmt: Database.Statement
+  private readonly deleteActiveGateStmt: Database.Statement
+  private readonly listActiveGatesStmt: Database.Statement
 
   constructor(db: Database.Database) {
     ensureDaemonSchema(db)
@@ -319,6 +337,20 @@ export class DaemonLedger {
       FROM daemonCompletionSessions
       WHERE runId = ?
       ORDER BY updatedAt ASC
+    `)
+    this.upsertActiveGateStmt = this.db.prepare(`
+      INSERT INTO daemonActiveGates (runId, gateId, pauseReason, pausedAt)
+      VALUES (@runId, @gateId, @pauseReason, @pausedAt)
+      ON CONFLICT(runId) DO UPDATE SET
+        gateId = excluded.gateId,
+        pauseReason = excluded.pauseReason,
+        pausedAt = excluded.pausedAt
+    `)
+    this.deleteActiveGateStmt = this.db.prepare(`
+      DELETE FROM daemonActiveGates WHERE runId = ?
+    `)
+    this.listActiveGatesStmt = this.db.prepare(`
+      SELECT runId, gateId, pauseReason, pausedAt FROM daemonActiveGates
     `)
   }
 
@@ -552,5 +584,30 @@ export class DaemonLedger {
   listCompletionSessions(runId: string): CompletionSessionRecord[] {
     const rows = this.listCompletionSessionsStmt.all(runId) as PayloadRow[]
     return rows.map(row => JSON.parse(row.payloadJson) as CompletionSessionRecord)
+  }
+
+  // ─── P1-1: active gate persistence ───────────────────────────
+
+  upsertActiveGate(gate: { runId: string; gateId: string; pauseReason: string; pausedAt: string }): void {
+    this.upsertActiveGateStmt.run({
+      runId: gate.runId,
+      gateId: gate.gateId,
+      pauseReason: gate.pauseReason,
+      pausedAt: gate.pausedAt,
+    })
+  }
+
+  deleteActiveGate(runId: string): void {
+    this.deleteActiveGateStmt.run(runId)
+  }
+
+  listActiveGates(): Array<{ runId: string; gateId: string; pauseReason: string; pausedAt: string }> {
+    const rows = this.listActiveGatesStmt.all() as ActiveGateRow[]
+    return rows.map(row => ({
+      runId: row.runId,
+      gateId: row.gateId,
+      pauseReason: row.pauseReason,
+      pausedAt: row.pausedAt,
+    }))
   }
 }

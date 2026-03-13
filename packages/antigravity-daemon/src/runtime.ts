@@ -187,6 +187,8 @@ export interface DaemonConfig {
   telemetrySink?: RuntimeTelemetrySink
   /** PR-08E: shadow compare read mode (default: 'shadow') */
   shadowCompareReadMode?: ShadowCompareReadMode
+  /** C3: strict replay mode — when true, upcast errors, unknown events, malformed payloads throw (default: false) */
+  strictReplayMode?: boolean
 }
 
 interface ActiveRunContext {
@@ -319,6 +321,8 @@ export class AntigravityDaemonRuntime {
     this.eventStore = new UpcastingEventStore(
       new JsonlEventStore({ dataDir: this.config.dataDir }),
       createDaemonUpcastingRegistry(),
+      // C3 fix: pass strictReplayMode from config — enables strict event replay when configured
+      { strictReplayMode: this.config.strictReplayMode ?? false },
     )
     this.checkpointStore = new SqliteCheckpointStore(this.sqliteClient.getDatabase())
     this.memoryManager = new MemoryManager({ db: this.sqliteClient.getDatabase() })
@@ -346,6 +350,14 @@ export class AntigravityDaemonRuntime {
     this.policyEngine.reload()
     this.benchmarkSourceRegistry.load()
     await this.remoteWorkers.refresh()
+    // P1-1: restore persisted active gates into memory Map
+    for (const gate of this.ledger.listActiveGates()) {
+      this.activeGates.set(gate.runId, {
+        gateId: gate.gateId,
+        pauseReason: gate.pauseReason,
+        pausedAt: gate.pausedAt,
+      })
+    }
     await this.recoverInterruptedRuns()
   }
 
@@ -466,6 +478,8 @@ export class AntigravityDaemonRuntime {
     const start = await bootstrapDaemonRun(createRunRequest(invocation, graph), {
       eventStore: this.eventStore,
       checkpointStore: this.checkpointStore,
+      // B4 fix: pass unified runtime gateway — bootstrap uses same policy controls as runtime
+      gateway: this.governanceGateway,
     })
     this.activeRuns.set(start.runId, context)
     this.ledger.upsertWorkflowDefinition(definition)
@@ -872,8 +886,9 @@ export class AntigravityDaemonRuntime {
       return { ...existing, snapshot: pausedSnapshot }
     }
 
-    // A2 fix: clear active gate on successful resume
+    // A2 fix: clear active gate on successful resume — both memory and persistent store
     this.activeGates.delete(parsed.runId)
+    this.ledger.deleteActiveGate(parsed.runId)
     await this.ensureRunCompletedEvent(parsed.runId, 'completed')
     this.ledger.appendTimeline(parsed.runId, 'run.resumed', undefined, {
       approvedBy: parsed.approvedBy ?? 'unknown',
@@ -2491,6 +2506,8 @@ export class AntigravityDaemonRuntime {
         pauseReason: releaseDecision.rationale.join('; '),
         pausedAt: createISODateTime(),
       })
+      // P1-1: persist active gate to SQLite
+      this.ledger.upsertActiveGate({ runId, gateId: 'release', pauseReason: releaseDecision.rationale.join('; '), pausedAt: this.activeGates.get(runId)!.pausedAt })
       return { status: 'paused_for_human', verdict: releaseDecision.rationale.join('; ') }
     }
 
@@ -2518,9 +2535,11 @@ export class AntigravityDaemonRuntime {
       // A2 fix: register 'HITL' as active gate for this paused run
       this.activeGates.set(runId, {
         gateId: 'HITL',
-        pauseReason: humanGate.reason,
+        pauseReason: humanGate.reason ?? 'human approval required',
         pausedAt: createISODateTime(),
       })
+      // P1-1: persist active gate to SQLite
+      this.ledger.upsertActiveGate({ runId, gateId: 'HITL', pauseReason: humanGate.reason ?? 'human approval required', pausedAt: this.activeGates.get(runId)!.pausedAt })
       return { status: 'paused_for_human', verdict: humanGate.reason }
     }
 
@@ -2562,6 +2581,8 @@ export class AntigravityDaemonRuntime {
         pauseReason: rationale.join('; '),
         pausedAt: createISODateTime(),
       })
+      // P1-1: persist active gate to SQLite
+      this.ledger.upsertActiveGate({ runId, gateId: 'artifact-recheck', pauseReason: rationale.join('; '), pausedAt: this.activeGates.get(runId)!.pausedAt })
       return { status: 'paused_for_human', verdict: rationale.join('; ') }
     }
     const finalizedRun = await this.getRequiredRun(runId)
