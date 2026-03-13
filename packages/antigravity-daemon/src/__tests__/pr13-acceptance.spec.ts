@@ -88,6 +88,7 @@ describe('PR-13: transparency ledger proofGraphDigest', () => {
       ledgerPath, runId: 'r-1',
       certificationRecordPath: '/cert1', certificationRecordDigest: 'cd1',
       releaseBundlePath: '/bundle1', releaseBundleDigest: 'bd1',
+      snapshotDigest: 'snap-a',
       proofGraphDigest: 'pg-aaa',
     })
     // Read the first entry, extract its digest for chaining
@@ -118,12 +119,14 @@ describe('PR-13: transparency ledger proofGraphDigest', () => {
       ledgerPath, runId: 'r-1',
       certificationRecordPath: '/cert', certificationRecordDigest: 'cd1',
       releaseBundlePath: '/bundle', releaseBundleDigest: 'bd1',
+      snapshotDigest: 'snap-same',
       proofGraphDigest: 'pg-same',
     })
     appendTransparencyLedgerEntry({
       ledgerPath, runId: 'r-1',
       certificationRecordPath: '/cert2', certificationRecordDigest: 'cd2',
       releaseBundlePath: '/bundle2', releaseBundleDigest: 'bd2',
+      snapshotDigest: 'snap-same',
       proofGraphDigest: 'pg-same', // same
     })
     const report = verifyTransparencyLedger(ledgerPath)

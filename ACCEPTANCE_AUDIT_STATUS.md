@@ -11,16 +11,17 @@
 
 已确认的工程验证结果：
 
-- `npm test`：通过，453/455（2 项 pre-existing doc assertion failure）
+- `npm test`：通过，459/459
 - `npm run smoke:daemon`：通过
 - `npm run smoke:mcp`：通过
-- 主链证据集成测试：13/13 通过（`mainline-evidence.spec.ts`）
+- runtime 主链证据测试：4/4 通过（`runtime-mainline-evidence.spec.ts`）
+- component 级主链佐证测试：13/13 通过（`mainline-evidence.spec.ts`）
 
 ### P0 修复确认
 
 1. ✅ `GovernanceGateway` 已成为 runtime 默认治理入口 — `evaluateDaemonLifecycleStage()` 是唯一权威入口，5 个决策点全部经由 gateway
 2. ✅ PR-07 domain-event dual-write 已切换为 durable JSONL — `JsonlDaemonDomainEventLog` 替换 `InMemoryDaemonDomainEventLog`，`recordPolicyVerdict()` 双写 ledger + domain event
-3. ✅ `VerificationSnapshot` / `proofGraphDigest` 已进入生产 artifact 主链 — snapshot 在 `evaluateTerminalDecision()` 一次构建，注入全部 4 个 artifact builder
+3. ✅ `VerificationSnapshot` / `proofGraphDigest` 已进入生产 artifact 主链 — snapshot 在终态 finalization 前冻结，6 个 snapshot-carrying 终态 artifact 共享同一 `snapshotDigest`
 
 ## 2. PR 验收总表
 
@@ -37,8 +38,8 @@
 | PR-09 | pure evaluator / facts adapter | 已抽出并被 runtime helper 使用 | 是 | 是 | 较充分 | ✅ 通过 |
 | PR-10 | GovernanceGateway stage hooks | **已修复** — `evaluateDaemonLifecycleStage()` 是唯一权威入口 | 是 | 是 | 充分 | ✅ 通过 |
 | PR-11 | governance cutover | **已修复** — 5 个决策点全部切到 gateway，`evaluateViaGateway()` 已删除 | 是 | 是 | 充分 | ✅ 通过 |
-| PR-12 | verification snapshot / artifact ref | **已修复** — snapshot 在终端决策前构建，注入 4 个 builder | 是 | 是 | 充分 | ✅ 通过 |
-| PR-13 | cross-artifact verifier / proof graph | **已修复** — `snapshotDigest` 非空，verification snapshot 是 frozen single source | 是 | 是 | 充分 | ✅ 通过 |
+| PR-12 | verification snapshot / artifact ref | **已修复** — snapshot 在终态 finalization 前构建，6 个 snapshot-carrying terminal artifacts 共享同一 `snapshotDigest` | 是 | 是 | 充分 | ✅ 通过 |
+| PR-13 | cross-artifact verifier / proof graph | **已修复** — certification record 与 transparency ledger 均带非空 `proofGraphDigest`，绑定完整终态 artifact 集 | 是 | 是 | 充分 | ✅ 通过 |
 | PR-14 | strict trust mode | strict mode 真正收缩 delegation 集合 | 是 | 是 | 较充分 | ✅ 通过 |
 | PR-15 | package boundary | 生产代码已无跨包 `src` import | 是 | 是 | 一般 | ✅ 通过 |
 | PR-16 | daemon/MCP standalone build & smoke | 独立 package/build/smoke 可跑 | 是 | 是 | 较充分 | ✅ 通过 |
@@ -63,7 +64,7 @@
 - ✅ `RuntimeTelemetrySink` 已挂到主 runtime 关键点
 - ✅ **GovernanceGateway 已成为默认治理入口** — `evaluateDaemonLifecycleStage()` 覆盖 5 个决策点
 - ✅ **domain-event dual-write 是 durable canonical path** — JSONL + vertex dual-write
-- ✅ **VerificationSnapshot / proofGraphDigest 已进入生产 artifact 主链** — 4 个 builder 共享 frozen snapshot
+- ✅ **VerificationSnapshot / proofGraphDigest 已进入生产 artifact 主链** — 6 个 snapshot-carrying terminal artifacts 共享 frozen snapshot，certification + transparency 带同一 `proofGraphDigest`
 - ✅ **shadow compare 使用 durable 数据源** — 读模式 gate 默认 `shadow`，parity 日志就绪
 - ✅ **recovery diagnostics 在默认 loadState 路径** — 异常推送 timeline/telemetry
 
@@ -82,7 +83,7 @@
 ### P1 — 大部分已修复
 
 - ~~能力分类与 README 仍把未主链化能力写成 stable/mainline~~ → 文档已同步更新
-- ~~测试全绿，但多处只验证 helper/source-check，不验证主链~~ → 13 条主链证据集成测试已补充
+- ~~测试全绿，但多处只验证 helper/source-check，不验证主链~~ → 已补 `runtime-mainline-evidence.spec.ts`（runtime integration）与 `mainline-evidence.spec.ts`（component evidence）
 
 ### P2 — 低优先级
 
@@ -100,8 +101,9 @@
 | `verification-snapshot.spec.ts` | 9 | snapshot build/digest |
 | `builder-snapshot-wiring.spec.ts` | 13 | 4 builder snapshot injection |
 | `cross-artifact-verifier.spec.ts` | 12 | cross-artifact digest binding |
-| `mainline-evidence.spec.ts` | 13 | 5 mainline capability E2E |
-| **Total mainline-specific** | **72** | |
+| `mainline-evidence.spec.ts` | 13 | mainline subsystem/component evidence |
+| `runtime-mainline-evidence.spec.ts` | 4 | runtime-level finalization / artifact-chain evidence |
+| **Total mainline-specific** | **80** | |
 
 ### 代码变更摘要
 
@@ -112,7 +114,8 @@
 | `jsonl-domain-event-log.ts` | 新建 | durable JSONL event log |
 | `event-derived-projection.ts` | 增强 | `ShadowCompareReadMode` 类型 |
 | `runtime-telemetry-sink.ts` | 增强 | 2 个可选 telemetry 方法 |
-| `mainline-evidence.spec.ts` | 新建 | 13 条主链证据集成测试 |
+| `mainline-evidence.spec.ts` | 新建 | 13 条 component 级主链佐证测试 |
+| `runtime-mainline-evidence.spec.ts` | 新建 | 4 条 runtime 主链证据测试 |
 
 ## 6. 最终归档建议
 

@@ -23,11 +23,11 @@ These capabilities are on the daemon default path and form real runtime constrai
 | Trust Registry + strict delegation filter | `trust-registry.ts`, `remote-worker.ts` | ✅ 通过 | `strictTrustMode` changes delegable worker set. |
 | RuntimeTelemetrySink hook surface | `runtime.ts` → `RuntimeTelemetrySink` | ✅ 通过 | Key hooks wired + `onShadowCompareDrift` / `onRecoveryDiagnostics` optional methods. |
 | Daemon / MCP standalone build and smoke lanes | `package.json`, `smoke.mjs` | ✅ 通过 | Pass. |
-| Release artifact export / verify chain | 6 artifact types | ✅ 通过 | All builders receive `VerificationSnapshot`, `snapshotDigest` is non-empty. |
+| Release artifact export / verify chain | 6 snapshot-carrying terminal artifact types | ✅ 通过 | Policy / invariant / attestation / dossier / bundle / certification all receive `VerificationSnapshot`; `snapshotDigest` is non-empty. |
 | **GovernanceGateway default governance mainline** | `runtime.ts` → `GovernanceGateway.evaluateDaemonLifecycleStage()` | ✅ 通过 | **唯一权威入口**，5 个决策点全部经由 gateway。 |
 | **Durable domain event dual-write** | `runtime.ts` → `JsonlDaemonDomainEventLog` | ✅ 通过 | JSONL 持久化，`recordPolicyVerdict()` 双写 ledger + domain event。 |
-| **VerificationSnapshot production artifact chain** | `runtime.ts` → `buildVerificationSnapshot()` | ✅ 通过 | 在 `evaluateTerminalDecision()` 冻结，注入 4 个 artifact builder。 |
-| **proofGraphDigest / cross-artifact binding** | certification record → `snapshotDigest` | ✅ 通过 | Frozen snapshot digest 绑定全部终端 artifact。 |
+| **VerificationSnapshot production artifact chain** | `runtime.ts` → terminal artifact finalization | ✅ 通过 | 在终态 finalization 前冻结，注入 6 个 snapshot-carrying terminal artifacts。 |
+| **proofGraphDigest / cross-artifact binding** | certification record + transparency ledger | ✅ 通过 | 基于完整终态 artifact 集计算并写入 certification record / transparency ledger。 |
 | **Shadow compare with durable source** | `runtime.ts` → `refreshSnapshot()` | ✅ 通过 | 读模式 gate 默认 `shadow`，durable JSONL 数据源。 |
 | **Recovery diagnostics in default path** | `runtime.ts` → `loadState()` | ✅ 通过 | 使用 `loadRunStateWithDiagnostics()`，异常推送 timeline/telemetry。 |
 

@@ -18,6 +18,7 @@ export interface CertificationRecordDocument {
   generatedAt: string
   payload: CertificationRecordPayload
   payloadDigest: string
+  proofGraphDigest?: string
   signaturePolicyId?: string
   signature?: HmacSignatureEnvelope
 }
@@ -96,12 +97,14 @@ export function serializeCertificationRecordSignable(document: {
   generatedAt: string
   payload: CertificationRecordPayload
   payloadDigest: string
+  proofGraphDigest?: string
 }): string {
   return canonicalJsonStringify({
     version: document.version,
     generatedAt: document.generatedAt,
     payload: document.payload,
     payloadDigest: document.payloadDigest,
+    proofGraphDigest: document.proofGraphDigest,
   })
 }
 

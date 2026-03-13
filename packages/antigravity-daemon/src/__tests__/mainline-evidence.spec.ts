@@ -1,7 +1,11 @@
 /**
- * Task-09: Mainline Evidence Integration Tests
+ * Task-09: Mainline Component Evidence Tests
  *
- * Validates the 5 mainline capabilities introduced by the governance remediation:
+ * Validates low-level subsystem evidence for the 5 mainline capabilities introduced by the governance remediation.
+ * This file does NOT replace runtime-level integration tests; it exists to keep
+ * focused component assertions close to the supporting modules.
+ *
+ * Covered subsystems:
  * 1. GovernanceGateway cutover — all stages route through gateway
  * 2. Durable JSONL domain event log — events survive across instances
  * 3. VerificationSnapshot / snapshotDigest artifact chain binding
@@ -41,7 +45,7 @@ function cleanupDir(dir: string): void {
 
 // ─── 1. GovernanceGateway Cutover ────────────────────────────────────────────
 
-describe('Task-09(1): GovernanceGateway cutover integration', () => {
+describe('Task-09(1): GovernanceGateway component evidence', () => {
   it('evaluateDaemonLifecycleStage returns DaemonStageVerdict with correct stage', () => {
     const gateway = new GovernanceGateway(new TrustFactorService(), getDefaultControlPack())
     const rules = getDefaultControlPack()
@@ -116,7 +120,7 @@ describe('Task-09(1): GovernanceGateway cutover integration', () => {
 
 // ─── 2. Durable Domain Event Log ─────────────────────────────────────────────
 
-describe('Task-09(2): Durable JSONL domain event restart', () => {
+describe('Task-09(2): Durable JSONL domain event component evidence', () => {
   let tmpDir: string
 
   beforeEach(() => { tmpDir = createTmpDir() })
@@ -170,7 +174,7 @@ describe('Task-09(2): Durable JSONL domain event restart', () => {
 
 // ─── 3. VerificationSnapshot / snapshotDigest binding ────────────────────────
 
-describe('Task-09(3): snapshotDigest / proofGraphDigest end-to-end', () => {
+describe('Task-09(3): snapshotDigest / proofGraphDigest component evidence', () => {
   it('buildVerificationSnapshot produces non-empty snapshotDigest', () => {
     const snapshot = buildVerificationSnapshot({
       run: {
@@ -227,7 +231,7 @@ describe('Task-09(3): snapshotDigest / proofGraphDigest end-to-end', () => {
 
 // ─── 4. Shadow Compare Durable Source ────────────────────────────────────────
 
-describe('Task-09(4): Shadow compare durable source', () => {
+describe('Task-09(4): Shadow compare durable source component evidence', () => {
   it('DEFAULT_SHADOW_COMPARE_READ_MODE is shadow', () => {
     expect(DEFAULT_SHADOW_COMPARE_READ_MODE).toBe('shadow')
   })
@@ -282,7 +286,7 @@ describe('Task-09(4): Shadow compare durable source', () => {
 
 // ─── 5. Recovery Diagnostics ─────────────────────────────────────────────────
 
-describe('Task-09(5): Recovery diagnostics integration', () => {
+describe('Task-09(5): Recovery diagnostics component evidence', () => {
   it('loadRunStateWithDiagnostics returns state and diagnostics', async () => {
     // Use a mock event store that returns no events
     const mockStore = {

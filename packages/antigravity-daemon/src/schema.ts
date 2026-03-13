@@ -1108,6 +1108,7 @@ export const CertificationRecordDocumentSchema = z.object({
   generatedAt: z.string(),
   payload: CertificationRecordPayloadSchema,
   payloadDigest: z.string(),
+  proofGraphDigest: z.string().optional(),
   signaturePolicyId: z.string().optional(),
   signature: z.object({
     scheme: z.literal('hmac-sha256'),

@@ -247,6 +247,16 @@ interface FinalizedCertificationRecord {
   certificationRecordReport: VerifyCertificationRecordReport
 }
 
+interface FinalizedTerminalArtifacts {
+  verificationSnapshot: VerificationSnapshot
+  traceArtifacts: FinalizedReleaseArtifacts
+  policyReport: FinalizedPolicyReport
+  invariantReport: FinalizedInvariantReport
+  releaseDossier: FinalizedReleaseDossier
+  releaseBundle: FinalizedReleaseBundle
+  certificationRecord: FinalizedCertificationRecord
+}
+
 export class AntigravityDaemonRuntime {
   private readonly config: DaemonConfig
   private readonly sqliteClient: SqliteClient
@@ -263,6 +273,8 @@ export class AntigravityDaemonRuntime {
   private readonly activeRuns = new Map<string, ActiveRunContext>()
   /** PR-12: frozen verification snapshots per run — built once at finalization time */
   private readonly verificationSnapshots = new Map<string, VerificationSnapshot>()
+  /** Artifact finalization cache — guarantees at-most-once terminal artifact generation per run */
+  private readonly terminalArtifactFinalizations = new Map<string, Promise<FinalizedTerminalArtifacts>>()
   /** PR-04: lifecycle coordinator — manages phase boundaries for authority runs */
   private readonly lifecycleKernel = new AuthorityRuntimeKernel()
   /** PR-07E: durable JSONL domain event log for dual-write alongside legacy ledger */
@@ -1418,6 +1430,7 @@ export class AntigravityDaemonRuntime {
     let releaseAttestationReport: FinalizedReleaseArtifacts['releaseAttestationReport']
     try {
       const run = await this.getRequiredRun(runId)
+      const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
       const generatedAt = createISODateTime()
       const documentBase = createReleaseAttestationDocument(
         buildReleaseAttestationPayload({
@@ -1426,7 +1439,7 @@ export class AntigravityDaemonRuntime {
           policyVerdicts: this.ledger.listPolicyVerdicts(runId),
           trustRegistry: this.getTrustRegistry(),
           benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
-          verificationSnapshot: this.verificationSnapshots.get(runId),
+          verificationSnapshot,
         }),
         generatedAt,
       )
@@ -1531,6 +1544,7 @@ export class AntigravityDaemonRuntime {
 
   private async finalizeReleaseDossier(runId: string): Promise<FinalizedReleaseDossier> {
     const run = await this.getRequiredRun(runId)
+    const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
     const verifyRunReport = await this.verifyRun(runId)
     const policyVerdicts = this.ledger.listPolicyVerdicts(runId)
     const generatedAt = createISODateTime()
@@ -1543,7 +1557,7 @@ export class AntigravityDaemonRuntime {
       policyVerdicts,
       trustRegistry: this.getTrustRegistry(),
       benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
-      verificationSnapshot: this.verificationSnapshots.get(runId),
+      verificationSnapshot,
     })
     const document = createReleaseDossierDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1599,6 +1613,7 @@ export class AntigravityDaemonRuntime {
 
   private async finalizeInvariantReport(runId: string): Promise<FinalizedInvariantReport> {
     const run = await this.getRequiredRun(runId)
+    const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
     const verifyRunReport = await this.verifyRun(runId)
     const generatedAt = createISODateTime()
     const reportDir = path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_INVARIANT_REPORTS_DIR)
@@ -1608,6 +1623,7 @@ export class AntigravityDaemonRuntime {
       run,
       releaseArtifacts: verifyRunReport.releaseArtifacts,
       invariantFailures: verifyRunReport.invariantFailures,
+      verificationSnapshot,
     })
     const document = createInvariantReportDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1650,6 +1666,7 @@ export class AntigravityDaemonRuntime {
 
   private async finalizePolicyReport(runId: string): Promise<FinalizedPolicyReport> {
     const run = await this.getRequiredRun(runId)
+    const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
     const verdicts = this.ledger.listPolicyVerdicts(runId)
     const generatedAt = createISODateTime()
     const reportDir = path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_POLICY_REPORTS_DIR)
@@ -1658,6 +1675,7 @@ export class AntigravityDaemonRuntime {
     const payload = buildPolicyReportPayload({
       run,
       verdicts,
+      verificationSnapshot,
     })
     const document = createPolicyReportDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1698,6 +1716,7 @@ export class AntigravityDaemonRuntime {
       await this.finalizePolicyReport(runId)
     }
     const run = await this.getRequiredRun(runId)
+    const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
     const verifyRunReport = await this.verifyRun(runId)
     const generatedAt = createISODateTime()
     const bundleDir = path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_RELEASE_BUNDLES_DIR)
@@ -1712,7 +1731,7 @@ export class AntigravityDaemonRuntime {
       certificationRecord: run.snapshot.certificationRecord ?? this.getPlannedCertificationRecordSummary(runId),
       trustRegistry: this.getTrustRegistry(),
       benchmarkSourceRegistry: this.getBenchmarkSourceRegistry(),
-      verificationSnapshot: this.verificationSnapshots.get(runId),
+      verificationSnapshot,
     })
     const document = createReleaseBundleDocument(payload, generatedAt)
     const signing = this.trustRegistry.signHmacPayload({
@@ -1780,6 +1799,7 @@ export class AntigravityDaemonRuntime {
       await this.finalizeReleaseBundle(runId)
     }
     const latestRun = await this.getRequiredRun(runId)
+    const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
     const bundle = await this.getReleaseBundle(runId)
     const generatedAt = createISODateTime()
     const recordDir = path.join(this.config.dataDir, ANTIGRAVITY_DAEMON_CERTIFICATION_RECORDS_DIR)
@@ -1805,10 +1825,21 @@ export class AntigravityDaemonRuntime {
         agentCardSha256: worker.agentCardSha256,
         verificationSummary: worker.verification?.summary,
       })),
-      // PR-12: inject frozen verification snapshot for snapshotDigest
-      verificationSnapshot: this.verificationSnapshots.get(runId),
+      verificationSnapshot,
     })
     const document = createCertificationRecordDocument(payload, generatedAt)
+    const { snapshotDigest: certSnapshotDigest, artifactInputs } = this.collectProofGraphArtifactInputs(runId, latestRun, document)
+    const { crossArtifactReport, proofGraphDigest } = verifyArtifactChainConsistency({
+      artifacts: artifactInputs,
+      snapshotDigest: certSnapshotDigest,
+    })
+
+    if (!proofGraphDigest) {
+      throw new Error(`Cannot append certification proof graph for run ${runId}: proofGraphDigest is empty`)
+    }
+
+    document.proofGraphDigest = proofGraphDigest
+
     const signing = this.trustRegistry.signHmacPayload({
       scope: 'certification-record',
       payload: serializeCertificationRecordSignable(document),
@@ -1822,17 +1853,6 @@ export class AntigravityDaemonRuntime {
     fs.writeFileSync(recordPath, JSON.stringify(document, null, 2), 'utf8')
 
     const { report } = verifyCertificationRecordArtifact(latestRun, recordPath, payload, this.trustRegistry)
-
-    // PR-13: compute proof graph digest from available artifact payloads
-    const certSnapshotDigest = payload.snapshotDigest
-    const artifactInputs = [
-      { kind: 'certification-record', runId, snapshotDigest: certSnapshotDigest, payloadDigest: document.payloadDigest },
-      { kind: 'release-bundle', runId, snapshotDigest: bundle.document.payload.snapshotDigest, payloadDigest: bundle.document.payloadDigest },
-    ]
-    const { crossArtifactReport, proofGraphDigest } = verifyArtifactChainConsistency({
-      artifacts: artifactInputs,
-      snapshotDigest: certSnapshotDigest,
-    })
 
     // PR-13: log cross-artifact issues to timeline
     if (!crossArtifactReport.ok) {
@@ -2003,10 +2023,12 @@ export class AntigravityDaemonRuntime {
         return { status: 'failed' as const, verdict: message, completedAt: createISODateTime() }
       },
       onFinalize: async (_runId, _decision) => {
-        await this.finalizeAllArtifacts(_runId)
+        await this.ensureTerminalArtifactsFinalized(_runId)
       },
       onCleanup: (_runId) => {
         this.activeRuns.delete(_runId)
+        this.verificationSnapshots.delete(_runId)
+        this.terminalArtifactFinalizations.delete(_runId)
       },
     }
 
@@ -2267,11 +2289,11 @@ export class AntigravityDaemonRuntime {
   }
 
   /**
-   * PR-10: Invoke daemon lifecycle stage hook via GovernanceGateway.
+   * PR-10/11: Evaluate a daemon lifecycle governance stage via GovernanceGateway.
    *
-   * This is diagnostics-only — the verdict is logged to timeline
-   * Replaces both invokeDaemonStageHook (diagnostics-only) and evaluateViaGateway (conditional helper).
-   * GovernanceGateway is the authoritative policy decision point for all daemon lifecycle stages.
+   * Replaces the old diagnostics-only hook path and the helper-only cutover path.
+   * GovernanceGateway is the authoritative policy decision point for daemon
+   * lifecycle governance; runtime consumes the returned verdict directly.
    */
   private evaluateGovernanceStage(
     stage: DaemonLifecycleStage,
@@ -2365,12 +2387,82 @@ export class AntigravityDaemonRuntime {
     // Happy path: run completed
     this.ledger.appendTimeline(runId, 'run.completed', undefined, {}, createISODateTime())
     this.telemetrySink.onRunCompleted(runId, { status: 'completed' })
-    const snapshot = await this.refreshSnapshot(runId, context, {
+    await this.refreshSnapshot(runId, context, {
       explicitStatus: 'completed',
       completedAt: createISODateTime(),
     })
-    // Artifact verification — can still block run after finalization
-    // PR-12: build verification snapshot once before any artifact finalization
+    const finalizedArtifacts = await this.ensureTerminalArtifactsFinalized(runId)
+    if (
+      finalizedArtifacts.traceArtifacts.traceBundleVerdict.effect === 'block' ||
+      finalizedArtifacts.traceArtifacts.releaseAttestationVerdict.effect === 'block' ||
+      !finalizedArtifacts.invariantReport.invariantReport.ok ||
+      finalizedArtifacts.releaseDossier.releaseDossierVerdict.effect === 'block' ||
+      finalizedArtifacts.releaseBundle.releaseBundleVerdict.effect === 'block' ||
+      !finalizedArtifacts.certificationRecord.certificationRecordReport.ok
+    ) {
+      const rationale = [
+        ...finalizedArtifacts.traceArtifacts.traceBundleVerdict.rationale,
+        ...finalizedArtifacts.traceArtifacts.releaseAttestationVerdict.rationale,
+        ...(!finalizedArtifacts.invariantReport.invariantReport.ok ? finalizedArtifacts.invariantReport.invariantReport.issues : []),
+        ...finalizedArtifacts.releaseDossier.releaseDossierVerdict.rationale,
+        ...finalizedArtifacts.releaseBundle.releaseBundleVerdict.rationale,
+        ...(!finalizedArtifacts.certificationRecord.certificationRecordReport.ok ? finalizedArtifacts.certificationRecord.certificationRecordReport.issues : []),
+      ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
+      await this.ensureRunCompletedEvent(runId, 'paused')
+      this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
+        reason: rationale.join('; '),
+      }, createISODateTime())
+      await this.refreshSnapshot(runId, context, {
+        explicitStatus: 'paused_for_human',
+        verdict: rationale.join('; '),
+      })
+      return { status: 'paused_for_human', verdict: rationale.join('; ') }
+    }
+    const finalizedRun = await this.getRequiredRun(runId)
+    this.recordRunMemory(context.invocation, context.definition, finalizedRun.snapshot)
+    return { status: 'completed', completedAt: createISODateTime() }
+  }
+
+  private async ensureTerminalArtifactsFinalized(runId: string): Promise<FinalizedTerminalArtifacts> {
+    const existing = this.terminalArtifactFinalizations.get(runId)
+    if (existing) {
+      return existing
+    }
+
+    const finalizationPromise = (async () => {
+      const verificationSnapshot = await this.ensureVerificationSnapshot(runId)
+      const traceArtifacts = await this.finalizeTraceBundle(runId)
+      const policyReport = await this.finalizePolicyReport(runId)
+      const invariantReport = await this.finalizeInvariantReport(runId)
+      const releaseDossier = await this.finalizeReleaseDossier(runId)
+      const releaseBundle = await this.finalizeReleaseBundle(runId)
+      const certificationRecord = await this.finalizeCertificationRecord(runId)
+      return {
+        verificationSnapshot,
+        traceArtifacts,
+        policyReport,
+        invariantReport,
+        releaseDossier,
+        releaseBundle,
+        certificationRecord,
+      }
+    })()
+
+    this.terminalArtifactFinalizations.set(runId, finalizationPromise)
+    try {
+      return await finalizationPromise
+    } catch (error) {
+      this.terminalArtifactFinalizations.delete(runId)
+      throw error
+    }
+  }
+
+  private async ensureVerificationSnapshot(runId: string): Promise<VerificationSnapshot> {
+    const existing = this.verificationSnapshots.get(runId)
+    if (existing) {
+      return existing
+    }
+
     const verifyReport = await this.verifyRun(runId)
     const run = await this.getRequiredRun(runId)
     const verdicts = this.ledger.listPolicyVerdicts(runId)
@@ -2385,53 +2477,70 @@ export class AntigravityDaemonRuntime {
       snapshotDigest: verificationSnapshot.snapshotDigest,
       verificationOk: verificationSnapshot.verification.ok,
     }, verificationSnapshot.generatedAt)
-    const finalizedArtifacts = await this.finalizeTraceBundle(runId)
-    await this.finalizePolicyReport(runId)
-    const finalizedInvariantReport = await this.finalizeInvariantReport(runId)
-    const finalizedDossier = await this.finalizeReleaseDossier(runId)
-    const finalizedBundle = await this.finalizeReleaseBundle(runId)
-    const finalizedCertification = await this.finalizeCertificationRecord(runId)
-    if (
-      finalizedArtifacts.traceBundleVerdict.effect === 'block' ||
-      finalizedArtifacts.releaseAttestationVerdict.effect === 'block' ||
-      !finalizedInvariantReport.invariantReport.ok ||
-      finalizedDossier.releaseDossierVerdict.effect === 'block' ||
-      finalizedBundle.releaseBundleVerdict.effect === 'block' ||
-      !finalizedCertification.certificationRecordReport.ok
-    ) {
-      const rationale = [
-        ...finalizedArtifacts.traceBundleVerdict.rationale,
-        ...finalizedArtifacts.releaseAttestationVerdict.rationale,
-        ...(!finalizedInvariantReport.invariantReport.ok ? finalizedInvariantReport.invariantReport.issues : []),
-        ...finalizedDossier.releaseDossierVerdict.rationale,
-        ...finalizedBundle.releaseBundleVerdict.rationale,
-        ...(!finalizedCertification.certificationRecordReport.ok ? finalizedCertification.certificationRecordReport.issues : []),
-      ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
-      await this.ensureRunCompletedEvent(runId, 'paused')
-      this.ledger.appendTimeline(runId, 'run.blocked_for_human', undefined, {
-        reason: rationale.join('; '),
-      }, createISODateTime())
-      await this.refreshSnapshot(runId, context, {
-        explicitStatus: 'paused_for_human',
-        verdict: rationale.join('; '),
-      })
-      return { status: 'paused_for_human', verdict: rationale.join('; ') }
-    }
-    this.recordRunMemory(context.invocation, context.definition, snapshot)
-    return { status: 'completed', completedAt: createISODateTime() }
+    return verificationSnapshot
   }
 
-  /**
-   * PR-04: Consolidated artifact finalization — replaces the 6-call sequence
-   * that was previously duplicated across 4 terminal branches.
-   */
-  private async finalizeAllArtifacts(runId: string): Promise<void> {
-    await this.finalizeTraceBundle(runId)
-    await this.finalizePolicyReport(runId)
-    await this.finalizeInvariantReport(runId)
-    await this.finalizeReleaseDossier(runId)
-    await this.finalizeReleaseBundle(runId)
-    await this.finalizeCertificationRecord(runId)
+  private readArtifactDocument<T>(artifactPath: string, label: string): T {
+    if (!fs.existsSync(artifactPath)) {
+      throw new Error(`Missing ${label} artifact at ${artifactPath}`)
+    }
+    return JSON.parse(fs.readFileSync(artifactPath, 'utf8')) as T
+  }
+
+  private collectProofGraphArtifactInputs(
+    runId: string,
+    run: RunDetails,
+    certificationDocument: CertificationRecordDocument,
+  ): {
+    snapshotDigest: string
+    artifactInputs: Array<{ kind: string; runId: string; snapshotDigest: string; payloadDigest: string }>
+  } {
+    const policyReportPath = run.snapshot.policyReport?.path
+    const invariantReportPath = run.snapshot.invariantReport?.path
+    const releaseAttestationPath = run.snapshot.releaseArtifacts.releaseAttestation?.path
+    const releaseDossierPath = run.snapshot.releaseDossier?.path
+    const releaseBundlePath = run.snapshot.releaseBundle?.path
+
+    if (!policyReportPath || !invariantReportPath || !releaseAttestationPath || !releaseDossierPath || !releaseBundlePath) {
+      throw new Error(`Cannot compute proof graph for run ${runId}: missing terminal artifact path(s)`)
+    }
+
+    const policyDocument = this.readArtifactDocument<PolicyReportDocument>(policyReportPath, 'policy report')
+    const invariantDocument = this.readArtifactDocument<InvariantReportDocument>(invariantReportPath, 'invariant report')
+    const attestationDocument = this.readArtifactDocument<ReleaseAttestationDocument>(releaseAttestationPath, 'release attestation')
+    const dossierDocument = this.readArtifactDocument<ReleaseDossierDocument>(releaseDossierPath, 'release dossier')
+    const bundleDocument = this.readArtifactDocument<ReleaseBundleDocument>(releaseBundlePath, 'release bundle')
+
+    const artifactInputs = [
+      { kind: 'policy-report', runId, snapshotDigest: policyDocument.payload.snapshotDigest, payloadDigest: policyDocument.payloadDigest },
+      { kind: 'invariant-report', runId, snapshotDigest: invariantDocument.payload.snapshotDigest, payloadDigest: invariantDocument.payloadDigest },
+      { kind: 'release-attestation', runId, snapshotDigest: attestationDocument.payload.snapshotDigest, payloadDigest: attestationDocument.payloadDigest },
+      { kind: 'release-dossier', runId, snapshotDigest: dossierDocument.payload.snapshotDigest, payloadDigest: dossierDocument.payloadDigest },
+      { kind: 'release-bundle', runId, snapshotDigest: bundleDocument.payload.snapshotDigest, payloadDigest: bundleDocument.payloadDigest },
+      { kind: 'certification-record', runId, snapshotDigest: certificationDocument.payload.snapshotDigest, payloadDigest: certificationDocument.payloadDigest },
+    ]
+
+    const missingSnapshotKinds = artifactInputs
+      .filter(input => !input.snapshotDigest)
+      .map(input => input.kind)
+    if (missingSnapshotKinds.length > 0) {
+      throw new Error(`Cannot compute proof graph for run ${runId}: missing snapshotDigest in ${missingSnapshotKinds.join(', ')}`)
+    }
+
+    const snapshotDigests = new Set(artifactInputs.map(input => input.snapshotDigest))
+    if (snapshotDigests.size !== 1) {
+      throw new Error(`Cannot compute proof graph for run ${runId}: inconsistent snapshotDigest across terminal artifacts`)
+    }
+
+    return {
+      snapshotDigest: artifactInputs[0]!.snapshotDigest!,
+      artifactInputs: artifactInputs.map(input => ({
+        kind: input.kind,
+        runId: input.runId,
+        snapshotDigest: input.snapshotDigest!,
+        payloadDigest: input.payloadDigest,
+      })),
+    }
   }
 
   private recordRunMemory(

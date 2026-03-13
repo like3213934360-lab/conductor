@@ -37,10 +37,10 @@ export function appendTransparencyLedgerEntry(input: {
   releaseBundlePath: string
   releaseBundleDigest: string
   recordedAt?: string
-  /** PR-13: verification snapshot digest */
-  snapshotDigest?: string
-  /** PR-13: proof graph digest */
-  proofGraphDigest?: string
+  /** PR-13: verification snapshot digest — required for new writes */
+  snapshotDigest: string
+  /** PR-13: proof graph digest — required for new writes */
+  proofGraphDigest: string
 }): TransparencyLedgerEntry {
   const existing = readTransparencyLedgerEntries(input.ledgerPath)
   const last = existing.at(-1)
