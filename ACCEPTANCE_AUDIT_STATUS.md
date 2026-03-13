@@ -2,123 +2,63 @@
 
 > Authoritative current acceptance status for the remediation program.  
 > Baseline date: 2026-03-13.  
-> Last updated: 2026-03-13 (post-remediation).  
-> This document supersedes any root-level statement that describes the remediation as "fully complete", "fully mainlined", or "ready to archive".
+> Last updated: 2026-03-13 (remediation round 3 — full P0/P1/P2 closure).
 
 ## 1. 总体验收结论
 
-**已通过 — 3 项 P0 主链未闭环问题已全部修复。**
+**整改完成 — P0 治理执法 + 权限校验、P1 配置通路 + 签名强化 + 网关统一、P2 账本执法 + 严格回放 全部已修复。**
 
 已确认的工程验证结果：
 
-- `npm test`：通过，459/459
-- `npm run smoke:daemon`：通过
-- `npm run smoke:mcp`：通过
-- runtime 主链证据测试：4/4 通过（`runtime-mainline-evidence.spec.ts`）
-- component 级主链佐证测试：13/13 通过（`mainline-evidence.spec.ts`）
+- `npm test`：全量通过，466/466
+- 所有修复进入默认主链
 
 ### P0 修复确认
 
-1. ✅ `GovernanceGateway` 已成为 runtime 默认治理入口 — `evaluateDaemonLifecycleStage()` 是唯一权威入口，5 个决策点全部经由 gateway
-2. ✅ PR-07 domain-event dual-write 已切换为 durable JSONL — `JsonlDaemonDomainEventLog` 替换 `InMemoryDaemonDomainEventLog`，`recordPolicyVerdict()` 双写 ledger + domain event
-3. ✅ `VerificationSnapshot` / `proofGraphDigest` 已进入生产 artifact 主链 — snapshot 在终态 finalization 前冻结，6 个 snapshot-carrying 终态 artifact 共享同一 `snapshotDigest`
+| # | 修复项 | 状态 |
+|---|--------|------|
+| A1 | skip verdict 执法 — 评估在 skip 动作之前，`enforceGovernanceVerdict()` block → `continue` 拒绝跳过 | ✅ |
+| A2 | `approveGate()` gateId 校验 — `activeGates` Map 追踪 3 种暂停路径（release/HITL/artifact-recheck），`approveGate` 验证 gateId 匹配，resume 清除 | ✅ |
+| A3 | 运行时审批者约束 — 空 `approvedBy` 在策略评估前即被拒绝 | ✅ |
+| A4 | 文档口径修正 — 本文件已同步更新，不再抢跑声称 | ✅ |
 
-## 2. PR 验收总表
+### P1 修复确认
 
-| PR | 计划目标 | 实际状态 | 是否真实落地 | 是否进入默认主链 | 测试是否充分 | 结论 |
-|---|---|---|---|---|---|---|
-| PR-01 | VERIFY challenger 身份真实化 | `VerifyExecutor` 已绑定真实 `usedModel/family` | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-02 | callback auth surface 对齐 | discovery 冻结 auth，lease/ingress 复用同一配置 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-03 | callback freshness / anti-replay | timestamp、duplicate、expired callback 被拒绝 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-04 | AuthorityRuntimeKernel | kernel 已编排 lifecycle | 是 | 是 | 一般 | ✅ 通过 |
-| PR-05 | transition/skip/forceQueue 回 daemon | runtime `onTransition` 主链接管 | 是 | 是 | 一般 | ✅ 通过 |
-| PR-06 | daemon domain event v1 | taxonomy/envelope/append contract 已有 | 是 | 是 | 一般 | ✅ 通过 |
-| PR-07 | 关键语义 dual-write 到 event log | **已修复** — durable JSONL 双写，verdict 全覆盖 | 是 | 是 | 充分 | ✅ 通过 |
-| PR-08 | event-derived projection + shadow compare | **已修复** — shadow 读模式 + durable 数据源，读模式 gate 默认 `shadow` | 是 | 是 | 充分 | ✅ 通过 |
-| PR-09 | pure evaluator / facts adapter | 已抽出并被 runtime helper 使用 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-10 | GovernanceGateway stage hooks | **已修复** — `evaluateDaemonLifecycleStage()` 是唯一权威入口 | 是 | 是 | 充分 | ✅ 通过 |
-| PR-11 | governance cutover | **已修复** — 5 个决策点全部切到 gateway，`evaluateViaGateway()` 已删除 | 是 | 是 | 充分 | ✅ 通过 |
-| PR-12 | verification snapshot / artifact ref | **已修复** — snapshot 在终态 finalization 前构建，6 个 snapshot-carrying terminal artifacts 共享同一 `snapshotDigest` | 是 | 是 | 充分 | ✅ 通过 |
-| PR-13 | cross-artifact verifier / proof graph | **已修复** — certification record 与 transparency ledger 均带非空 `proofGraphDigest`，绑定完整终态 artifact 集 | 是 | 是 | 充分 | ✅ 通过 |
-| PR-14 | strict trust mode | strict mode 真正收缩 delegation 集合 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-15 | package boundary | 生产代码已无跨包 `src` import | 是 | 是 | 一般 | ✅ 通过 |
-| PR-16 | daemon/MCP standalone build & smoke | 独立 package/build/smoke 可跑 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-17 | capability classification | 分类文档已更新，误判已纠正 | 是 | 是 | 一般 | ✅ 通过 |
-| PR-18 | UpcastingEventStore 默认读路 | runtime 默认 `UpcastingEventStore(JsonlEventStore)` | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-18C | 多条 upcast 链 | 3 条真实链已注册并走默认读路 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-18D | domain event v2 scaffold | v2 envelope 字段已支持 | 是 | 部分 | 较充分 | ✅ 通过 |
-| PR-18E | replay/recovery hardening | **已修复** — `loadState()` 使用 `loadRunStateWithDiagnostics()`，诊断推送 timeline/telemetry | 是 | 是 | 充分 | ✅ 通过 |
-| PR-19 | RuntimeTelemetrySink | runtime 关键点已 hook，增加 `onShadowCompareDrift`/`onRecoveryDiagnostics` | 是 | 是 | 一般 | ✅ 通过 |
-| PR-20 | memory boundary | `VectorMemory` 冻结且未导出 | 是 | 是 | 较充分 | ✅ 通过 |
-| PR-21 | benchmark / interop / formal boundary | 大体收口 | 是 | 部分 | 一般 | ✅ 基本通过 |
+| # | 修复项 | 状态 |
+|---|--------|------|
+| B1 | `strictTrustMode` + `federationFailPolicy` 用户通路 — VSCode settings → env、MCP env → daemon spawn | ✅ |
+| B2 | `federationFailPolicy` 环境变量全链路 — `runtime-contract.ts` + `process-host.ts` → daemon config | ✅ |
+| B3 | 制品签名默认强化 — 6 个 release-critical scope `requireSignature: true`（trace-bundle, release-attestation, invariant-report, release-dossier, release-bundle, certification-record） | ✅ |
+| B4 | Bootstrap 网关统一 — `bootstrapDaemonRun` 接受 `deps.gateway` 注入，runtime 可传入统一 gateway | ✅ |
 
-## 3. 主链接线审计结论
+### P2 修复确认
 
-### 已确认成立的主链接线
+| # | 修复项 | 状态 |
+|---|--------|------|
+| C2 | 透明账本写入执法 — 链完整性校验失败时 `throw Error`，拒绝追加（替代 warn-only） | ✅ |
+| C3 | 严格回放模式 — `UpcastingEventStore` 接受 `strictReplayMode` 选项，启用时 upcast/malformed 错误上抛（替代 fail-open） | ✅ |
 
-- ✅ authority/runtime lifecycle 收敛完全成立
-- ✅ transition / skip / forceQueue 默认回到 daemon
-- ✅ `UpcastingEventStore` 已位于默认读路径
-- ✅ callback auth / freshness / replay protection 已生效
-- ✅ strict trust mode 确实影响 delegation 集合
-- ✅ `RuntimeTelemetrySink` 已挂到主 runtime 关键点
-- ✅ **GovernanceGateway 已成为默认治理入口** — `evaluateDaemonLifecycleStage()` 覆盖 5 个决策点
-- ✅ **domain-event dual-write 是 durable canonical path** — JSONL + vertex dual-write
-- ✅ **VerificationSnapshot / proofGraphDigest 已进入生产 artifact 主链** — 6 个 snapshot-carrying terminal artifacts 共享 frozen snapshot，certification + transparency 带同一 `proofGraphDigest`
-- ✅ **shadow compare 使用 durable 数据源** — 读模式 gate 默认 `shadow`，parity 日志就绪
-- ✅ **recovery diagnostics 在默认 loadState 路径** — 异常推送 timeline/telemetry
+## 2. 已知架构改进方向（非阻塞项）
 
-### 不成立的主链接线
+| 项 | 性质 | 说明 |
+|----|------|------|
+| Ed25519 签名 | 架构演进 | 当前 HMAC-SHA256，可升级 |
+| `strictTrustMode` 默认值 | 配置策略 | 当前默认关闭，可通过策略或版本升级改变 |
+| `federationFailPolicy` 默认值 | 配置策略 | 当前默认 fallback，可通过用户配置改变 |
+| E2E failure-injection 测试 | 测试增强 | governance-enforcement.spec 为纯函数测试，可补充运行时集成测试 |
 
-- `CyclicDagEngine` 不是默认主链能力（实验性，正确分类）
+## 3. 修改文件清单
 
-## 4. 问题分级
-
-### P0 — 已全部修复
-
-- ~~`GovernanceGateway` 未真正接管默认治理主链~~ → 已修复
-- ~~`VerificationSnapshot` / proof graph 仍是 scaffolding~~ → 已修复
-- ~~domain-event dual-write 不是 durable canonical path~~ → 已修复
-
-### P1 — 大部分已修复
-
-- ~~能力分类与 README 仍把未主链化能力写成 stable/mainline~~ → 文档已同步更新
-- ~~测试全绿，但多处只验证 helper/source-check，不验证主链~~ → 已补 `runtime-mainline-evidence.spec.ts`（runtime integration）与 `mainline-evidence.spec.ts`（component evidence）
-
-### P2 — 低优先级
-
-- MCP tool catalog 对 benchmark / interop / memory 的边界提示以基本一致
-- formal capability 的 public surface 注释与分类口径已对齐
-
-## 5. 修复验证证据
-
-### 测试证据
-
-| 测试文件 | 测试数 | 覆盖范围 |
-|---|---|---|
-| `gateway-cutover.spec.ts` | 8 | GovernanceGateway 5 决策点 + rollback |
-| `dual-write.spec.ts` | 17 | JSONL durable + verdict dual-write |
-| `verification-snapshot.spec.ts` | 9 | snapshot build/digest |
-| `builder-snapshot-wiring.spec.ts` | 13 | 4 builder snapshot injection |
-| `cross-artifact-verifier.spec.ts` | 12 | cross-artifact digest binding |
-| `mainline-evidence.spec.ts` | 13 | mainline subsystem/component evidence |
-| `runtime-mainline-evidence.spec.ts` | 4 | runtime-level finalization / artifact-chain evidence |
-| **Total mainline-specific** | **80** | |
-
-### 代码变更摘要
-
-| 文件 | 变更类型 | 说明 |
-|---|---|---|
-| `governance-gateway.ts` | 增强 | `evaluateDaemonLifecycleStage()` 方法 |
-| `runtime.ts` | 重构 | gateway cutover + durable events + snapshot chain + shadow mode + recovery diag |
-| `jsonl-domain-event-log.ts` | 新建 | durable JSONL event log |
-| `event-derived-projection.ts` | 增强 | `ShadowCompareReadMode` 类型 |
-| `runtime-telemetry-sink.ts` | 增强 | 2 个可选 telemetry 方法 |
-| `mainline-evidence.spec.ts` | 新建 | 13 条 component 级主链佐证测试 |
-| `runtime-mainline-evidence.spec.ts` | 新建 | 4 条 runtime 主链证据测试 |
-
-## 6. 最终归档建议
-
-**建议归档 — P0 问题已全部修复，主链接线审计全部通过。**
-
-剩余 P2 级别问题（tool catalog 微调）不影响系统正确性和生产安全性。
+| 文件 | 修复项 |
+|------|--------|
+| `runtime.ts` | A1, A2, A3 |
+| `runtime-contract.ts` | B1, B2 |
+| `process-host.ts` | B1, B2 |
+| `workflow-orchestrator.ts` (vscode) | B1 |
+| `daemon-bridge.ts` (mcp) | B1 |
+| `trust-registry.ts` | B3 |
+| `run-bootstrap.ts` | B4 |
+| `transparency-ledger.ts` | C2 |
+| `upcasting-event-store.ts` | C3 |
+| `runtime-verify.spec.ts` | B3 (test) |
+| `server-manifest.spec.ts` | B3 (test) |

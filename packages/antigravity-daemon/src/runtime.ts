@@ -181,6 +181,8 @@ export interface DaemonConfig {
   socketPath: string
   /** PR-14: enable strict trust mode — only verified workers can be delegated (default: false) */
   strictTrustMode?: boolean
+  /** P1-5: remote worker failure policy — 'fallback' (default) or 'fail-closed' */
+  federationFailPolicy?: 'fallback' | 'fail-closed'
   /** PR-19: optional telemetry sink for unified observability (default: NoOp) */
   telemetrySink?: RuntimeTelemetrySink
   /** PR-08E: shadow compare read mode (default: 'shadow') */
@@ -196,6 +198,16 @@ interface ActiveRunContext {
   drainPromise?: Promise<void>
   /** PR-04: current lifecycle phase, managed by AuthorityRuntimeKernel */
   phase: LifecyclePhase
+}
+
+/**
+ * A2 fix: tracks the active gate for paused_for_human runs.
+ * When a run pauses, we record which gateId must be used to approve it.
+ */
+interface ActiveGateInfo {
+  gateId: string
+  pauseReason: string
+  pausedAt: string
 }
 
 interface RefreshSnapshotOptions {
@@ -271,6 +283,8 @@ export class AntigravityDaemonRuntime {
   private readonly policyEngine: DaemonPolicyEngine
   private readonly benchmarkSourceRegistry: BenchmarkSourceRegistryStore
   private readonly activeRuns = new Map<string, ActiveRunContext>()
+  /** A2 fix: tracks active gate per paused run — must be matched by approveGate */
+  private readonly activeGates = new Map<string, ActiveGateInfo>()
   /** PR-12: frozen verification snapshots per run — built once at finalization time */
   private readonly verificationSnapshots = new Map<string, VerificationSnapshot>()
   /** Artifact finalization cache — guarantees at-most-once terminal artifact generation per run */
@@ -468,6 +482,23 @@ export class AntigravityDaemonRuntime {
       'Preflight checks passed under the active policy pack.',
     )
     this.recordPolicyVerdict(start.runId, 'policy.preflight', preflightVerdict)
+
+    // P0-1 fix: enforce preflight verdict — block/escalate prevents run from starting
+    const preflightEnforcement = this.enforceGovernanceVerdict(preflightVerdict, start.runId, 'preflight')
+    if (preflightEnforcement) {
+      await this.ensureRunCompletedEvent(start.runId, 'failed')
+      const failedSnapshot = await this.refreshSnapshot(start.runId, context, {
+        explicitStatus: 'failed',
+        verdict: preflightEnforcement.reason,
+      })
+      this.activeRuns.delete(start.runId)
+      return {
+        runId: start.runId,
+        invocation,
+        definition,
+        snapshot: failedSnapshot,
+      }
+    }
 
     this.ledger.appendTimeline(start.runId, 'run.started', undefined, {
       goal: invocation.goal,
@@ -684,6 +715,22 @@ export class AntigravityDaemonRuntime {
     const parsed = ApproveGateRequestSchema.parse(request)
     const run = await this.getRequiredRun(parsed.runId)
     const now = createISODateTime()
+
+    // A3 fix: runtime-level approver constraint — reject empty approver before policy evaluation
+    if (!parsed.approvedBy || parsed.approvedBy.trim().length === 0) {
+      throw new Error(`approveGate rejected: approvedBy must be a non-empty identifier, got '${parsed.approvedBy ?? ''}'`)
+    }
+
+    // A2 fix: validate gateId against the active gate for this run
+    const activeGate = this.activeGates.get(parsed.runId)
+    if (run.snapshot.status === 'paused_for_human') {
+      if (!activeGate) {
+        throw new Error(`approveGate rejected: run ${parsed.runId} is paused_for_human but has no registered active gate`)
+      }
+      if (activeGate.gateId !== parsed.gateId) {
+        throw new Error(`approveGate rejected: gateId '${parsed.gateId}' does not match active gate '${activeGate.gateId}' for run ${parsed.runId}`)
+      }
+    }
     // PR-11: gateway cutover for approval
     const approvalInput = {
       runId: parsed.runId,
@@ -698,6 +745,20 @@ export class AntigravityDaemonRuntime {
       createFactsForApproval(approvalInput), `Approval gate ${parsed.gateId} passed under the active policy pack.`,
     )
     this.recordPolicyVerdict(parsed.runId, 'policy.approval', verdict, parsed.gateId)
+
+    // P0-1 fix: enforce approval verdict — block/escalate prevents gate approval
+    const approvalEnforcement = this.enforceGovernanceVerdict(verdict, parsed.runId, `approval:${parsed.gateId}`)
+    if (approvalEnforcement) {
+      this.ledger.appendTimeline(parsed.runId, 'gate.approval.rejected', parsed.gateId, {
+        approvedBy: parsed.approvedBy,
+        reason: approvalEnforcement.reason,
+      }, now)
+      const snapshot = await this.refreshSnapshot(parsed.runId, this.activeRuns.get(parsed.runId), {
+        verdict: approvalEnforcement.reason,
+      })
+      return { ...run, snapshot }
+    }
+
     this.ledger.appendTimeline(parsed.runId, 'gate.approved', parsed.gateId, {
       approvedBy: parsed.approvedBy,
       comment: parsed.comment,
@@ -771,12 +832,54 @@ export class AntigravityDaemonRuntime {
       createFactsForResume(resumeInput), 'Resume checks passed under the active policy pack.',
     )
     this.recordPolicyVerdict(parsed.runId, 'policy.resume', resumeVerdict)
+
+    // P0-1 fix: enforce resume verdict — block/escalate keeps run paused
+    const resumeEnforcement = this.enforceGovernanceVerdict(resumeVerdict, parsed.runId, 'resume')
+    if (resumeEnforcement) {
+      this.ledger.appendTimeline(parsed.runId, 'run.resume.rejected', undefined, {
+        approvedBy: parsed.approvedBy ?? 'unknown',
+        reason: resumeEnforcement.reason,
+      }, now)
+      return existing
+    }
+
+    // P0-2 fix: re-verify terminal artifacts before completing — prevents bypass of release gate
+    const context = this.activeRuns.get(parsed.runId)
+    const refinalizedArtifacts = await this.ensureTerminalArtifactsFinalized(parsed.runId)
+    if (
+      refinalizedArtifacts.traceArtifacts.traceBundleVerdict.effect === 'block' ||
+      refinalizedArtifacts.traceArtifacts.releaseAttestationVerdict.effect === 'block' ||
+      !refinalizedArtifacts.invariantReport.invariantReport.ok ||
+      refinalizedArtifacts.releaseDossier.releaseDossierVerdict.effect === 'block' ||
+      refinalizedArtifacts.releaseBundle.releaseBundleVerdict.effect === 'block' ||
+      !refinalizedArtifacts.certificationRecord.certificationRecordReport.ok
+    ) {
+      const rationale = [
+        ...refinalizedArtifacts.traceArtifacts.traceBundleVerdict.rationale,
+        ...refinalizedArtifacts.traceArtifacts.releaseAttestationVerdict.rationale,
+        ...(!refinalizedArtifacts.invariantReport.invariantReport.ok ? refinalizedArtifacts.invariantReport.invariantReport.issues : []),
+        ...refinalizedArtifacts.releaseDossier.releaseDossierVerdict.rationale,
+        ...refinalizedArtifacts.releaseBundle.releaseBundleVerdict.rationale,
+        ...(!refinalizedArtifacts.certificationRecord.certificationRecordReport.ok ? refinalizedArtifacts.certificationRecord.certificationRecordReport.issues : []),
+      ].filter((value, index, array) => value.length > 0 && array.indexOf(value) === index)
+      this.ledger.appendTimeline(parsed.runId, 'run.resume.artifact_recheck_failed', undefined, {
+        reason: rationale.join('; '),
+      }, now)
+      const pausedSnapshot = await this.refreshSnapshot(parsed.runId, context, {
+        explicitStatus: 'paused_for_human',
+        verdict: `Resume blocked: artifact re-verification failed — ${rationale.join('; ')}`,
+      })
+      return { ...existing, snapshot: pausedSnapshot }
+    }
+
+    // A2 fix: clear active gate on successful resume
+    this.activeGates.delete(parsed.runId)
     await this.ensureRunCompletedEvent(parsed.runId, 'completed')
     this.ledger.appendTimeline(parsed.runId, 'run.resumed', undefined, {
       approvedBy: parsed.approvedBy ?? 'unknown',
       comment: parsed.comment,
     }, now)
-    const snapshot = await this.refreshSnapshot(parsed.runId, this.activeRuns.get(parsed.runId), {
+    const snapshot = await this.refreshSnapshot(parsed.runId, context, {
       explicitStatus: 'completed',
       completedAt: now,
     })
@@ -2336,6 +2439,28 @@ export class AntigravityDaemonRuntime {
   }
 
   /**
+   * Enforce a governance verdict — if the verdict effect is 'block' or 'escalate',
+   * this returns an enforcement error. Otherwise returns null (proceed).
+   * This is the PEP (Policy Enforcement Point) for all governance stages.
+   */
+  private enforceGovernanceVerdict(
+    verdict: PolicyVerdict,
+    runId: string,
+    stage: string,
+  ): { blocked: true; reason: string } | null {
+    if (verdict.effect === 'block') {
+      const reason = `Governance verdict blocked at stage '${stage}': ${verdict.rationale.join('; ') || 'policy block'}`
+      this.ledger.appendTimeline(runId, 'governance.enforcement.blocked', stage, {
+        verdictId: verdict.verdictId,
+        effect: verdict.effect,
+        reason,
+      }, verdict.evaluatedAt)
+      return { blocked: true, reason }
+    }
+    return null
+  }
+
+  /**
    * PR-04: Evaluate terminal decision after drain completes successfully.
    * Handles release gate, human gate, and artifact verification.
    */
@@ -2360,9 +2485,16 @@ export class AntigravityDaemonRuntime {
         explicitStatus: 'paused_for_human',
         verdict: releaseDecision.rationale.join('; '),
       })
+      // A2 fix: register 'release' as active gate for release-blocked pause
+      this.activeGates.set(runId, {
+        gateId: 'release',
+        pauseReason: releaseDecision.rationale.join('; '),
+        pausedAt: createISODateTime(),
+      })
       return { status: 'paused_for_human', verdict: releaseDecision.rationale.join('; ') }
     }
 
+    // A2 fix: register active gate for human-gate pause
     const humanGate = deriveHumanApprovalRequirement(state)
     // PR-11: governance gateway cutover — human-gate via gateway
     const humanGateEvaluatedAt = createISODateTime()
@@ -2372,7 +2504,9 @@ export class AntigravityDaemonRuntime {
       createFactsForHumanGate(humanGateInput), 'Human gate checks passed under the active policy pack.',
     )
     this.recordPolicyVerdict(runId, 'policy.human-gate', humanGateVerdict, 'HITL')
-    if (humanGate.required) {
+    // P0-1 fix: respect governance verdict for human-gate — if governance blocks, force pause
+    const humanGateEnforcement = this.enforceGovernanceVerdict(humanGateVerdict, runId, 'human-gate')
+    if (humanGate.required || humanGateEnforcement) {
       await this.ensureRunCompletedEvent(runId, 'paused')
       this.ledger.appendTimeline(runId, 'run.paused_for_human', 'HITL', {
         reason: humanGate.reason,
@@ -2380,6 +2514,12 @@ export class AntigravityDaemonRuntime {
       await this.refreshSnapshot(runId, context, {
         explicitStatus: 'paused_for_human',
         verdict: humanGate.reason,
+      })
+      // A2 fix: register 'HITL' as active gate for this paused run
+      this.activeGates.set(runId, {
+        gateId: 'HITL',
+        pauseReason: humanGate.reason,
+        pausedAt: createISODateTime(),
       })
       return { status: 'paused_for_human', verdict: humanGate.reason }
     }
@@ -2415,6 +2555,12 @@ export class AntigravityDaemonRuntime {
       await this.refreshSnapshot(runId, context, {
         explicitStatus: 'paused_for_human',
         verdict: rationale.join('; '),
+      })
+      // A2 fix: register 'artifact-recheck' as active gate for artifact-block pause
+      this.activeGates.set(runId, {
+        gateId: 'artifact-recheck',
+        pauseReason: rationale.join('; '),
+        pausedAt: createISODateTime(),
       })
       return { status: 'paused_for_human', verdict: rationale.join('; ') }
     }
@@ -3044,6 +3190,33 @@ export class AntigravityDaemonRuntime {
       let decision = decisionsByNode.get(nodeId)
       if (!decision) {
         const decidedAt = createISODateTime()
+
+        // A1 fix: evaluate skip verdict BEFORE recording skip decision — enforce first, act second
+        const skipVerdict = this.policyEngine.evaluateSkip({
+          runId,
+          nodeId,
+          strategyId: detail?.strategyId ?? step.skipPolicy?.strategyId ?? 'unexpected.skip',
+          triggerCondition: detail?.triggerCondition ??
+            (step.skipPolicy?.when.length
+              ? step.skipPolicy.when.join(' && ')
+              : 'Recovered policy skip from daemon state replay.'),
+          reason: detail?.reason ?? `Policy-authorized skip recorded for ${nodeId}.`,
+          evidenceIds: [],
+          evaluatedAt: decidedAt,
+        })
+        this.recordPolicyVerdict(runId, 'policy.skip.authorized', skipVerdict, nodeId)
+
+        // A1 fix: enforce skip verdict via unified PEP — block prevents skip from happening
+        const skipEnforcement = this.enforceGovernanceVerdict(skipVerdict, runId, `skip:${nodeId}`)
+        if (skipEnforcement) {
+          this.ledger.appendTimeline(runId, 'node.policy_skip.rejected', nodeId, {
+            reason: skipEnforcement.reason,
+            strategyId: detail?.strategyId ?? step.skipPolicy?.strategyId ?? 'unexpected.skip',
+          }, decidedAt)
+          continue
+        }
+
+        // Verdict allowed — now record the skip decision and act
         decision = createSkipDecision({
           runId,
           nodeId,
@@ -3058,16 +3231,6 @@ export class AntigravityDaemonRuntime {
           reason: detail?.reason ?? `Policy-authorized skip recorded for ${nodeId}.`,
         })
         this.ledger.recordSkipDecision(decision)
-        const skipVerdict = this.policyEngine.evaluateSkip({
-          runId,
-          nodeId,
-          strategyId: decision.strategyId,
-          triggerCondition: decision.triggerCondition,
-          reason: decision.reason,
-          evidenceIds: decision.evidence.map(item => item.evidenceId),
-          evaluatedAt: decidedAt,
-        })
-        this.recordPolicyVerdict(runId, 'policy.skip.authorized', skipVerdict, nodeId)
         this.ledger.appendTimeline(runId, 'node.policy_skipped', nodeId, {
           skipDecisionId: decision.skipDecisionId,
           strategyId: decision.strategyId,

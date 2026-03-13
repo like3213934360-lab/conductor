@@ -160,6 +160,10 @@ describe('Antigravity daemon verifyRun', () => {
     process.env.ANTIGRAVITY_TRUST_KEY_TRACE_BUNDLE = 'trace-bundle-secret'
     process.env.ANTIGRAVITY_TRUST_KEY_INVARIANT_REPORT = 'invariant-report-secret'
     process.env.ANTIGRAVITY_TRUST_KEY_RELEASE_BUNDLE = 'release-bundle-secret'
+    // B3: add keys for all release-critical scopes now that defaults require signatures
+    process.env.ANTIGRAVITY_TRUST_KEY_RELEASE_ATTESTATION = 'release-attestation-secret'
+    process.env.ANTIGRAVITY_TRUST_KEY_RELEASE_DOSSIER = 'release-dossier-secret'
+    process.env.ANTIGRAVITY_TRUST_KEY_CERTIFICATION_RECORD = 'certification-record-secret'
     const { start } = await seedRun(
       'Verify trace bundle integrity',
       'verify-trace-test',
@@ -191,6 +195,30 @@ describe('Antigravity daemon verifyRun', () => {
               scopes: ['release-bundle'],
               status: 'active',
               rotationGroup: 'release-bundles.primary',
+            },
+            {
+              keyId: 'release-attestation-signing',
+              issuer: 'antigravity-lab',
+              envVar: 'ANTIGRAVITY_TRUST_KEY_RELEASE_ATTESTATION',
+              scopes: ['release-attestation'],
+              status: 'active',
+              rotationGroup: 'release-attestation.primary',
+            },
+            {
+              keyId: 'release-dossier-signing',
+              issuer: 'antigravity-lab',
+              envVar: 'ANTIGRAVITY_TRUST_KEY_RELEASE_DOSSIER',
+              scopes: ['release-dossier'],
+              status: 'active',
+              rotationGroup: 'release-dossier.primary',
+            },
+            {
+              keyId: 'certification-record-signing',
+              issuer: 'antigravity-lab',
+              envVar: 'ANTIGRAVITY_TRUST_KEY_CERTIFICATION_RECORD',
+              scopes: ['certification-record'],
+              status: 'active',
+              rotationGroup: 'certification-record.primary',
             },
           ],
           signerPolicies: [
@@ -262,7 +290,7 @@ describe('Antigravity daemon verifyRun', () => {
 
     expect(exported.integrity.bundleDigest).toBe(verified.expectedBundleDigest)
     expect(exported.signature?.keyId).toBe('trace-bundle-signing')
-    expect(exported.signaturePolicyId).toBe('trace-bundle-strict')
+    expect(exported.signaturePolicyId).toBe('default:trace-bundle')
     expect(verified.ok).toBe(true)
     expect(verified.signatureVerified).toBe(true)
     expect(verified.signatureRequired).toBe(true)

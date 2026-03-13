@@ -14,6 +14,8 @@ export interface AntigravityDaemonProcessEnvOptions {
   callbackHost?: string
   callbackPort?: number
   callbackBaseUrl?: string
+  strictTrustMode?: boolean
+  federationFailPolicy?: 'fallback' | 'fail-closed'
   env?: NodeJS.ProcessEnv
 }
 
@@ -55,6 +57,8 @@ export function createAntigravityDaemonProcessEnv(
       [ANTIGRAVITY_DAEMON_ENV.callbackHost]: options.callbackHost ?? ANTIGRAVITY_DAEMON_CALLBACK_HOST_DEFAULT,
       [ANTIGRAVITY_DAEMON_ENV.callbackPort]: String(options.callbackPort ?? ANTIGRAVITY_DAEMON_CALLBACK_PORT_DEFAULT),
       ...(options.callbackBaseUrl ? { [ANTIGRAVITY_DAEMON_ENV.callbackBaseUrl]: options.callbackBaseUrl } : {}),
+      ...(options.strictTrustMode != null ? { [ANTIGRAVITY_DAEMON_ENV.strictTrustMode]: String(options.strictTrustMode) } : {}),
+      ...(options.federationFailPolicy ? { [ANTIGRAVITY_DAEMON_ENV.federationFailPolicy]: options.federationFailPolicy } : {}),
     },
   }
 }

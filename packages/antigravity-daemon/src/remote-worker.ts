@@ -1965,6 +1965,8 @@ class RemoteAwareNodeExecutor implements NodeExecutor {
     private readonly capability: string,
     private readonly local: NodeExecutor,
     private readonly directory: RemoteWorkerDirectory,
+    /** P1-5: 'fallback' (default) silently degrades; 'fail-closed' propagates remote errors */
+    private readonly federationFailPolicy: 'fallback' | 'fail-closed' = 'fallback',
   ) {
     this.nodeId = nodeId
     this.timeoutMs = local.timeoutMs
@@ -1981,6 +1983,10 @@ class RemoteAwareNodeExecutor implements NodeExecutor {
         return remote
       }
     } catch (error) {
+      // P1-5: fail-closed mode — propagate remote worker errors instead of masking
+      if (this.federationFailPolicy === 'fail-closed') {
+        throw error
+      }
       const fallback = await this.local.execute(ctx)
       return {
         ...fallback,

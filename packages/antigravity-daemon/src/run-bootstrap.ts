@@ -34,6 +34,8 @@ export interface BootstrapDaemonRunDeps {
   eventStore: EventStore
   checkpointStore: CheckpointStore
   governanceControls?: GovernanceControl[]
+  /** B4 fix: allow caller to inject a unified GovernanceGateway (e.g., from the runtime) */
+  gateway?: GovernanceGateway
   logger?: CoreLogger
 }
 
@@ -71,7 +73,8 @@ export async function bootstrapDaemonRun(
   const dagEngine = new DagEngine()
   const drCalculator = new DRCalculator()
   const riskRouter = new RiskRouter()
-  const gateway = new GovernanceGateway(
+  // B4 fix: use caller-injected gateway (unified with runtime) or create an independent one
+  const gateway = deps.gateway ?? new GovernanceGateway(
     new TrustFactorService(),
     deps.governanceControls ?? getDefaultControlPack(),
   )

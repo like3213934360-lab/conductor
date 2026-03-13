@@ -159,14 +159,6 @@ export async function dispatchAntigravityDaemonControlRequest(
     return { statusCode: 200, payload: await runtime.getTransparencyLedger() }
   }
 
-  if (method === 'GET' && url.pathname === '/transparency-ledger') {
-    return { statusCode: 200, payload: await runtime.getTransparencyLedger() }
-  }
-
-  if (method === 'GET' && url.pathname === '/transparency-ledger') {
-    return { statusCode: 200, payload: await runtime.getTransparencyLedger() }
-  }
-
   if (method === 'POST' && url.pathname === '/memory/search') {
     return { statusCode: 200, payload: runtime.searchMemory(request.body) }
   }
@@ -181,14 +173,6 @@ export async function dispatchAntigravityDaemonControlRequest(
 
   if (method === 'POST' && url.pathname === '/benchmark-source-registry/reload') {
     return { statusCode: 200, payload: runtime.refreshBenchmarkSourceRegistry() }
-  }
-
-  if (method === 'POST' && url.pathname === '/verify-transparency-ledger') {
-    return { statusCode: 200, payload: await runtime.verifyTransparencyLedger() }
-  }
-
-  if (method === 'POST' && url.pathname === '/verify-transparency-ledger') {
-    return { statusCode: 200, payload: await runtime.verifyTransparencyLedger() }
   }
 
   if (method === 'POST' && url.pathname === '/verify-transparency-ledger') {

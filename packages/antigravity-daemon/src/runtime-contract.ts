@@ -42,6 +42,8 @@ export const ANTIGRAVITY_DAEMON_ENV = {
   callbackHost: 'ANTIGRAVITY_DAEMON_CALLBACK_HOST',
   callbackPort: 'ANTIGRAVITY_DAEMON_CALLBACK_PORT',
   callbackBaseUrl: 'ANTIGRAVITY_DAEMON_CALLBACK_BASE_URL',
+  strictTrustMode: 'ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE',
+  federationFailPolicy: 'ANTIGRAVITY_DAEMON_FEDERATION_FAIL_POLICY',
 } as const
 
 export function resolveAntigravityDaemonDataDir(workspaceRoot: string): string {

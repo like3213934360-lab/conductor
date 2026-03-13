@@ -423,6 +423,9 @@ export class WorkflowOrchestrator implements vscode.Disposable {
         entryPath: daemonEntry,
         callbackHost: '127.0.0.1',
         callbackPort: 0,
+        // B1 fix: wire strictTrustMode + federationFailPolicy from VSCode settings to daemon env
+        strictTrustMode: vscode.workspace.getConfiguration('antigravity').get<boolean>('strictTrustMode'),
+        federationFailPolicy: vscode.workspace.getConfiguration('antigravity').get<'fallback' | 'fail-closed'>('federationFailPolicy'),
         onStdout: (text: string) => console.log(`[AntigravityDaemon] ${text}`),
         onStderr: (text: string) => console.error(`[AntigravityDaemon] ${text}`),
       })

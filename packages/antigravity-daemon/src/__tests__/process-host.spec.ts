@@ -24,4 +24,19 @@ describe('Antigravity daemon process host helpers', () => {
     expect(env.ANTIGRAVITY_DAEMON_CALLBACK_BASE_URL).toBe('https://callback.example.test')
     expect(env.EXTRA_FLAG).toBe('1')
   })
+
+  it('includes strictTrustMode env var when specified', () => {
+    const { env } = createAntigravityDaemonProcessEnv({
+      workspaceRoot: '/tmp/antigravity-workspace',
+      strictTrustMode: true,
+    })
+    expect(env.ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE).toBe('true')
+  })
+
+  it('omits strictTrustMode env var when not specified', () => {
+    const { env } = createAntigravityDaemonProcessEnv({
+      workspaceRoot: '/tmp/antigravity-workspace',
+    })
+    expect(env.ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE).toBeUndefined()
+  })
 })

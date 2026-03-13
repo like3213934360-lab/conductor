@@ -99,7 +99,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'trace-bundle',
     description: 'Default signer policy for trace bundle signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],
@@ -110,7 +111,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'release-attestation',
     description: 'Default signer policy for release attestation signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],
@@ -121,7 +123,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'invariant-report',
     description: 'Default signer policy for invariant report signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],
@@ -143,7 +146,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'release-dossier',
     description: 'Default signer policy for release dossier signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],
@@ -154,7 +158,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'release-bundle',
     description: 'Default signer policy for release bundle signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],
@@ -165,7 +170,8 @@ const DEFAULT_SIGNER_POLICIES: TrustRegistryFileSignerPolicy[] = [
     scope: 'certification-record',
     description: 'Default signer policy for certification record signing and verification.',
     enabled: true,
-    requireSignature: false,
+    // B3 fix: release-critical artifact — require signature by default
+    requireSignature: true,
     allowedKeyStatuses: ['active'],
     allowedRotationGroups: [],
     allowedKeyIds: [],

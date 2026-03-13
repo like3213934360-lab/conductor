@@ -2,9 +2,6 @@
 
 本文档基于根目录整改主文档《`ARCHITECTURE_AUDIT_AND_REMEDIATION.md`》整理，仅用于承载按 PR 粒度拆分的工程实施计划。本文档不重复审计背景，不重新定义整改总纲，只回答“按什么 PR 顺序、以什么边界、如何测试与回滚来落地”。
 
-> 说明：本文档是历史实施计划，不是当前验收状态表。  
-> 当前 PR 落地结论、主链接线判断和归档建议，以 [ACCEPTANCE_AUDIT_STATUS.md](ACCEPTANCE_AUDIT_STATUS.md) 为准。
-
 ## A. 执行总策略
 
 - 先修 correctness / trust / release，再处理高级能力和叙事收敛。
@@ -15,7 +12,7 @@
 - 所有与 remote worker、artifact、governance 相关的 PR 都必须带反例测试，而不是只覆盖 happy path。
 - 所有事件模型改动都要遵守“先 append canonical event，再保留 legacy projection”的迁移顺序。
 - 所有协议与 artifact schema 改动都必须标记兼容策略和回滚面。
-- 文档、导出契约、发布物边界的整改只能在对应代码边界已经收敛后进入仓库。
+- 文档、导出契约、发布物边界的整改只能在对应代码边界已经收敛后进入仓库。   
 
 ## B. PR 拆分总览
 

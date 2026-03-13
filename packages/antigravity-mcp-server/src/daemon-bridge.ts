@@ -273,6 +273,9 @@ export class AntigravityDaemonBridge {
         entryPath: daemonEntry,
         callbackHost: '127.0.0.1',
         callbackPort: 0,
+        // B1 fix: wire strictTrustMode + federationFailPolicy from MCP env to daemon
+        strictTrustMode: process.env['ANTIGRAVITY_DAEMON_STRICT_TRUST_MODE'] === 'true' || undefined,
+        federationFailPolicy: (process.env['ANTIGRAVITY_DAEMON_FEDERATION_FAIL_POLICY'] as 'fallback' | 'fail-closed') || undefined,
         onStdout: text => console.error(`[AntigravityDaemonBridge] ${text}`),
         onStderr: text => console.error(`[AntigravityDaemonBridge] ${text}`),
       })

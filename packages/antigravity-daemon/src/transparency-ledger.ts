@@ -43,6 +43,34 @@ export function appendTransparencyLedgerEntry(input: {
   proofGraphDigest: string
 }): TransparencyLedgerEntry {
   const existing = readTransparencyLedgerEntries(input.ledgerPath)
+
+  // P2: write-time chain integrity guard — verify before append
+  let chainIntegrityOk = true
+  if (existing.length > 0) {
+    for (let i = 0; i < existing.length; i++) {
+      const entry = existing[i]!
+      const { entryDigest, ...unsigned } = entry
+      const expectedDigest = computeEntryDigest(unsigned)
+      if (expectedDigest !== entryDigest) {
+        chainIntegrityOk = false
+        break
+      }
+      if (i > 0 && entry.previousEntryDigest !== existing[i - 1]!.entryDigest) {
+        chainIntegrityOk = false
+        break
+      }
+    }
+  }
+
+  // C2 fix: enforce chain integrity — block append if chain is tampered
+  if (!chainIntegrityOk) {
+    throw new Error(
+      `Transparency ledger chain integrity violation at ${input.ledgerPath}: ` +
+      `existing chain is broken. Refusing to append new entry for run ${input.runId}. ` +
+      `Investigate and repair the ledger before continuing.`,
+    )
+  }
+
   const last = existing.at(-1)
   const baseEntry: Omit<TransparencyLedgerEntry, 'entryDigest'> = {
     version: TRANSPARENCY_LEDGER_VERSION,
