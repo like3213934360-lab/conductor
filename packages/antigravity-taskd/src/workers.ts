@@ -67,14 +67,23 @@ class WorkerInitError extends Error {
   }
 }
 
-/** 包装一个带独立超时的 sendRequest，用于初始化阶段（initialize / thread/start） */
+/** 包装一个带独立超时的 sendRequest，用于初始化阶段（initialize / thread/start）
+ *  修复：timer 泄漏 + loser promise Unhandled Rejection */
 function withInitTimeout<T>(promise: Promise<T>, method: string, timeoutMs: number = INIT_TIMEOUT_MS): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new WorkerInitError(method, timeoutMs)), timeoutMs),
-    ),
-  ])
+  let timer: ReturnType<typeof setTimeout>
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new WorkerInitError(method, timeoutMs)),
+      timeoutMs,
+    )
+  })
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    // 无论谁赢都清理 timer，防止空跑
+    clearTimeout(timer)
+    // 静默吞掉 loser 的 rejection，防止 Unhandled Promise Rejection
+    promise.catch(() => {})
+    timeoutPromise.catch(() => {})
+  })
 }
 
 class CodexAppServerWorkerAdapter implements WorkerAdapter {
@@ -97,6 +106,9 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     if (!child.stdin || !child.stdout) {
       throw new Error('Codex App Server did not expose stdio handles')
     }
+
+    // 安全网：防止 write-after-close 在 stdin 上变成 uncaught exception
+    child.stdin.on('error', () => {})
 
     const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
     let nextId = 1
@@ -137,14 +149,20 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     signal.addEventListener('abort', abort, { once: true })
 
     // soft signal: 通过 JSON-RPC 协议层发 turn/cancel，通知模型停止生成并返回已有内容
-    // 注意：对 JSON-RPC stdio Server 发 SIGINT 无意义，必须走应用层协议
+    // 修复：严格检查 stdin 可写性 + try/catch 包裹 IPC 调用
     const softAbort = () => {
-      if (!child.killed && threadId) {
-        // 尝试通过 JSON-RPC 发送取消请求 — 即使 server 不支持也不会崩溃
-        sendRequest('turn/cancel', { threadId }).catch(() => {
-          // fallback: server 不支持 turn/cancel，发 $/cancelRequest
-          sendRequest('$/cancelRequest', { id: nextId - 1 }).catch(() => {})
-        })
+      try {
+        // 三重守卫：进程存活 + threadId 已知 + stdin 管道可写
+        if (!child.killed && threadId && child.stdin && !child.stdin.destroyed && child.stdin.writable) {
+          sendRequest('turn/cancel', { threadId }).catch(() => {
+            // fallback: server 不支持 turn/cancel
+            if (!child.killed && child.stdin && !child.stdin.destroyed && child.stdin.writable) {
+              sendRequest('$/cancelRequest', { id: nextId - 1 }).catch(() => {})
+            }
+          })
+        }
+      } catch {
+        // stdin 已关闭或进程已退出 — 静默忽略，绝不允许异常逃逸
       }
     }
     softSignal?.addEventListener('abort', softAbort, { once: true })
@@ -481,10 +499,15 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     const abort = () => child.kill('SIGTERM')
     signal.addEventListener('abort', abort, { once: true })
 
-    // soft signal: 给 gemini 进程发 SIGINT 让它优雅输出
+    // soft signal: 给 gemini 进程发 SIGINT 让它尝试优雅退出
+    // 修复：try/catch 包裹 — 进程可能已在 kill 前退出
     const softAbort = () => {
-      if (!child.killed) {
-        child.kill('SIGINT')
+      try {
+        if (!child.killed) {
+          child.kill('SIGINT')
+        }
+      } catch {
+        // 进程已退出，SIGINT 发送失败 — 静默忽略
       }
     }
     softSignal?.addEventListener('abort', softAbort, { once: true })

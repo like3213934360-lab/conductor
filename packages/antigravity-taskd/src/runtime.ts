@@ -61,15 +61,25 @@ const STAGE_BUDGETS: Record<TaskStageId, { softBudgetMs: number; hardBudgetMs: n
   FINALIZE: { softBudgetMs: 240_000, hardBudgetMs: 300_000 },
 }
 
-// ── 瞬时失败重试 ────────────────────────────────────────────────
-// 对网络/IO 抖动提供有限次重试，避免一次瞬断直接降级整个 stage
+// ── 瞬时失败重试（信号感知） ──────────────────────────────────────
+// 对网络/IO 抖动提供有限次重试，避免一次瞬断直接降级整个 stage。
+// 修复：
+// 1. 传入 AbortSignal — job 被取消时立即停止重试，不会空跑 backoff
+// 2. backoff 等待本身可被 signal 中断
+// 注意：runWorker 不是幂等的（每次重试会创建新 worker snapshot），
+// 但 finally 块保证子进程被 kill，不会产生真正的孤儿进程。
 async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
   maxAttempts: number = 2,
+  signal?: AbortSignal,
 ): Promise<T> {
   let lastError: Error | undefined
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // 重试前检查：job 已取消则直接抛出，不再浪费资源
+    if (signal?.aborted) {
+      throw lastError ?? new Error(`${label} aborted before attempt ${attempt}`)
+    }
     try {
       return await fn()
     } catch (error) {
@@ -77,7 +87,22 @@ async function withRetry<T>(
       if (attempt < maxAttempts) {
         const backoffMs = attempt * 2000
         console.warn(`[taskd] ${label} attempt ${attempt}/${maxAttempts} failed: ${lastError.message}, retrying in ${backoffMs}ms`)
-        await new Promise(resolve => setTimeout(resolve, backoffMs))
+        // 可中断的 backoff：signal abort 时立即结束等待
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, backoffMs)
+          if (signal) {
+            const onAbort = () => {
+              clearTimeout(timer)
+              reject(lastError)
+            }
+            signal.addEventListener('abort', onAbort, { once: true })
+            // 正常 resolve 时清理 abort listener
+            setTimeout(() => signal.removeEventListener('abort', onAbort), backoffMs + 10)
+          }
+        }).catch(() => {
+          // backoff 被 signal 中断 — 直接抛出
+          throw lastError!
+        })
       }
     }
   }
@@ -800,6 +825,8 @@ export class AntigravityTaskdRuntime {
           [], 'AGGREGATE',
         ),
         'AGGREGATE',
+        2,
+        signal,  // job 取消时立即停止重试
       )
       aggregate = coerceAggregate(aggregateResult.text)
     } catch (error) {
@@ -840,6 +867,8 @@ export class AntigravityTaskdRuntime {
           [], 'VERIFY',
         ),
         'VERIFY',
+        2,
+        signal,  // job 取消时立即停止重试
       )
       verify = coerceVerify(verifyResult.text)
     } catch (error) {
