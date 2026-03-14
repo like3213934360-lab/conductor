@@ -29,6 +29,13 @@ import { parseStructuredJson } from './parsing.js'
 import { createWorkerAdapters } from './workers.js'
 import type { TaskdPaths } from './runtime-contract.js'
 
+// ── Enterprise Capabilities ─────────────────────────────────────
+import { FileJournalStore, type JournalStore } from './journal.js'
+import { Ed25519Identity, type CryptoIdentity } from './crypto-identity.js'
+import { computeMerkleRoot } from './merkle.js'
+import { DefaultProvenanceCollector, type ProvenanceCollector } from './provenance.js'
+import { DefaultGovernanceGateway, type GovernanceGateway } from './governance.js'
+
 interface ExecutionProfile {
   kind: 'single' | 'dual' | 'sharded'
 }
@@ -272,12 +279,20 @@ export class AntigravityTaskdRuntime {
   private readonly controllers = new Map<string, AbortController>()
   private readonly sequenceByJob = new Map<string, number>()
 
+  // ── Enterprise Capabilities（通过构造函数注入，不硬编码）────────
+  private readonly journal: JournalStore
+  private readonly identity: CryptoIdentity
+  private readonly governance: GovernanceGateway
+
   constructor(
     private readonly paths: TaskdPaths,
     adapters: Record<WorkerBackend, WorkerAdapter> = createWorkerAdapters(),
   ) {
     this.persistence = new TaskPersistenceStore(paths.jobsDir)
     this.adapters = adapters
+    this.identity = new Ed25519Identity()
+    this.journal = new FileJournalStore(paths.jobsDir)
+    this.governance = new DefaultGovernanceGateway(this.identity)
   }
 
   async initialize(): Promise<void> {
@@ -723,6 +738,14 @@ export class AntigravityTaskdRuntime {
       ).kind,
     })
 
+    // 🏗️ Journal: SCOUT checkpoint + Provenance: record input hashes
+    await this.journal.saveCheckpoint(jobId, 'SCOUT', {
+      manifest,
+      fileHintEntries: fileHintEntries.map(f => ({ path: f.path, size: f.size })),
+    })
+    const provenance = new DefaultProvenanceCollector(this.identity, `taskd-${jobId.slice(0, 8)}`)
+    provenance.recordInputFiles(fileHintEntries.map(f => f.path))
+
     if (signal.aborted) return
 
     this.markStageStarted(snapshot, 'SHARD_ANALYZE', 'Running shard analyzers')
@@ -808,6 +831,14 @@ export class AntigravityTaskdRuntime {
       throw new Error(`All ${shardOutcomes.length} shards failed — no results to aggregate`)
     }
 
+    // 🌳 Merkle Tree: 用 shard 结果构建完整性证明
+    const merkleRoot = computeMerkleRoot(shardResults)
+    // 🏗️ Journal: SHARD checkpoint
+    await this.journal.saveCheckpoint(jobId, 'SHARD_ANALYZE', {
+      outcomes: shardOutcomes.map(o => ({ status: o.status, shardId: o.shardId, error: o.error, durationMs: o.durationMs })),
+      results: shardResults,
+    })
+
     // 有降级 shard 时记录到 riskFindings
     if (degraded > 0 || failed > 0) {
       snapshot.summary.riskFindings = unique([
@@ -860,6 +891,8 @@ export class AntigravityTaskdRuntime {
       conflicts: aggregate.conflicts,
       missingCoverage: aggregate.missingCoverage,
     })
+    // 🏗️ Journal: AGGREGATE checkpoint (含 merkle root)
+    await this.journal.saveCheckpoint(jobId, 'AGGREGATE', { aggregate, merkleRoot })
 
     if (signal.aborted) return
 
@@ -904,10 +937,33 @@ export class AntigravityTaskdRuntime {
       coverageGaps: verify.coverageGaps,
       riskFindings: verify.riskFindings,
     })
+    // 🏗️ Journal: VERIFY checkpoint
+    await this.journal.saveCheckpoint(jobId, 'VERIFY', { verify })
 
     // ── WRITE 阶段 Shard 化：按 WRITE_BATCH_SIZE 分批串行执行 ───────
     let writeAnalysis: WriteAnalysis | undefined
     if (snapshot.mode === 'write') {
+      // 🛡️ Governance Gate: VERIFY → WRITE 转换点的强制授权检查
+      const govDecision = await this.governance.authorize({
+        aggregate, verify, merkleRoot,
+        shardCount: shardOutcomes.length,
+        degradedShards: degraded,
+        jobMode: snapshot.mode,
+      })
+      if (!govDecision.authorized) {
+        snapshot.summary.riskFindings = unique([
+          ...snapshot.summary.riskFindings,
+          `Governance BLOCKED write: ${govDecision.reason}`,
+        ])
+        throw new Error(`Governance rejected write: ${govDecision.reason}`)
+      }
+      if (govDecision.warnings.length > 0) {
+        snapshot.summary.riskFindings = unique([
+          ...snapshot.summary.riskFindings,
+          `Governance warnings: ${govDecision.warnings.join(', ')}`,
+        ])
+      }
+
       findStage(snapshot, 'WRITE').status = 'pending'
       this.markStageStarted(snapshot, 'WRITE', 'Running batched writer')
       this.emitJobEvent(jobId, 'write.started', {})
@@ -993,6 +1049,17 @@ export class AntigravityTaskdRuntime {
       verify,
       writeAnalysis ? { targetFiles: writeAnalysis.targetFiles, diffSummary: writeAnalysis.diffSummary } : undefined,
     )
+
+    // 📜 SLSA Provenance: record outputs + assemble signed attestation
+    if (writeAnalysis) {
+      provenance.recordOutputFiles(writeAnalysis.targetFiles)
+    }
+    const signedAttestation = provenance.assemble(snapshot)
+    // 🏗️ Journal: WRITE checkpoint (if applicable)
+    if (writeAnalysis) {
+      await this.journal.saveCheckpoint(jobId, 'WRITE', { writeResults: [writeAnalysis] })
+    }
+
     this.markStageCompleted(snapshot, 'FINALIZE', 'Completed')
     snapshot.status = 'completed'
     snapshot.updatedAt = nowIso()
@@ -1000,6 +1067,7 @@ export class AntigravityTaskdRuntime {
     this.emitJobEvent(jobId, 'job.completed', {
       verdict: snapshot.summary.verdict,
       changedFiles: snapshot.artifacts.changedFiles,
+      slsaProvenance: signedAttestation,
     })
   }
 }
