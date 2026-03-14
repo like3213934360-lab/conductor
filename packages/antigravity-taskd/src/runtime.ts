@@ -30,7 +30,7 @@ import { createWorkerAdapters } from './workers.js'
 import type { TaskdPaths } from './runtime-contract.js'
 
 // ── Enterprise Capabilities ─────────────────────────────────────
-import { FileJournalStore, type JournalStore } from './journal.js'
+import { FileJournalStore, type JournalStore, type ShardOutcomeRef } from './journal.js'
 import { Ed25519Identity, type CryptoIdentity } from './crypto-identity.js'
 import { computeMerkleRoot } from './merkle.js'
 import { DefaultProvenanceCollector, type ProvenanceCollector } from './provenance.js'
@@ -702,27 +702,74 @@ export class AntigravityTaskdRuntime {
       ? workspaceFiles.filter(file => snapshot.fileHints.includes(file.path))
       : workspaceFiles
 
+    // ── Journal Replay: 断点恢复 ────────────────────────────────
+    // 如果之前崩溃过，从 journal 恢复已完成阶段的输出，跳过重复计算
+    let resumedManifest: ScoutManifest | undefined
+    let resumedShardResults: ShardAnalysis[] | undefined
+    let resumedShardOutcomes: ShardOutcomeRef[] | undefined
+    let resumedMerkleRoot: string | undefined
+    let resumedAggregate: AggregateAnalysis | undefined
+    let resumedVerify: VerifyAnalysis | undefined
+
+    const resumePoint = await this.journal.getResumePoint(jobId)
+    if (resumePoint) {
+      console.warn(`[taskd] Resuming job ${jobId} from after ${resumePoint}`)
+      const stageIndex = ['SCOUT', 'SHARD_ANALYZE', 'AGGREGATE', 'VERIFY', 'WRITE', 'FINALIZE'].indexOf(resumePoint)
+
+      // 恢复 SCOUT 数据
+      if (stageIndex >= 0) {
+        const scoutCp = await this.journal.loadCheckpoint(jobId, 'SCOUT')
+        if (scoutCp) resumedManifest = scoutCp.payload.manifest
+      }
+      // 恢复 SHARD 数据
+      if (stageIndex >= 1) {
+        const shardCp = await this.journal.loadCheckpoint(jobId, 'SHARD_ANALYZE')
+        if (shardCp) {
+          resumedShardResults = shardCp.payload.results
+          resumedShardOutcomes = shardCp.payload.outcomes
+        }
+      }
+      // 恢复 AGGREGATE 数据（含 merkle root）
+      if (stageIndex >= 2) {
+        const aggCp = await this.journal.loadCheckpoint(jobId, 'AGGREGATE')
+        if (aggCp) {
+          resumedAggregate = aggCp.payload.aggregate
+          resumedMerkleRoot = aggCp.payload.merkleRoot
+        }
+      }
+      // 恢复 VERIFY 数据
+      if (stageIndex >= 3) {
+        const verifyCp = await this.journal.loadCheckpoint(jobId, 'VERIFY')
+        if (verifyCp) resumedVerify = verifyCp.payload.verify
+      }
+    }
+
     // ── SCOUT 阶段：超时/崩溃时用 fallback manifest 兜底 ─────────
-    this.markStageStarted(snapshot, 'SCOUT', 'Planning shard graph')
-    const scoutPrompt = buildScoutPrompt(
-      snapshot.goal,
-      snapshot.mode,
-      snapshot.fileHints,
-      fileHintEntries.map(file => `${file.path} (${file.size} bytes)`),
-    )
     let manifest: ScoutManifest
-    try {
-      const scoutResult = await this.runWorker(snapshot, 'codex', 'scout', scoutPrompt, [], 'SCOUT')
-      manifest = coerceScoutManifest(snapshot.goal, scoutResult.text, fileHintEntries)
-    } catch (error) {
-      // SCOUT 失败不致命 — 用基于文件列表的 fallback 切分继续
-      const msg = error instanceof Error ? error.message : String(error)
-      console.warn(`[taskd] SCOUT failed, falling back to auto-shard: ${msg}`)
-      manifest = createFallbackScoutManifest(snapshot.goal, fileHintEntries)
-      snapshot.summary.riskFindings = unique([
-        ...snapshot.summary.riskFindings,
-        `SCOUT failed (${msg}), using fallback shard plan`,
-      ])
+    if (resumedManifest) {
+      // 📀 Journal Replay: 跳过 SCOUT，使用持久化数据
+      manifest = resumedManifest
+      this.markStageCompleted(snapshot, 'SCOUT', 'Resumed from journal')
+    } else {
+      this.markStageStarted(snapshot, 'SCOUT', 'Planning shard graph')
+      const scoutPrompt = buildScoutPrompt(
+        snapshot.goal,
+        snapshot.mode,
+        snapshot.fileHints,
+        fileHintEntries.map(file => `${file.path} (${file.size} bytes)`),
+      )
+      try {
+        const scoutResult = await this.runWorker(snapshot, 'codex', 'scout', scoutPrompt, [], 'SCOUT')
+        manifest = coerceScoutManifest(snapshot.goal, scoutResult.text, fileHintEntries)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        console.warn(`[taskd] SCOUT failed, falling back to auto-shard: ${msg}`)
+        manifest = createFallbackScoutManifest(snapshot.goal, fileHintEntries)
+        snapshot.summary.riskFindings = unique([
+          ...snapshot.summary.riskFindings,
+          `SCOUT failed (${msg}), using fallback shard plan`,
+        ])
+      }
     }
     snapshot.summary.goalSummary = manifest.goalSummary
     snapshot.summary.openQuestions = manifest.unknowns
@@ -752,11 +799,16 @@ export class AntigravityTaskdRuntime {
     const relevantEntries = workspaceFiles.filter(file => manifest.relevantPaths.includes(file.path))
     const profile = chooseExecutionProfile(relevantEntries)
     const shardResults: ShardAnalysis[] = []
-
-    // ── 全部 3 种执行模式统一使用 runWorkerSafe 实现 shard 级容错 ──
     const shardOutcomes: ShardOutcome[] = []
 
-    if (profile.kind === 'single') {
+    if (resumedShardResults && resumedShardOutcomes) {
+      // 📀 Journal Replay: 跳过 SHARD，使用持久化数据
+      shardResults.push(...resumedShardResults)
+      for (const o of resumedShardOutcomes) {
+        shardOutcomes.push({ status: o.status, shardId: o.shardId, error: o.error, durationMs: o.durationMs })
+      }
+      this.markStageCompleted(snapshot, 'SHARD_ANALYZE', 'Resumed from journal')
+    } else if (profile.kind === 'single') {
       const shard = manifest.shards[0] ?? createFallbackScoutManifest(snapshot.goal, relevantEntries).shards[0]
       if (!shard) throw new Error('No shard available for analysis')
       this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: ['codex'] })
@@ -832,12 +884,19 @@ export class AntigravityTaskdRuntime {
     }
 
     // 🌳 Merkle Tree: 用 shard 结果构建完整性证明
-    const merkleRoot = computeMerkleRoot(shardResults)
-    // 🏗️ Journal: SHARD checkpoint
-    await this.journal.saveCheckpoint(jobId, 'SHARD_ANALYZE', {
-      outcomes: shardOutcomes.map(o => ({ status: o.status, shardId: o.shardId, error: o.error, durationMs: o.durationMs })),
-      results: shardResults,
-    })
+    const merkleRoot = resumedMerkleRoot ?? computeMerkleRoot(shardResults)
+    // 🔒 TOCTOU 防御: 深冻结 shard 结果，防止 Merkle Root 计算后被修改
+    for (const result of shardResults) {
+      Object.freeze(result)
+    }
+    Object.freeze(shardResults)
+    // 🏗️ Journal: SHARD checkpoint（仅非恢复路径时写入）
+    if (!resumedShardResults) {
+      await this.journal.saveCheckpoint(jobId, 'SHARD_ANALYZE', {
+        outcomes: shardOutcomes.map(o => ({ status: o.status, shardId: o.shardId, error: o.error, durationMs: o.durationMs })),
+        results: shardResults,
+      })
+    }
 
     // 有降级 shard 时记录到 riskFindings
     if (degraded > 0 || failed > 0) {
@@ -854,34 +913,39 @@ export class AntigravityTaskdRuntime {
     if (signal.aborted) return
 
     // ── AGGREGATE 阶段：超时时用 shard 结果简单拼接降级 ──────────
-    this.markStageStarted(snapshot, 'AGGREGATE', 'Aggregating shard outputs')
     let aggregate: AggregateAnalysis
-    try {
-      const aggregateResult = await withRetry(
-        () => this.runWorker(
-          snapshot, 'codex', 'aggregator',
-          buildAggregatePrompt(snapshot.goal, shardResults),
-          [], 'AGGREGATE',
-        ),
-        'AGGREGATE',
-        2,
-        signal,  // job 取消时立即停止重试
-      )
-      aggregate = coerceAggregate(aggregateResult.text)
-    } catch (error) {
-      // AGGREGATE 失败 → 用 shard 摘要直接拼接作为降级聚合
-      const msg = error instanceof Error ? error.message : String(error)
-      console.warn(`[taskd] AGGREGATE failed, using concat fallback: ${msg}`)
-      aggregate = {
-        globalSummary: shardResults.map(s => `[${s.shardId}] ${s.summary}`).join('\n\n'),
-        agreements: [],
-        conflicts: [],
-        missingCoverage: [`DEGRADED_AGGREGATION: ${msg}`],
+    if (resumedAggregate) {
+      // 📀 Journal Replay: 跳过 AGGREGATE
+      aggregate = resumedAggregate
+      this.markStageCompleted(snapshot, 'AGGREGATE', 'Resumed from journal')
+    } else {
+      this.markStageStarted(snapshot, 'AGGREGATE', 'Aggregating shard outputs')
+      try {
+        const aggregateResult = await withRetry(
+          () => this.runWorker(
+            snapshot, 'codex', 'aggregator',
+            buildAggregatePrompt(snapshot.goal, shardResults as ShardAnalysis[]),
+            [], 'AGGREGATE',
+          ),
+          'AGGREGATE',
+          2,
+          signal,
+        )
+        aggregate = coerceAggregate(aggregateResult.text)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        console.warn(`[taskd] AGGREGATE failed, using concat fallback: ${msg}`)
+        aggregate = {
+          globalSummary: (shardResults as ShardAnalysis[]).map(s => `[${s.shardId}] ${s.summary}`).join('\n\n'),
+          agreements: [],
+          conflicts: [],
+          missingCoverage: [`DEGRADED_AGGREGATION: ${msg}`],
+        }
+        snapshot.summary.riskFindings = unique([
+          ...snapshot.summary.riskFindings,
+          `AGGREGATE failed (${msg}), using degraded concat fallback`,
+        ])
       }
-      snapshot.summary.riskFindings = unique([
-        ...snapshot.summary.riskFindings,
-        `AGGREGATE failed (${msg}), using degraded concat fallback`,
-      ])
     }
     snapshot.summary.globalSummary = aggregate.globalSummary
     this.markStageCompleted(snapshot, 'AGGREGATE',
@@ -891,8 +955,10 @@ export class AntigravityTaskdRuntime {
       conflicts: aggregate.conflicts,
       missingCoverage: aggregate.missingCoverage,
     })
-    // 🏗️ Journal: AGGREGATE checkpoint (含 merkle root)
-    await this.journal.saveCheckpoint(jobId, 'AGGREGATE', { aggregate, merkleRoot })
+    // 🏗️ Journal: AGGREGATE checkpoint（仅非恢复路径）
+    if (!resumedAggregate) {
+      await this.journal.saveCheckpoint(jobId, 'AGGREGATE', { aggregate, merkleRoot })
+    }
 
     if (signal.aborted) return
 
