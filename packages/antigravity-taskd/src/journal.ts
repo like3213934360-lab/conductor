@@ -132,11 +132,25 @@ export class FileJournalStore implements JournalStore {
       timestamp: new Date().toISOString(),
     }
 
-    // 原子写入：先写 tmp，再 rename
+    // 原子写入：先写 tmp → fsync 刷盘 → rename 覆盖
     const filePath = this.checkpointPath(jobId, stageId)
     const tmpPath = `${filePath}.tmp`
-    fs.writeFileSync(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf8')
-    fs.renameSync(tmpPath, filePath)
+    try {
+      const content = JSON.stringify(checkpoint, null, 2)
+      const fd = fs.openSync(tmpPath, 'w')
+      try {
+        fs.writeSync(fd, content, 0, 'utf8')
+        fs.fsyncSync(fd)  // 🔥 强制刷盘，防止断电后 Page Cache 丢失
+      } finally {
+        fs.closeSync(fd)
+      }
+      fs.renameSync(tmpPath, filePath)
+    } catch (error) {
+      // ENOSPC 或 IO 故障时清理残留的 .tmp 文件，不让它污染下次恢复
+      try { fs.unlinkSync(tmpPath) } catch { /* 忽略清理失败 */ }
+      console.warn(`[journal] saveCheckpoint failed for ${stageId}/${jobId}: ${error instanceof Error ? error.message : error}`)
+      // 不向上抛出 — journal 保存失败不应该杀死整个 Job
+    }
   }
 
   async loadCheckpoint<S extends keyof StagePayloadMap>(

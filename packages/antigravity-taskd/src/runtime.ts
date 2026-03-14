@@ -644,7 +644,7 @@ export class AntigravityTaskdRuntime {
     stageId: TaskStageId,
     shardId: string,
   ): Promise<ShardOutcome> {
-    const startTime = Date.now()
+    const startTime = performance.now()  // 单调时钟，免疫 NTP 跳变
     try {
       const result = await this.runWorker(
         snapshot, backend, role, prompt, filePaths, stageId, shardId,
@@ -653,10 +653,10 @@ export class AntigravityTaskdRuntime {
         status: 'success',
         shardId,
         result: coerceShardAnalysis(shardId, backend, result.text),
-        durationMs: Date.now() - startTime,
+        durationMs: Math.round(performance.now() - startTime),
       }
     } catch (error) {
-      const durationMs = Date.now() - startTime
+      const durationMs = Math.round(performance.now() - startTime)
       const errorMessage = error instanceof Error ? error.message : String(error)
       const budget = STAGE_BUDGETS[stageId]
 
