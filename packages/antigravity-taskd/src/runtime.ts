@@ -33,6 +33,22 @@ interface ExecutionProfile {
   kind: 'single' | 'dual' | 'sharded'
 }
 
+// ── Shard 级失败容忍 ──────────────────────────────────────────────
+// 单个 shard worker 的结果枚举：成功 / 降级（超时但有部分输出）/ 失败
+type ShardOutcomeStatus = 'success' | 'degraded' | 'failed'
+
+interface ShardOutcome {
+  status: ShardOutcomeStatus
+  shardId: string
+  result?: ShardAnalysis    // success 或 degraded 时可用
+  error?: string            // degraded 或 failed 时记录原因
+  durationMs: number
+}
+
+// ── WRITE 阶段 Shard 化 ─────────────────────────────────────────
+// 每批最多处理 3 个文件，防止单次 writer 调用 OOM/超时
+const WRITE_BATCH_SIZE = 3
+
 const STAGE_BUDGETS: Record<TaskStageId, { softBudgetMs: number; hardBudgetMs: number }> = {
   SCOUT: { softBudgetMs: 60_000, hardBudgetMs: 120_000 },
   SHARD_ANALYZE: { softBudgetMs: 1_800_000, hardBudgetMs: 2_100_000 },
@@ -437,6 +453,9 @@ export class AntigravityTaskdRuntime {
     }
   }
 
+  // ── 两阶段超时 runWorker ─────────────────────────────────────────
+  // soft budget → 发 SIGINT（CLI 有机会输出已有结果）
+  // hard budget → 发 abort/SIGTERM（无情终止）
   private async runWorker(
     snapshot: TaskJobSnapshot,
     backend: WorkerBackend,
@@ -451,10 +470,32 @@ export class AntigravityTaskdRuntime {
     const worker = this.createWorkerSnapshot(workerId, backend, role, currentShardId)
     this.upsertWorker(snapshot, worker)
 
+    const budget = STAGE_BUDGETS[stageId]
     const parentController = this.controllers.get(snapshot.jobId)
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), STAGE_BUDGETS[stageId].hardBudgetMs)
-    const abort = () => controller.abort()
+
+    // soft signal: 通知 CLI "请尽快收尾"，adapter 层将其映射为 SIGINT
+    const softController = new AbortController()
+    // hard signal: 真正终止进程
+    const hardController = new AbortController()
+
+    const softTimeout = setTimeout(() => {
+      console.warn(`[taskd] soft budget reached for ${workerId} (${budget.softBudgetMs}ms) — sending wrap-up signal`)
+      softController.abort()
+      this.emitJobEvent(snapshot.jobId, 'worker.progress', {
+        workerId, backend, role, currentShardId,
+        phase: 'finalizing',
+        message: `Soft budget reached (${Math.round(budget.softBudgetMs / 1000)}s), wrapping up`,
+        progress: 0.95,
+      })
+    }, budget.softBudgetMs)
+
+    const hardTimeout = setTimeout(() => {
+      console.warn(`[taskd] hard budget reached for ${workerId} (${budget.hardBudgetMs}ms) — force killing`)
+      hardController.abort()
+    }, budget.hardBudgetMs)
+
+    // 父级取消时同步 abort（用户主动取消）
+    const abort = () => hardController.abort()
     parentController?.signal.addEventListener('abort', abort, { once: true })
 
     try {
@@ -465,7 +506,8 @@ export class AntigravityTaskdRuntime {
         filePaths,
         mode: role === 'writer' ? 'write' : 'analysis',
         role,
-        hardBudgetMs: STAGE_BUDGETS[stageId].hardBudgetMs,
+        hardBudgetMs: budget.hardBudgetMs,
+        softBudgetMs: budget.softBudgetMs,   // 透传给 adapter 做 SIGINT 映射
       }, (event) => {
         this.applyWorkerEvent(snapshot, worker, event)
         this.emitJobEvent(snapshot.jobId, this.mapWorkerEventType(event), {
@@ -478,7 +520,7 @@ export class AntigravityTaskdRuntime {
           progress: event.progress,
           details: event.details,
         })
-      }, controller.signal)
+      }, hardController.signal, softController.signal)  // 双 signal 传递
 
       worker.status = 'completed'
       worker.phase = 'done'
@@ -493,15 +535,77 @@ export class AntigravityTaskdRuntime {
       }
       return result
     } catch (error) {
-      worker.status = controller.signal.aborted && !parentController?.signal.aborted ? 'failed' : 'cancelled'
+      worker.status = hardController.signal.aborted && !parentController?.signal.aborted ? 'failed' : 'cancelled'
       worker.phase = 'error'
       worker.completedAt = nowIso()
       worker.message = error instanceof Error ? error.message : String(error)
       this.upsertWorker(snapshot, worker)
       throw error
     } finally {
-      clearTimeout(timeout)
+      clearTimeout(softTimeout)
+      clearTimeout(hardTimeout)
       parentController?.signal.removeEventListener('abort', abort)
+    }
+  }
+
+  // ── Shard 级安全执行 ─────────────────────────────────────────────
+  // 捕获单个 shard 的超时/崩溃，返回 ShardOutcome 而非直接抛出；
+  // 允许系统带着部分成功的结果继续进入 AGGREGATE 阶段。
+  private async runWorkerSafe(
+    snapshot: TaskJobSnapshot,
+    backend: WorkerBackend,
+    role: WorkerRole,
+    prompt: string,
+    filePaths: string[],
+    stageId: TaskStageId,
+    shardId: string,
+  ): Promise<ShardOutcome> {
+    const startTime = Date.now()
+    try {
+      const result = await this.runWorker(
+        snapshot, backend, role, prompt, filePaths, stageId, shardId,
+      )
+      return {
+        status: 'success',
+        shardId,
+        result: coerceShardAnalysis(shardId, backend, result.text),
+        durationMs: Date.now() - startTime,
+      }
+    } catch (error) {
+      const durationMs = Date.now() - startTime
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const budget = STAGE_BUDGETS[stageId]
+
+      // 判定是超时导致的降级还是真正的错误
+      const isDegraded = durationMs >= budget.softBudgetMs * 0.9
+
+      // 尝试从 worker snapshot 中抢救部分输出
+      const workerSnap = snapshot.workers.find(w =>
+        w.currentShardId === shardId && w.backend === backend,
+      )
+      // worker.message 中可能包含 CLI 在被 SIGINT 时输出的部分结果
+      const partialText = workerSnap?.message || ''
+
+      if (isDegraded && partialText.length > 50) {
+        // 有足够的部分输出 → 降级结果（可用但不完整）
+        console.warn(`[taskd] shard ${shardId} degraded after ${durationMs}ms: ${errorMessage}`)
+        return {
+          status: 'degraded',
+          shardId,
+          result: coerceShardAnalysis(`${shardId}:degraded`, backend, partialText),
+          error: errorMessage,
+          durationMs,
+        }
+      }
+
+      // 没有可用输出 → 完全失败
+      console.warn(`[taskd] shard ${shardId} failed after ${durationMs}ms: ${errorMessage}`)
+      return {
+        status: 'failed',
+        shardId,
+        error: errorMessage,
+        durationMs,
+      }
     }
   }
 
@@ -544,51 +648,51 @@ export class AntigravityTaskdRuntime {
     const profile = chooseExecutionProfile(relevantEntries)
     const shardResults: ShardAnalysis[] = []
 
+    // ── 全部 3 种执行模式统一使用 runWorkerSafe 实现 shard 级容错 ──
+    const shardOutcomes: ShardOutcome[] = []
+
     if (profile.kind === 'single') {
       const shard = manifest.shards[0] ?? createFallbackScoutManifest(snapshot.goal, relevantEntries).shards[0]
       if (!shard) throw new Error('No shard available for analysis')
       this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: ['codex'] })
-      const result = await this.runWorker(
-        snapshot,
-        'codex',
-        'analyzer',
+      const outcome = await this.runWorkerSafe(
+        snapshot, 'codex', 'analyzer',
         buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths),
         unique([...shard.sharedFiles, ...shard.filePaths]),
-        'SHARD_ANALYZE',
-        shard.shardId,
+        'SHARD_ANALYZE', shard.shardId,
       )
-      shardResults.push(coerceShardAnalysis(shard.shardId, 'codex', result.text))
-      this.emitJobEvent(jobId, 'shard.completed', { shardId: shard.shardId, backend: 'codex' })
+      shardOutcomes.push(outcome)
+      if (outcome.result) shardResults.push(outcome.result)
+      this.emitJobEvent(jobId, 'shard.completed', {
+        shardId: shard.shardId, backend: 'codex', outcome: outcome.status,
+      })
     } else if (profile.kind === 'dual') {
       const shardFilePaths = manifest.relevantPaths.length > 0 ? manifest.relevantPaths : relevantEntries.map(file => file.path)
       const sharedFiles = pickSharedFiles(shardFilePaths)
       const shardId = 'shard-1'
       this.emitJobEvent(jobId, 'shard.started', { shardId, backends: ['codex', 'gemini'] })
-      const [codexResult, geminiResult] = await Promise.all([
-        this.runWorker(
-          snapshot,
-          'codex',
-          'analyzer',
+      // dual 模式：两个后端并行分析同一 shard，各自容错
+      const [codexOutcome, geminiOutcome] = await Promise.all([
+        this.runWorkerSafe(
+          snapshot, 'codex', 'analyzer',
           buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
           unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE',
-          shardId,
+          'SHARD_ANALYZE', `${shardId}:codex`,
         ),
-        this.runWorker(
-          snapshot,
-          'gemini',
-          'reviewer',
+        this.runWorkerSafe(
+          snapshot, 'gemini', 'reviewer',
           buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
           unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE',
-          shardId,
+          'SHARD_ANALYZE', `${shardId}:gemini`,
         ),
       ])
-      shardResults.push(coerceShardAnalysis(`${shardId}:codex`, 'codex', codexResult.text))
-      shardResults.push(coerceShardAnalysis(`${shardId}:gemini`, 'gemini', geminiResult.text))
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'codex' })
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'gemini' })
+      shardOutcomes.push(codexOutcome, geminiOutcome)
+      if (codexOutcome.result) shardResults.push(codexOutcome.result)
+      if (geminiOutcome.result) shardResults.push(geminiOutcome.result)
+      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'codex', outcome: codexOutcome.status })
+      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'gemini', outcome: geminiOutcome.status })
     } else {
+      // sharded 模式：2 个 worker 并行消费 shard 队列，单个失败不影响其余
       const shards = manifest.shards.length > 0 ? manifest.shards : createFallbackScoutManifest(snapshot.goal, relevantEntries).shards
       const queue = [...shards]
       const workerPool = Array.from({ length: 2 }, async (_value, index) => {
@@ -596,23 +700,43 @@ export class AntigravityTaskdRuntime {
           const shard = queue.shift()
           if (!shard) return
           this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: [`codex-${index + 1}`] })
-          const result = await this.runWorker(
-            snapshot,
-            'codex',
-            'analyzer',
+          const outcome = await this.runWorkerSafe(
+            snapshot, 'codex', 'analyzer',
             buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths),
             unique([...shard.sharedFiles, ...shard.filePaths]),
-            'SHARD_ANALYZE',
-            shard.shardId,
+            'SHARD_ANALYZE', shard.shardId,
           )
-          shardResults.push(coerceShardAnalysis(shard.shardId, 'codex', result.text))
-          this.emitJobEvent(jobId, 'shard.completed', { shardId: shard.shardId, backend: 'codex' })
+          shardOutcomes.push(outcome)
+          if (outcome.result) shardResults.push(outcome.result)
+          this.emitJobEvent(jobId, 'shard.completed', {
+            shardId: shard.shardId, backend: 'codex', outcome: outcome.status,
+          })
         }
       })
       await Promise.all(workerPool)
     }
 
-    this.markStageCompleted(snapshot, 'SHARD_ANALYZE', `Completed ${shardResults.length} shard analyses`)
+    // 统计 shard 执行结果
+    const succeeded = shardOutcomes.filter(o => o.status === 'success').length
+    const degraded = shardOutcomes.filter(o => o.status === 'degraded').length
+    const failed = shardOutcomes.filter(o => o.status === 'failed').length
+
+    // 至少要有 1 个 shard 产出结果才值得继续
+    if (shardResults.length === 0) {
+      throw new Error(`All ${shardOutcomes.length} shards failed — no results to aggregate`)
+    }
+
+    // 有降级 shard 时记录到 riskFindings
+    if (degraded > 0 || failed > 0) {
+      snapshot.summary.riskFindings = unique([
+        ...snapshot.summary.riskFindings,
+        `Shard analysis: ${succeeded} success, ${degraded} degraded, ${failed} failed out of ${shardOutcomes.length}`,
+      ])
+    }
+
+    this.markStageCompleted(snapshot, 'SHARD_ANALYZE',
+      `${shardResults.length}/${shardOutcomes.length} shards produced results (${degraded} degraded, ${failed} failed)`,
+    )
 
     if (signal.aborted) return
 
@@ -657,32 +781,82 @@ export class AntigravityTaskdRuntime {
       riskFindings: verify.riskFindings,
     })
 
+    // ── WRITE 阶段 Shard 化：按 WRITE_BATCH_SIZE 分批串行执行 ───────
     let writeAnalysis: WriteAnalysis | undefined
     if (snapshot.mode === 'write') {
       findStage(snapshot, 'WRITE').status = 'pending'
-      this.markStageStarted(snapshot, 'WRITE', 'Running single writer')
+      this.markStageStarted(snapshot, 'WRITE', 'Running batched writer')
       this.emitJobEvent(jobId, 'write.started', {})
+
       const writeTargetFiles = unique([
         ...snapshot.artifacts.changedFiles,
         ...manifest.relevantPaths.slice(0, 12),
       ])
-      const writeResult = await this.runWorker(
-        snapshot,
-        'codex',
-        'writer',
-        buildWritePrompt(snapshot.goal, aggregate, verify, writeTargetFiles),
-        writeTargetFiles,
-        'WRITE',
-      )
-      writeAnalysis = coerceWrite(writeResult.text)
-      snapshot.artifacts.changedFiles = unique([...snapshot.artifacts.changedFiles, ...writeAnalysis.targetFiles, ...writeResult.changedFiles])
-      if (writeResult.diff) {
-        snapshot.artifacts.latestDiff = writeResult.diff
+
+      // 将目标文件切分成 WRITE_BATCH_SIZE 大小的 batch
+      const writeBatches: string[][] = []
+      for (let i = 0; i < writeTargetFiles.length; i += WRITE_BATCH_SIZE) {
+        writeBatches.push(writeTargetFiles.slice(i, i + WRITE_BATCH_SIZE))
       }
-      this.markStageCompleted(snapshot, 'WRITE', writeAnalysis.diffSummary)
+
+      // 串行执行每个 batch（避免并发写同一目录产生冲突）
+      const batchResults: WriteAnalysis[] = []
+      const allChangedFiles: string[] = []
+      let lastDiff = ''
+
+      for (let batchIdx = 0; batchIdx < writeBatches.length; batchIdx++) {
+        const batch = writeBatches[batchIdx]
+        if (signal.aborted) break
+
+        this.emitJobEvent(jobId, 'worker.progress', {
+          phase: 'working',
+          message: `Write batch ${batchIdx + 1}/${writeBatches.length} (${batch.length} files)`,
+          progress: batchIdx / writeBatches.length,
+        })
+
+        try {
+          const writeResult = await this.runWorker(
+            snapshot,
+            'codex',
+            'writer',
+            buildWritePrompt(snapshot.goal, aggregate, verify, batch),
+            batch,
+            'WRITE',
+          )
+          const parsed = coerceWrite(writeResult.text)
+          batchResults.push(parsed)
+          allChangedFiles.push(...parsed.targetFiles, ...writeResult.changedFiles)
+          if (writeResult.diff) lastDiff = writeResult.diff
+        } catch (error) {
+          // 单个 batch 写入失败不阻断后续 batch
+          const msg = error instanceof Error ? error.message : String(error)
+          console.warn(`[taskd] write batch ${batchIdx + 1} failed: ${msg}`)
+          snapshot.summary.riskFindings = unique([
+            ...snapshot.summary.riskFindings,
+            `Write batch ${batchIdx + 1}/${writeBatches.length} failed: ${msg}`,
+          ])
+        }
+      }
+
+      // 合并所有 batch 结果
+      writeAnalysis = {
+        changePlan: batchResults.map(r => r.changePlan).filter(Boolean).join('\n---\n'),
+        targetFiles: unique(batchResults.flatMap(r => r.targetFiles)),
+        executionLog: batchResults.flatMap(r => r.executionLog),
+        diffSummary: batchResults.map(r => r.diffSummary).filter(Boolean).join('\n'),
+      }
+
+      snapshot.artifacts.changedFiles = unique([...snapshot.artifacts.changedFiles, ...allChangedFiles])
+      if (lastDiff) snapshot.artifacts.latestDiff = lastDiff
+
+      this.markStageCompleted(snapshot, 'WRITE',
+        `${batchResults.length}/${writeBatches.length} batches completed`,
+      )
       this.emitJobEvent(jobId, 'write.completed', {
         targetFiles: writeAnalysis.targetFiles,
         diffSummary: writeAnalysis.diffSummary,
+        batchCount: writeBatches.length,
+        successCount: batchResults.length,
       })
     }
 

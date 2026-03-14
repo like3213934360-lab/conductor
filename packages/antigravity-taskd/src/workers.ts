@@ -63,6 +63,7 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     request: WorkerRunRequest,
     onEvent: (event: WorkerEvent) => void,
     signal: AbortSignal,
+    softSignal?: AbortSignal,
   ): Promise<WorkerRunResult> {
     const fullPrompt = appendContext(request.prompt, request.cwd, request.filePaths)
     const child = spawn('codex', ['app-server', '--listen', 'stdio://'], {
@@ -112,6 +113,14 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
       child.kill('SIGTERM')
     }
     signal.addEventListener('abort', abort, { once: true })
+
+    // soft signal: 发 SIGINT 给 CLI 进程让它优雅收尾（输出已有结果）
+    const softAbort = () => {
+      if (!child.killed) {
+        child.kill('SIGINT')
+      }
+    }
+    softSignal?.addEventListener('abort', softAbort, { once: true })
 
     const rl = readline.createInterface({ input: child.stdout })
     const stderrRl = child.stderr ? readline.createInterface({ input: child.stderr }) : null
@@ -387,6 +396,7 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     } finally {
       cleanup()
       signal.removeEventListener('abort', abort)
+      softSignal?.removeEventListener('abort', softAbort)
       if (!child.killed) {
         child.kill('SIGTERM')
       }
@@ -409,6 +419,7 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     request: WorkerRunRequest,
     onEvent: (event: WorkerEvent) => void,
     signal: AbortSignal,
+    softSignal?: AbortSignal,
   ): Promise<WorkerRunResult> {
     const fullPrompt = appendContext(request.prompt, request.cwd, request.filePaths)
     const args = [
@@ -435,6 +446,14 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
 
     const abort = () => child.kill('SIGTERM')
     signal.addEventListener('abort', abort, { once: true })
+
+    // soft signal: 给 gemini 进程发 SIGINT 让它优雅输出
+    const softAbort = () => {
+      if (!child.killed) {
+        child.kill('SIGINT')
+      }
+    }
+    softSignal?.addEventListener('abort', softAbort, { once: true })
 
     const rl = readline.createInterface({ input: child.stdout })
     const stderrRl = child.stderr ? readline.createInterface({ input: child.stderr }) : null
@@ -562,6 +581,7 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     } finally {
       stopSyntheticProgress()
       signal.removeEventListener('abort', abort)
+      softSignal?.removeEventListener('abort', softAbort)
       rl.close()
       stderrRl?.close()
       if (!child.killed) {

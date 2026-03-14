@@ -203,6 +203,7 @@ export interface WorkerRunRequest {
   mode: TaskJobMode
   role: WorkerRole
   hardBudgetMs: number
+  softBudgetMs?: number  // 软超时预算，adapter 可用来做优雅降级
 }
 
 export interface WorkerRunResult {
@@ -219,6 +220,7 @@ export interface WorkerAdapter {
     request: WorkerRunRequest,
     onEvent: (event: WorkerEvent) => void,
     signal: AbortSignal,
+    softSignal?: AbortSignal,  // 软超时信号：收到后应尽快输出已有结果
   ): Promise<WorkerRunResult>
 }
 
