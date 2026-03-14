@@ -39,20 +39,27 @@ export interface Hashable {
   shardId: string
 }
 
-function leafHash(item: Hashable): string {
-  return sha256(JSON.stringify(item))
+function leafHash(item: Hashable, salt?: string): string {
+  const data = salt
+    ? `${salt}:${JSON.stringify(item)}`  // 绑定 jobId 防重放
+    : JSON.stringify(item)
+  return sha256(data)
 }
 
 // ── Merkle Tree 构建 ────────────────────────────────────────────
 
-export function buildMerkleTree(items: Hashable[]): MerkleNode {
+/**
+ * @param items  带 shardId 的对象数组
+ * @param salt   防重放盐值（建议传入 jobId），不同 salt 产生不同的树
+ */
+export function buildMerkleTree(items: Hashable[], salt?: string): MerkleNode {
   if (items.length === 0) {
     return { hash: sha256('empty') }
   }
 
   // 构建叶子层
   let nodes: MerkleNode[] = items.map(item => ({
-    hash: leafHash(item),
+    hash: leafHash(item, salt),
     shardId: item.shardId,
   }))
 
@@ -79,15 +86,19 @@ export function buildMerkleTree(items: Hashable[]): MerkleNode {
   return nodes[0]
 }
 
-export function computeMerkleRoot(items: Hashable[]): string {
-  return buildMerkleTree(items).hash
+/**
+ * @param salt  防重放盐值（建议传入 jobId）
+ */
+export function computeMerkleRoot(items: Hashable[], salt?: string): string {
+  return buildMerkleTree(items, salt).hash
 }
 
 export function generateMerkleProof(
   items: Hashable[],
   targetShardId: string,
+  salt?: string,
 ): MerkleProof | null {
-  const tree = buildMerkleTree(items)
+  const tree = buildMerkleTree(items, salt)
   const proof: MerkleProof['proof'] = []
 
   function walk(node: MerkleNode): boolean {

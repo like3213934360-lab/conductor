@@ -37,13 +37,42 @@ export function buildShardPrompt(goal: string, shardId: string, relevantFiles: s
   ].join('\n')
 }
 
+/** 单个 shard 摘要最大字节数（超出则截断 evidence/symbols） */
+const MAX_SHARD_SUMMARY_BYTES = 50_000  // ~50KB
+/** 全量 shard JSON 最大字节数（超出则退化为 summary-only 模式） */
+const MAX_AGGREGATE_PAYLOAD_BYTES = 8_000_000  // 8MB
+
+function truncateShardForPrompt(shard: ShardAnalysis): ShardAnalysis | { shardId: string; summary: string; _truncated: true } {
+  const full = JSON.stringify(shard)
+  if (full.length <= MAX_SHARD_SUMMARY_BYTES) return shard
+  // 截断策略：保留 summary + shardId，丢弃 evidence/symbols/dependencies
+  return {
+    shardId: shard.shardId,
+    summary: shard.summary.slice(0, 2000),
+    _truncated: true,
+  } as any
+}
+
 export function buildAggregatePrompt(goal: string, shardResults: ShardAnalysis[]): string {
+  // 阶段 1：逐个截断大型 shard
+  const truncated = shardResults.map(truncateShardForPrompt)
+  let serialized = JSON.stringify(truncated, null, 2)
+
+  // 阶段 2：如果总量仍超出安全上限，退化为纯 summary 列表
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_AGGREGATE_PAYLOAD_BYTES) {
+    const summaryOnly = shardResults.map(s => ({
+      shardId: s.shardId,
+      summary: s.summary.slice(0, 500),
+    }))
+    serialized = JSON.stringify(summaryOnly, null, 2)
+  }
+
   return [
     'You are the AGGREGATE stage.',
     `Task goal: ${goal}`,
     '',
-    'Shard results JSON:',
-    JSON.stringify(shardResults, null, 2),
+    `Shard results JSON (${shardResults.length} shards):`,
+    serialized,
     '',
     'Return STRICT JSON only with this shape:',
     '{"globalSummary":"...","agreements":["..."],"conflicts":["..."],"missingCoverage":["..."]}',

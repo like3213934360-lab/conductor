@@ -884,7 +884,7 @@ export class AntigravityTaskdRuntime {
     }
 
     // 🌳 Merkle Tree: 用 shard 结果构建完整性证明
-    const merkleRoot = resumedMerkleRoot ?? computeMerkleRoot(shardResults)
+    const merkleRoot = resumedMerkleRoot ?? computeMerkleRoot(shardResults, jobId)
     // 🔒 TOCTOU 防御: 深冻结 shard 结果，防止 Merkle Root 计算后被修改
     for (const result of shardResults) {
       Object.freeze(result)

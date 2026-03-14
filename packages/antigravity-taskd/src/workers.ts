@@ -78,9 +78,11 @@ function appendContext(prompt: string, cwd: string, filePaths: string[]): string
   return context ? `${prompt}\n\n${context}` : prompt
 }
 
-// ── JSON-RPC 初始化超时 ─────────────────────────────────────────
+// ── JSON-RPC 安全常量 ──────────────────────────────────────────
 // CLI 冷启动时可能加载模型 / 下载依赖，防止无限期挂起
 const INIT_TIMEOUT_MS = 15_000  // 15s
+// 单行 JSON-RPC 消息最大字节数（防止 50MB 巨包阻塞 Event Loop）
+const MAX_LINE_BYTES = 10 * 1024 * 1024  // 10MB
 
 class WorkerInitError extends Error {
   constructor(method: string, timeoutMs: number) {
@@ -302,6 +304,11 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
 
     rl.on('line', (line) => {
       if (!line.trim()) return
+      // 🛡️ 防止巨型 JSON-RPC 包阻塞 Event Loop
+      if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
+        console.warn(`[taskd] Codex JSON-RPC line exceeds ${MAX_LINE_BYTES} bytes, dropping`)
+        return
+      }
       let message: JsonRpcResponse
       try {
         message = JSON.parse(line) as JsonRpcResponse
@@ -561,6 +568,11 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     const completionPromise = new Promise<void>((resolve, reject) => {
       rl.on('line', (line) => {
         if (!line.trim()) return
+        // 🛡️ 防止巨型 JSON 包阻塞 Event Loop
+        if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
+          console.warn(`[taskd] Gemini JSON line exceeds ${MAX_LINE_BYTES} bytes, dropping`)
+          return
+        }
         let parsed: any
         try {
           parsed = JSON.parse(line)
