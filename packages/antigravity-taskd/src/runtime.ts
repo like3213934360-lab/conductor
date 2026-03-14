@@ -788,6 +788,8 @@ export class AntigravityTaskdRuntime {
     let resumedMerkleRoot: string | undefined
     let resumedAggregate: AggregateAnalysis | undefined
     let resumedVerify: VerifyAnalysis | undefined
+    /** 脑裂修复：记录崩溃前 VFS 里尚未落盘的文件路径 */
+    let resumedVfsPendingPaths: string[] = []
 
     const resumePoint = await this.journal.getResumePoint(jobId)
     if (resumePoint) {
@@ -818,7 +820,15 @@ export class AntigravityTaskdRuntime {
       // 恢复 VERIFY 数据
       if (stageIndex >= 3) {
         const verifyCp = await this.journal.loadCheckpoint(jobId, 'VERIFY')
-        if (verifyCp) resumedVerify = verifyCp.payload.verify
+        if (verifyCp) {
+          resumedVerify = verifyCp.payload.verify
+          // 恢复 VFS 脑裂检测标记：若崩溃发生在 Reflexion 期间，
+          // vfsPendingPaths 记录了哪些文件尚未成功落盘，需要重跑 Reflexion
+          const pendingPaths = verifyCp.payload.vfsPendingPaths
+          if (Array.isArray(pendingPaths) && pendingPaths.length > 0) {
+            resumedVfsPendingPaths = pendingPaths as string[]
+          }
+        }
       }
     }
 
@@ -1062,7 +1072,33 @@ export class AntigravityTaskdRuntime {
     const reflexion = new DefaultReflexionStateMachine()
 
     // 当前生成文件（write 模式时从 aggregate 结果中提取）
-    const pendingFiles: Record<string, string> = {}
+    let pendingFiles: Record<string, string> = {}
+
+    // 脑裂恢复：若上次崩溃发生在 Reflexion 期间（vfsPendingPaths 有记录），
+    // 且 verdict 为 unverified（Reflexion 未完成），强制从 AGGREGATE 重建 pendingFiles
+    // 并重新进入 Reflexion 循环，确保脏代码不会被静默放行。
+    if (
+      resumedVfsPendingPaths.length > 0 &&
+      resumedVerify?.verdict === 'unverified' &&
+      snapshot.mode === 'write'
+    ) {
+      console.warn(
+        `[taskd] Detected VFS-Journal desync: ${resumedVfsPendingPaths.length} file(s) ` +
+        `were pending commit at last crash. Re-entering Reflexion.`,
+      )
+      // 从 AGGREGATE 结果中重建需要落盘的文件内容。
+      // AggregateAnalysis.suggestedEdits 保存了生成的代码片段（路径 → 内容）。
+      const suggestedEdits = (aggregate as any)?.suggestedEdits as Record<string, string> | undefined
+      if (suggestedEdits) {
+        for (const p of resumedVfsPendingPaths) {
+          if (suggestedEdits[p]) {
+            pendingFiles[p] = suggestedEdits[p]
+          }
+        }
+      }
+      // 重置 resumedVerify 为 undefined，强制重跑 VERIFY Worker + Reflexion
+      resumedVerify = undefined
+    }
 
     try {
       const verifyResult = await withRetry(
@@ -1148,7 +1184,12 @@ export class AntigravityTaskdRuntime {
       riskFindings: verify.riskFindings,
     })
     // 🏗️ Journal: VERIFY checkpoint
-    await this.journal.saveCheckpoint(jobId, 'VERIFY', { verify })
+    // 包含 vfsPendingPaths：记录 VFS 里尚未 commit 的文件路径。
+    // 若进程在 Reflexion 期间崩溃，恢复时可检测到脑裂并重新触发 Reflexion。
+    await this.journal.saveCheckpoint(jobId, 'VERIFY', {
+      verify,
+      vfsPendingPaths: Object.keys(pendingFiles),
+    })
 
     // ── WRITE 阶段 Shard 化：按 WRITE_BATCH_SIZE 分批串行执行 ───────
     let writeAnalysis: WriteAnalysis | undefined

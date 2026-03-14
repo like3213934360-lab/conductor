@@ -37,7 +37,7 @@ export interface StagePayloadMap {
   SCOUT: { manifest: ScoutManifest; fileHintEntries: FileEntryRef[] }
   SHARD_ANALYZE: { outcomes: ShardOutcomeRef[]; results: ShardAnalysis[] }
   AGGREGATE: { aggregate: AggregateAnalysis; merkleRoot: string }
-  VERIFY: { verify: VerifyAnalysis }
+  VERIFY: { verify: VerifyAnalysis; vfsPendingPaths?: string[] }
   WRITE: { writeResults: WriteAnalysis[] }
   FINALIZE: Record<string, never>
 }

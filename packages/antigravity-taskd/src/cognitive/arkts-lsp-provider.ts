@@ -164,6 +164,64 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
 const INIT_TIMEOUT_MS = 15_000     // 15 s LSP startup deadline
 const DIAGNOSTICS_TIMEOUT_MS = 30_000   // 30 s per-file diagnostics window
 
+// ── LspSessionMutex ───────────────────────────────────────────────────────────
+//
+// Guarantees exclusive access to the shared LSP process for each diagnose()
+// call session. Prevents Shard A's didChange from polluting Shard B's view
+// of the same file.
+//
+// Design:
+//  - Promise-queue FIFO — no busy-loop, no setTimeout polling
+//  - release() is always called in the caller's try...finally, preventing
+//    deadlock even if diagnose() throws
+//  - Re-entrant guard: a shard holding the lock that throws will still release
+
+class LspSessionMutex {
+  private locked = false
+  private readonly queue: Array<() => void> = []
+
+  /**
+   * Acquire exclusive lock. Returns a `release` function that MUST be called
+   * inside a try...finally to prevent deadlock.
+   */
+  async acquire(): Promise<() => void> {
+    return new Promise<() => void>((resolve) => {
+      const tryAcquire = () => {
+        if (!this.locked) {
+          this.locked = true
+          resolve(() => {
+            // Release: unlock and hand off to next waiter
+            const next = this.queue.shift()
+            if (next) {
+              // Schedule via microtask to avoid synchronous stack overflow
+              // in long queues (Promise.resolve() creates a microtask)
+              Promise.resolve().then(next)
+            } else {
+              this.locked = false
+            }
+          })
+        } else {
+          // Already locked — enqueue and wait
+          this.queue.push(tryAcquire)
+        }
+      }
+      tryAcquire()
+    })
+  }
+
+  /** Drain queued waiters — used during dispose() to unblock any stuck shards. */
+  drainWithError(err: Error): void {
+    this.locked = false
+    const waiters = this.queue.splice(0)
+    for (const w of waiters) {
+      // Each waiter will re-check tryAcquire; since we cleared locked above,
+      // they will acquire immediately (one after another) — but by this point
+      // dispose() will have set this.disposed, causing assertAlive() to throw.
+      Promise.resolve().then(w)
+    }
+  }
+}
+
 /**
  * Options for constructing ArkTsLspProvider.
  * @param command  Binary to spawn (default: 'arkts-language-server')
@@ -187,6 +245,7 @@ export interface ArkTsLspProviderOptions {
 export class ArkTsLspProvider implements LspDiagnosticsProvider {
   private readonly child: ChildProcess
   private readonly parser: StreamParser
+  private readonly mutex = new LspSessionMutex()
 
   // Pending JSON-RPC requests waiting for a response: id → { resolve, reject }
   private readonly pending = new Map<
@@ -367,70 +426,95 @@ export class ArkTsLspProvider implements LspDiagnosticsProvider {
    * Synchronizes in-memory VFS content to the LSP via textDocument/didChange,
    * then collects publishDiagnostics notifications for each file.
    *
+   * Mutex-protected: only ONE shard may hold a diagnose session at a time.
+   * didOpen → await publishDiagnostics → didClose are always exclusive,
+   * preventing cross-shard file state pollution.
+   *
    * @param files  Snapshot of the VirtualFileSystem (path → content)
    */
   async diagnose(files: ReadonlyMap<string, string>): Promise<LspDiagnostic[]> {
     this.assertAlive()
     if (files.size === 0) return []
 
-    const diagnostics: LspDiagnostic[] = []
+    // ── Acquire exclusive session lock ──────────────────────────────────────
+    // Prevents Shard A's didChange from contaminating Shard B's diagnostics.
+    const release = await this.mutex.acquire()
 
-    // Phase 1: Push all VFS files to LSP via didOpen/didChange.
-    // We track whether the LSP already has each document open using a local
-    // set (per-call; the provider is stateless between diagnose() calls for
-    // simplicity and to avoid stale open-document bookkeeping).
     const openedUris = new Set<string>()
+    try {
+      // Phase 1: Push all VFS files to LSP via didOpen/didChange.
+      for (const [filePath, content] of files) {
+        const uri = pathToFileURL(filePath).toString()
+        const languageId = filePath.endsWith('.ets') ? 'arkts'
+          : filePath.endsWith('.ts') ? 'typescript'
+          : 'plaintext'
 
-    for (const [filePath, content] of files) {
-      const uri = pathToFileURL(filePath).toString()
-      const languageId = filePath.endsWith('.ets') ? 'arkts'
-        : filePath.endsWith('.ts') ? 'typescript'
-        : 'plaintext'
-
-      if (!openedUris.has(uri)) {
-        // First time → didOpen (version 1)
-        this.notify('textDocument/didOpen', {
-          textDocument: { uri, languageId, version: 1, text: content },
-        })
-        openedUris.add(uri)
-      } else {
-        // Already open in this session → didChange (version incremented)
-        this.notify('textDocument/didChange', {
-          textDocument: { uri, version: 2 },
-          contentChanges: [{ text: content }],  // Full-document sync
-        })
+        if (!openedUris.has(uri)) {
+          // First time → didOpen (version 1)
+          this.notify('textDocument/didOpen', {
+            textDocument: { uri, languageId, version: 1, text: content },
+          })
+          openedUris.add(uri)
+        } else {
+          // Already open in session → didChange (full-document sync)
+          this.notify('textDocument/didChange', {
+            textDocument: { uri, version: 2 },
+            contentChanges: [{ text: content }],
+          })
+        }
       }
-    }
 
-    // Phase 2: Wait for publishDiagnostics for each file (or timeout).
-    const perFileDiags = await Promise.all(
-      [...files.keys()].map((filePath) => this.awaitDiagnosticsForFile(filePath)),
-    )
+      // Phase 2: Wait for publishDiagnostics for each file (or timeout).
+      const perFileDiags = await Promise.all(
+        [...files.keys()].map((filePath) => this.awaitDiagnosticsForFile(filePath)),
+      )
 
-    // Phase 3: Close all opened documents (LSP memory hygiene)
-    for (const uri of openedUris) {
-      this.notify('textDocument/didClose', { textDocument: { uri } })
-    }
+      // Phase 3: Convert LSP raw diagnostics → our LspDiagnostic interface
+      const diagnostics: LspDiagnostic[] = []
+      for (const [filePath, rawDiags] of perFileDiags) {
+        for (const raw of rawDiags) {
+          const severity: LspDiagnostic['severity'] =
+            (raw.severity ?? LSP_SEVERITY_ERROR) <= LSP_SEVERITY_ERROR
+              ? 'error'
+              : raw.severity === LSP_SEVERITY_WARNING ? 'warning' : 'warning'
 
-    // Phase 4: Convert LSP raw diagnostics → our LspDiagnostic interface
-    for (const [filePath, rawDiags] of perFileDiags) {
-      for (const raw of rawDiags) {
-        const severity: LspDiagnostic['severity'] =
-          (raw.severity ?? LSP_SEVERITY_ERROR) <= LSP_SEVERITY_ERROR
-            ? 'error'
-            : raw.severity === LSP_SEVERITY_WARNING ? 'warning' : 'warning'
-
-        diagnostics.push({
-          file: filePath,
-          line: raw.range.start.line + 1,  // LSP is 0-indexed; our interface is 1-indexed
-          column: raw.range.start.character + 1,
-          message: raw.message,
-          severity,
-        })
+          diagnostics.push({
+            file: filePath,
+            line: raw.range.start.line + 1,
+            column: raw.range.start.character + 1,
+            message: raw.message,
+            severity,
+          })
+        }
       }
+      return diagnostics
+    } finally {
+      // Phase 4 (always): Close all opened documents — clean LSP memory
+      // even if an error occurred mid-session, preventing stale open-document
+      // state from leaking into the next shard's session.
+      for (const uri of openedUris) {
+        try {
+          this.notify('textDocument/didClose', { textDocument: { uri } })
+        } catch { /* best-effort */ }
+      }
+      release()  // 🔑 Always release mutex — prevents deadlock on any throw
     }
+  }
 
-    return diagnostics
+  /**
+   * Immediately cancels any in-flight publishDiagnostics waiters for Racing
+   * loser cleanup (onAborted hook).
+   *
+   * Called when this provider is the loser in a RacingExecutor race.
+   * Clears all pending timers and resolves awaiting promises with empty
+   * diagnostics so EventLoop references are dropped immediately — no 30s wait.
+   */
+  cancelPendingSessionForAbort(): void {
+    for (const { resolve, timer } of this.awaitingDiags.values()) {
+      clearTimeout(timer)
+      resolve([])  // Resolve rather than reject — avoids Unhandled Rejection
+    }
+    this.awaitingDiags.clear()
   }
 
   /**

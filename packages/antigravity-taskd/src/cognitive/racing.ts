@@ -39,6 +39,15 @@ export interface RacingCandidate<T> {
    * 返回 false → 该候选视为失败，继续等其他路。
    */
   validate(result: T): boolean
+  /**
+   * 资源清理钩子：当此候选成为 loser 并被 abort 后调用。
+   *
+   * 用途：清理 MCP Blackboard 缓存、取消挂起的 LSP publishDiagnostics
+   * 定时器（cancelPendingSessionForAbort）等。
+   *
+   * 若清理逻辑抛出，异常被静默吞掉 — 绝不允许 loser 清理错误影响 winner 结果。
+   */
+  onAborted?(): void | Promise<void>
 }
 
 export interface RacingResult<T> {
@@ -107,13 +116,16 @@ export class DefaultRacingExecutor implements RacingExecutor {
               return
             }
 
-            // 🏆 胜者：立即 abort 所有其他候选（loser）
+            // 🏆 胜者：立即 abort 所有其他候选（loser）+ 触发清理钩子
             settled = true
             const abortedBackends: WorkerBackend[] = []
             candidates.forEach((c, i) => {
               if (i !== idx) {
                 controllers[i]!.abort()
                 abortedBackends.push(c.backend)
+                // 触发 loser 的资源清理钩子（fire-and-forget，错误静默吞掉）
+                // onAborted 不能影响 winner 路径，所以 catch 强制兜底
+                Promise.resolve(c.onAborted?.()).catch(() => {})
               }
             })
 
