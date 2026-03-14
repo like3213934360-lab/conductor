@@ -484,12 +484,15 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     ]
     const child = spawn('gemini', args, {
       cwd: request.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],  // stdin 改为 pipe 以支持 Ctrl-C 软中断
       env: { ...process.env },
     })
     if (!child.stdout) {
       throw new Error('Gemini CLI did not expose stdout')
     }
+
+    // 安全网：防止 write-after-close 变成 uncaught exception
+    child.stdin?.on('error', () => {})
 
     const stopSyntheticProgress = startSyntheticProgress(onEvent)
     let finalText = ''
@@ -499,15 +502,23 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     const abort = () => child.kill('SIGTERM')
     signal.addEventListener('abort', abort, { once: true })
 
-    // soft signal: 给 gemini 进程发 SIGINT 让它尝试优雅退出
-    // 修复：try/catch 包裹 — 进程可能已在 kill 前退出
+    // soft signal: 先尝试 stdin 发 Ctrl-C（\x03），比 SIGINT 更可控；
+    // 如果 stdin 不可用则 fallback 到 SIGINT。
+    // 设计权衡：Gemini CLI 对 SIGINT 的行为不确定（可能直接退出不输出），
+    // 而 stdin Ctrl-C 会被 readline 层处理，更可能触发 graceful flush。
     const softAbort = () => {
       try {
         if (!child.killed) {
-          child.kill('SIGINT')
+          // 优先通过 stdin 发送 Ctrl-C
+          if (child.stdin && !child.stdin.destroyed && child.stdin.writable) {
+            child.stdin.write('\x03')
+          } else {
+            // stdin 不可用时退化为 SIGINT
+            child.kill('SIGINT')
+          }
         }
       } catch {
-        // 进程已退出，SIGINT 发送失败 — 静默忽略
+        // 进程已退出 — 静默忽略
       }
     }
     softSignal?.addEventListener('abort', softAbort, { once: true })
