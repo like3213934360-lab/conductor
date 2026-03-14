@@ -36,3 +36,6 @@ export {
   DefaultReflexionStateMachine,
   ReflexionFailedError,
 } from './reflexion.js'
+
+export type { ArkTsLspProviderOptions } from './arkts-lsp-provider.js'
+export { ArkTsLspProvider, LspInitializationError, LspDisposedError } from './arkts-lsp-provider.js'
