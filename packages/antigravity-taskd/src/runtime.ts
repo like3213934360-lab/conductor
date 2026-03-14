@@ -415,6 +415,7 @@ export class AntigravityTaskdRuntime {
       })
     }).finally(() => {
       clearTimeout(globalTimeout)
+      this.controllers.delete(jobId)
     })
     return snapshot
   }

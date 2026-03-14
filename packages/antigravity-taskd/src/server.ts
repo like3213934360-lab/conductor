@@ -13,10 +13,21 @@ function sendJson(res: http.ServerResponse, statusCode: number, payload: unknown
   res.end(raw)
 }
 
+const MAX_REQUEST_BODY_BYTES = 5 * 1024 * 1024  // 5MB
+
 function readBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+    let totalBytes = 0
+    req.on('data', (chunk) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      totalBytes += buf.length
+      if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+        req.destroy(new Error(`Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`))
+        return
+      }
+      chunks.push(buf)
+    })
     req.on('end', () => {
       const raw = Buffer.concat(chunks).toString('utf8')
       if (!raw) {
