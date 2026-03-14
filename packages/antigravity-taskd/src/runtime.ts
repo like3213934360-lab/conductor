@@ -87,17 +87,25 @@ async function withRetry<T>(
       if (attempt < maxAttempts) {
         const backoffMs = attempt * 2000
         console.warn(`[taskd] ${label} attempt ${attempt}/${maxAttempts} failed: ${lastError.message}, retrying in ${backoffMs}ms`)
-        // 可中断的 backoff：signal abort 时立即结束等待
+        // 可中断的 backoff：signal abort → clearTimeout + 立即 reject
+        // { once: true } 保证 listener 在触发后自动移除；
+        // 正常 resolve 时手动 removeEventListener 防止 listener 残留。
+        let backoffAbortHandler: (() => void) | undefined
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(resolve, backoffMs)
+          const timer = setTimeout(() => {
+            // 正常超时 → 清理 abort listener 后 resolve
+            if (backoffAbortHandler && signal) {
+              signal.removeEventListener('abort', backoffAbortHandler)
+            }
+            resolve()
+          }, backoffMs)
+
           if (signal) {
-            const onAbort = () => {
+            backoffAbortHandler = () => {
               clearTimeout(timer)
               reject(lastError)
             }
-            signal.addEventListener('abort', onAbort, { once: true })
-            // 正常 resolve 时清理 abort listener
-            setTimeout(() => signal.removeEventListener('abort', onAbort), backoffMs + 10)
+            signal.addEventListener('abort', backoffAbortHandler, { once: true })
           }
         }).catch(() => {
           // backoff 被 signal 中断 — 直接抛出
