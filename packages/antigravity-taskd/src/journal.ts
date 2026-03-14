@@ -90,6 +90,23 @@ function sha256(data: string): string {
   return crypto.createHash('sha256').update(data, 'utf8').digest('hex')
 }
 
+/** 递归剥离 __proto__ / constructor / prototype 键，防止原型链污染 */
+function stripDangerousKeys(obj: unknown): unknown {
+  if (obj === null || typeof obj !== 'object') return obj
+  if (Array.isArray(obj)) return obj.map(stripDangerousKeys)
+  const clean: Record<string, unknown> = Object.create(null)
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue
+    clean[key] = stripDangerousKeys(value)
+  }
+  return clean
+}
+
+/** 安全反序列化 JSON：先 parse，再清洗原型污染键 */
+function safeJsonParse<T>(raw: string): T {
+  return stripDangerousKeys(JSON.parse(raw)) as T
+}
+
 export class FileJournalStore implements JournalStore {
   constructor(private readonly baseDir: string) {}
 
@@ -131,7 +148,7 @@ export class FileJournalStore implements JournalStore {
 
     try {
       const raw = fs.readFileSync(filePath, 'utf8')
-      const checkpoint = JSON.parse(raw) as StageCheckpoint<StagePayloadMap[S]>
+      const checkpoint = safeJsonParse<StageCheckpoint<StagePayloadMap[S]>>(raw)
 
       // 完整性校验
       const expectedHash = sha256(JSON.stringify(checkpoint.payload))
