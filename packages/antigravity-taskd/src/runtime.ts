@@ -46,8 +46,11 @@ interface ShardOutcome {
 }
 
 // ── WRITE 阶段 Shard 化 ─────────────────────────────────────────
-// 每批最多处理 3 个文件，防止单次 writer 调用 OOM/超时
 const WRITE_BATCH_SIZE = 3
+
+// ── 全局 Job 超时 ───────────────────────────────────────────────
+// 所有 stage 的硬上限总和约 82 分钟；全局安全网设为 60 分钟
+const GLOBAL_JOB_TIMEOUT_MS = 60 * 60 * 1000  // 60 min
 
 const STAGE_BUDGETS: Record<TaskStageId, { softBudgetMs: number; hardBudgetMs: number }> = {
   SCOUT: { softBudgetMs: 60_000, hardBudgetMs: 120_000 },
@@ -56,6 +59,29 @@ const STAGE_BUDGETS: Record<TaskStageId, { softBudgetMs: number; hardBudgetMs: n
   VERIFY: { softBudgetMs: 480_000, hardBudgetMs: 600_000 },
   WRITE: { softBudgetMs: 900_000, hardBudgetMs: 1_200_000 },
   FINALIZE: { softBudgetMs: 240_000, hardBudgetMs: 300_000 },
+}
+
+// ── 瞬时失败重试 ────────────────────────────────────────────────
+// 对网络/IO 抖动提供有限次重试，避免一次瞬断直接降级整个 stage
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxAttempts: number = 2,
+): Promise<T> {
+  let lastError: Error | undefined
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error))
+      if (attempt < maxAttempts) {
+        const backoffMs = attempt * 2000
+        console.warn(`[taskd] ${label} attempt ${attempt}/${maxAttempts} failed: ${lastError.message}, retrying in ${backoffMs}ms`)
+        await new Promise(resolve => setTimeout(resolve, backoffMs))
+      }
+    }
+  }
+  throw lastError!
 }
 
 function nowIso(): string {
@@ -282,6 +308,14 @@ export class AntigravityTaskdRuntime {
 
     const controller = new AbortController()
     this.controllers.set(jobId, controller)
+
+    // ── 全局 Job 超时安全网 ─────────────────────────────────────
+    // 无论各 stage 超时如何设置，到达全局上限后无条件终止整个 worker 树
+    const globalTimeout = setTimeout(() => {
+      console.warn(`[taskd] GLOBAL JOB TIMEOUT reached (${GLOBAL_JOB_TIMEOUT_MS}ms) for job ${jobId} — force aborting`)
+      controller.abort()
+    }, GLOBAL_JOB_TIMEOUT_MS)
+
     void this.executeJob(jobId, controller.signal).catch((error) => {
       const current = this.jobs.get(jobId)
       if (!current || current.status === 'cancelled') return
@@ -294,6 +328,8 @@ export class AntigravityTaskdRuntime {
       this.emitJobEvent(jobId, 'job.failed', {
         error: error instanceof Error ? error.message : String(error),
       })
+    }).finally(() => {
+      clearTimeout(globalTimeout)
     })
     return snapshot
   }
@@ -618,6 +654,7 @@ export class AntigravityTaskdRuntime {
       ? workspaceFiles.filter(file => snapshot.fileHints.includes(file.path))
       : workspaceFiles
 
+    // ── SCOUT 阶段：超时/崩溃时用 fallback manifest 兜底 ─────────
     this.markStageStarted(snapshot, 'SCOUT', 'Planning shard graph')
     const scoutPrompt = buildScoutPrompt(
       snapshot.goal,
@@ -625,11 +662,23 @@ export class AntigravityTaskdRuntime {
       snapshot.fileHints,
       fileHintEntries.map(file => `${file.path} (${file.size} bytes)`),
     )
-    const scoutResult = await this.runWorker(snapshot, 'codex', 'scout', scoutPrompt, [], 'SCOUT')
-    const manifest = coerceScoutManifest(snapshot.goal, scoutResult.text, fileHintEntries)
+    let manifest: ScoutManifest
+    try {
+      const scoutResult = await this.runWorker(snapshot, 'codex', 'scout', scoutPrompt, [], 'SCOUT')
+      manifest = coerceScoutManifest(snapshot.goal, scoutResult.text, fileHintEntries)
+    } catch (error) {
+      // SCOUT 失败不致命 — 用基于文件列表的 fallback 切分继续
+      const msg = error instanceof Error ? error.message : String(error)
+      console.warn(`[taskd] SCOUT failed, falling back to auto-shard: ${msg}`)
+      manifest = createFallbackScoutManifest(snapshot.goal, fileHintEntries)
+      snapshot.summary.riskFindings = unique([
+        ...snapshot.summary.riskFindings,
+        `SCOUT failed (${msg}), using fallback shard plan`,
+      ])
+    }
     snapshot.summary.goalSummary = manifest.goalSummary
     snapshot.summary.openQuestions = manifest.unknowns
-    snapshot.summary.riskFindings = manifest.riskFlags
+    snapshot.summary.riskFindings = unique([...snapshot.summary.riskFindings, ...manifest.riskFlags])
     snapshot.artifacts.shardCount = manifest.shards.length
     findStage(snapshot, 'SCOUT').shardIds = manifest.shards.map(shard => shard.shardId)
     this.markStageCompleted(snapshot, 'SCOUT', `Prepared ${manifest.shards.length} shards`)
@@ -740,18 +789,38 @@ export class AntigravityTaskdRuntime {
 
     if (signal.aborted) return
 
+    // ── AGGREGATE 阶段：超时时用 shard 结果简单拼接降级 ──────────
     this.markStageStarted(snapshot, 'AGGREGATE', 'Aggregating shard outputs')
-    const aggregateResult = await this.runWorker(
-      snapshot,
-      'codex',
-      'aggregator',
-      buildAggregatePrompt(snapshot.goal, shardResults),
-      [],
-      'AGGREGATE',
-    )
-    const aggregate = coerceAggregate(aggregateResult.text)
+    let aggregate: AggregateAnalysis
+    try {
+      const aggregateResult = await withRetry(
+        () => this.runWorker(
+          snapshot, 'codex', 'aggregator',
+          buildAggregatePrompt(snapshot.goal, shardResults),
+          [], 'AGGREGATE',
+        ),
+        'AGGREGATE',
+      )
+      aggregate = coerceAggregate(aggregateResult.text)
+    } catch (error) {
+      // AGGREGATE 失败 → 用 shard 摘要直接拼接作为降级聚合
+      const msg = error instanceof Error ? error.message : String(error)
+      console.warn(`[taskd] AGGREGATE failed, using concat fallback: ${msg}`)
+      aggregate = {
+        globalSummary: shardResults.map(s => `[${s.shardId}] ${s.summary}`).join('\n\n'),
+        agreements: [],
+        conflicts: [],
+        missingCoverage: [`DEGRADED_AGGREGATION: ${msg}`],
+      }
+      snapshot.summary.riskFindings = unique([
+        ...snapshot.summary.riskFindings,
+        `AGGREGATE failed (${msg}), using degraded concat fallback`,
+      ])
+    }
     snapshot.summary.globalSummary = aggregate.globalSummary
-    this.markStageCompleted(snapshot, 'AGGREGATE', 'Aggregate ready')
+    this.markStageCompleted(snapshot, 'AGGREGATE',
+      aggregate.missingCoverage.some(s => s.startsWith('DEGRADED_AGGREGATION')) ? 'Degraded aggregate' : 'Aggregate ready',
+    )
     this.emitJobEvent(jobId, 'aggregate.completed', {
       conflicts: aggregate.conflicts,
       missingCoverage: aggregate.missingCoverage,
@@ -759,17 +828,35 @@ export class AntigravityTaskdRuntime {
 
     if (signal.aborted) return
 
+    // ── VERIFY 阶段：超时时跳过验证，打标记放行 ────────────────────
     this.markStageStarted(snapshot, 'VERIFY', 'Running reviewer')
     const verifyBackend: WorkerBackend = profile.kind === 'single' ? 'codex' : 'gemini'
-    const verifyResult = await this.runWorker(
-      snapshot,
-      verifyBackend,
-      'reviewer',
-      buildVerifyPrompt(snapshot.goal, aggregate, shardResults),
-      [],
-      'VERIFY',
-    )
-    const verify = coerceVerify(verifyResult.text)
+    let verify: VerifyAnalysis
+    try {
+      const verifyResult = await withRetry(
+        () => this.runWorker(
+          snapshot, verifyBackend, 'reviewer',
+          buildVerifyPrompt(snapshot.goal, aggregate, shardResults),
+          [], 'VERIFY',
+        ),
+        'VERIFY',
+      )
+      verify = coerceVerify(verifyResult.text)
+    } catch (error) {
+      // VERIFY 失败 → 跳过验证，标记为未验证但不阻断后续 WRITE
+      const msg = error instanceof Error ? error.message : String(error)
+      console.warn(`[taskd] VERIFY failed, skipping verification: ${msg}`)
+      verify = {
+        verdict: 'unverified',
+        coverageGaps: [`VERIFY_SKIPPED: ${msg}`],
+        riskFindings: [`Verification skipped due to timeout/failure: ${msg}`],
+        followups: [],
+      }
+      snapshot.summary.riskFindings = unique([
+        ...snapshot.summary.riskFindings,
+        `VERIFY skipped (${msg}), proceeding unverified`,
+      ])
+    }
     snapshot.summary.verdict = verify.verdict
     snapshot.summary.coverageGaps = verify.coverageGaps
     snapshot.summary.riskFindings = unique([...snapshot.summary.riskFindings, ...verify.riskFindings])

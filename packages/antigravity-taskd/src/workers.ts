@@ -56,8 +56,30 @@ function appendContext(prompt: string, cwd: string, filePaths: string[]): string
   return context ? `${prompt}\n\n${context}` : prompt
 }
 
+// ── JSON-RPC 初始化超时 ─────────────────────────────────────────
+// CLI 冷启动时可能加载模型 / 下载依赖，防止无限期挂起
+const INIT_TIMEOUT_MS = 15_000  // 15s
+
+class WorkerInitError extends Error {
+  constructor(method: string, timeoutMs: number) {
+    super(`JSON-RPC ${method} timed out after ${timeoutMs}ms (CLI cold start?)`)
+    this.name = 'WorkerInitError'
+  }
+}
+
+/** 包装一个带独立超时的 sendRequest，用于初始化阶段（initialize / thread/start） */
+function withInitTimeout<T>(promise: Promise<T>, method: string, timeoutMs: number = INIT_TIMEOUT_MS): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new WorkerInitError(method, timeoutMs)), timeoutMs),
+    ),
+  ])
+}
+
 class CodexAppServerWorkerAdapter implements WorkerAdapter {
   readonly backend: WorkerBackend = 'codex'
+
 
   async run(
     request: WorkerRunRequest,
@@ -114,10 +136,15 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     }
     signal.addEventListener('abort', abort, { once: true })
 
-    // soft signal: 发 SIGINT 给 CLI 进程让它优雅收尾（输出已有结果）
+    // soft signal: 通过 JSON-RPC 协议层发 turn/cancel，通知模型停止生成并返回已有内容
+    // 注意：对 JSON-RPC stdio Server 发 SIGINT 无意义，必须走应用层协议
     const softAbort = () => {
-      if (!child.killed) {
-        child.kill('SIGINT')
+      if (!child.killed && threadId) {
+        // 尝试通过 JSON-RPC 发送取消请求 — 即使 server 不支持也不会崩溃
+        sendRequest('turn/cancel', { threadId }).catch(() => {
+          // fallback: server 不支持 turn/cancel，发 $/cancelRequest
+          sendRequest('$/cancelRequest', { id: nextId - 1 }).catch(() => {})
+        })
       }
     }
     softSignal?.addEventListener('abort', softAbort, { once: true })
@@ -360,23 +387,30 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     })
 
     try {
-      await sendRequest('initialize', {
-        clientInfo: {
-          name: 'antigravity-taskd',
-          version: '0.1.0',
-        },
-        capabilities: null,
-      })
-      const threadResponse = await sendRequest<any>('thread/start', {
-        cwd: request.cwd,
-        approvalPolicy: 'never',
-        sandbox: request.mode === 'write' ? 'workspace-write' : 'read-only',
-        serviceName: 'antigravity-taskd',
-        developerInstructions: `Role=${request.role}. Follow the JSON contract exactly.`,
-        ephemeral: true,
-        experimentalRawEvents: false,
-        persistExtendedHistory: false,
-      })
+      // ── 初始化阶段带独立 15s 超时，防止冷启动消耗整个 stage budget ──
+      await withInitTimeout(
+        sendRequest('initialize', {
+          clientInfo: {
+            name: 'antigravity-taskd',
+            version: '0.1.0',
+          },
+          capabilities: null,
+        }),
+        'initialize',
+      )
+      const threadResponse = await withInitTimeout(
+        sendRequest<any>('thread/start', {
+          cwd: request.cwd,
+          approvalPolicy: 'never',
+          sandbox: request.mode === 'write' ? 'workspace-write' : 'read-only',
+          serviceName: 'antigravity-taskd',
+          developerInstructions: `Role=${request.role}. Follow the JSON contract exactly.`,
+          ephemeral: true,
+          experimentalRawEvents: false,
+          persistExtendedHistory: false,
+        }),
+        'thread/start',
+      )
       threadId = String(threadResponse?.thread?.id || '')
       if (!threadId) {
         throw new Error('Codex App Server did not return a thread id')
