@@ -72,6 +72,12 @@ export interface JournalStore {
   ): Promise<StageCheckpoint<StagePayloadMap[S]> | null>
 
   getResumePoint(jobId: string): Promise<TaskStageId | null>
+
+  /** 删除指定 job 的所有 journal 文件（job 完成后调用） */
+  purgeCheckpoints(jobId: string): void
+
+  /** 清理超过 maxAgeDays 天的旧 journal（定期调用） */
+  purgeOlderThan(maxAgeDays: number): void
 }
 
 // ── 文件系统实现 ────────────────────────────────────────────────
@@ -154,5 +160,43 @@ export class FileJournalStore implements JournalStore {
     }
 
     return lastCompleted
+  }
+
+  purgeCheckpoints(jobId: string): void {
+    const journalDir = path.join(this.baseDir, jobId, 'journal')
+    try {
+      if (fs.existsSync(journalDir)) {
+        // 删除所有 checkpoint 文件 + .tmp 残留
+        for (const file of fs.readdirSync(journalDir)) {
+          fs.unlinkSync(path.join(journalDir, file))
+        }
+        fs.rmdirSync(journalDir)
+      }
+    } catch {
+      // 清理失败不影响主流程
+      console.warn(`[journal] failed to purge checkpoints for job ${jobId}`)
+    }
+  }
+
+  purgeOlderThan(maxAgeDays: number): void {
+    const cutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000
+    try {
+      if (!fs.existsSync(this.baseDir)) return
+      for (const jobId of fs.readdirSync(this.baseDir)) {
+        const journalDir = path.join(this.baseDir, jobId, 'journal')
+        if (!fs.existsSync(journalDir)) continue
+        // 检查最新文件的 mtime
+        const files = fs.readdirSync(journalDir)
+        if (files.length === 0) continue
+        const latestMtime = Math.max(...files.map(f => {
+          try { return fs.statSync(path.join(journalDir, f)).mtimeMs } catch { return 0 }
+        }))
+        if (latestMtime < cutoffMs) {
+          this.purgeCheckpoints(jobId)
+        }
+      }
+    } catch {
+      console.warn('[journal] purgeOlderThan encountered an error, skipping')
+    }
   }
 }

@@ -1130,6 +1130,8 @@ export class AntigravityTaskdRuntime {
     snapshot.status = 'completed'
     snapshot.updatedAt = nowIso()
     this.persistence.saveSnapshot(snapshot)
+    // 🗑️ Journal 清理：job 成功完成后删除中间态 checkpoint 文件
+    this.journal.purgeCheckpoints(jobId)
     this.emitJobEvent(jobId, 'job.completed', {
       verdict: snapshot.summary.verdict,
       changedFiles: snapshot.artifacts.changedFiles,

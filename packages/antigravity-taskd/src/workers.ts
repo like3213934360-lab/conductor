@@ -15,6 +15,28 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+/**
+ * 杀死进程及其整个进程组（子进程 + 孙子进程），防止僵尸进程泄漏。
+ * 在 POSIX 系统中，`process.kill(-pid)` 发送信号到整个进程组。
+ * 如果进程组 kill 失败（例如权限不足或 Windows），退化为单进程 kill。
+ */
+function killProcessTree(child: import('node:child_process').ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
+  if (child.killed) return
+  try {
+    if (child.pid != null) {
+      // 杀死整个进程组（pid 取负 = 进程组）
+      process.kill(-child.pid, signal)
+    }
+  } catch {
+    // 进程组 kill 失败（Windows 或已退出）→ 降级为直接 kill
+    try {
+      child.kill(signal)
+    } catch {
+      // 进程已退出 — 静默忽略
+    }
+  }
+}
+
 function startSyntheticProgress(onEvent: (event: WorkerEvent) => void): () => void {
   let lastSemanticEventAt = Date.now()
   const touch = () => {
@@ -144,7 +166,7 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     }
 
     const abort = () => {
-      child.kill('SIGTERM')
+      killProcessTree(child)
     }
     signal.addEventListener('abort', abort, { once: true })
 
@@ -450,7 +472,7 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
       signal.removeEventListener('abort', abort)
       softSignal?.removeEventListener('abort', softAbort)
       if (!child.killed) {
-        child.kill('SIGTERM')
+        killProcessTree(child)
       }
     }
 
@@ -499,7 +521,7 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     const changedFiles = new Set<string>()
     let latestDiff = ''
 
-    const abort = () => child.kill('SIGTERM')
+    const abort = () => killProcessTree(child)
     signal.addEventListener('abort', abort, { once: true })
 
     // soft signal: 先尝试 stdin 发 Ctrl-C（\x03），比 SIGINT 更可控；
@@ -653,7 +675,7 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
       rl.close()
       stderrRl?.close()
       if (!child.killed) {
-        child.kill('SIGTERM')
+        killProcessTree(child)
       }
     }
 
