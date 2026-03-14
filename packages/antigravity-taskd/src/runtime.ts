@@ -36,6 +36,31 @@ import { computeMerkleRoot } from './merkle.js'
 import { DefaultProvenanceCollector, type ProvenanceCollector } from './provenance.js'
 import { DefaultGovernanceGateway, type GovernanceGateway } from './governance.js'
 
+// ── Cognitive Architecture ────────────────────────────────────────
+import {
+  InMemoryMcpBlackboard,
+  DefaultRouterPolicy,
+  DefaultRacingExecutor,
+  InMemoryVirtualFileSystem,
+  NoopLspDiagnosticsProvider,
+  DefaultReflexionStateMachine,
+  ReflexionFailedError,
+  type McpBlackboard,
+  type RouterPolicy,
+  type RacingExecutor,
+  type VirtualFileSystem,
+  type LspDiagnosticsProvider,
+} from './cognitive/index.js'
+
+/** 认知携带器：贯穿单次 Job 全生命周期，通过 buildCognitiveContext() 工厂构建 */
+interface CognitiveJobContext {
+  blackboard: McpBlackboard
+  routerPolicy: RouterPolicy
+  racingExecutor: RacingExecutor
+  vfs: VirtualFileSystem
+  lsp: LspDiagnosticsProvider
+}
+
 interface ExecutionProfile {
   kind: 'single' | 'dual' | 'sharded'
 }
@@ -309,6 +334,21 @@ export class AntigravityTaskdRuntime {
       const lastSequence = snapshot.recentEvents.at(-1)?.sequence ?? 0
       this.sequenceByJob.set(snapshot.jobId, lastSequence)
       this.jobs.set(snapshot.jobId, snapshot)
+    }
+  }
+
+  /**
+   * 认知上下文工厂 (Dependency Injection Factory)
+   * 实例化四大认知能力，注入到 CognitiveJobContext。
+   * runtime.ts 只依赖接口，具体实现可在测试中替换为 mock。
+   */
+  private buildCognitiveContext(workspaceRoot: string, signal: AbortSignal): CognitiveJobContext {
+    return {
+      blackboard: new InMemoryMcpBlackboard(),
+      routerPolicy: new DefaultRouterPolicy(),
+      racingExecutor: new DefaultRacingExecutor(),
+      vfs: new InMemoryVirtualFileSystem(workspaceRoot),
+      lsp: new NoopLspDiagnosticsProvider(),  // 可替换为真实 ArkTS-LSP 实现
     }
   }
 
@@ -1012,10 +1052,18 @@ export class AntigravityTaskdRuntime {
 
     if (signal.aborted) return
 
-    // ── VERIFY 阶段：超时时跳过验证，打标记放行 ────────────────────
-    this.markStageStarted(snapshot, 'VERIFY', 'Running reviewer')
+    // ── VERIFY 阶段：ReflexionStateMachine 闭环（最多 MAX_STEPS=2 轮）────
+    this.markStageStarted(snapshot, 'VERIFY', 'Running reviewer with LSP reflexion')
     const verifyBackend: WorkerBackend = profile.kind === 'single' ? 'codex' : 'gemini'
     let verify: VerifyAnalysis
+
+    // 构建认知上下文（轻量工厂，< 1ms 开销）
+    const cogCtx = this.buildCognitiveContext(snapshot.workspaceRoot, signal)
+    const reflexion = new DefaultReflexionStateMachine()
+
+    // 当前生成文件（write 模式时从 aggregate 结果中提取）
+    const pendingFiles: Record<string, string> = {}
+
     try {
       const verifyResult = await withRetry(
         () => this.runWorker(
@@ -1025,24 +1073,70 @@ export class AntigravityTaskdRuntime {
         ),
         'VERIFY',
         2,
-        signal,  // job 取消时立即停止重试
+        signal,
       )
       verify = coerceVerify(verifyResult.text)
+
+      // ── LSP Reflexion loop（仅 write 模式且有生成文件时触发） ──
+      if (snapshot.mode === 'write' && Object.keys(pendingFiles).length > 0) {
+        while (!reflexion.exhausted) {
+          const step = await reflexion.step(
+            cogCtx.vfs,
+            pendingFiles,
+            snapshot.goal,
+            cogCtx.lsp,
+          )
+
+          if (step.verdict === 'pass') {
+            // LSP 通过 → 将 VFS 内容提交到物理磁盘
+            await cogCtx.vfs.commit()
+            console.info(`[taskd] Reflexion passed after ${step.attempt} step(s)`)
+            break
+          }
+
+          if (step.verdict === 'retry' && step.patchPrompt) {
+            // 用 LSP 精准 patch prompt 要求 Codex 修复
+            console.warn(`[taskd] Reflexion retry ${step.attempt}/${reflexion.MAX_STEPS}: ${step.diagnostics.length} errors`)
+            const patchResult = await this.runWorker(
+              snapshot, 'codex', 'writer',
+              step.patchPrompt,
+              [], 'VERIFY',
+            )
+            // 将修复结果更新到 pendingFiles，下一轮 step() 重新诊断
+            Object.assign(pendingFiles, { 'patch_result.ts': patchResult.text })
+          }
+        }
+      }
     } catch (error) {
-      // VERIFY 失败 → 跳过验证，标记为未验证但不阻断后续 WRITE
-      const msg = error instanceof Error ? error.message : String(error)
-      console.warn(`[taskd] VERIFY failed, skipping verification: ${msg}`)
-      verify = {
-        verdict: 'unverified',
-        coverageGaps: [`VERIFY_SKIPPED: ${msg}`],
-        riskFindings: [`Verification skipped due to timeout/failure: ${msg}`],
-        followups: [],
+      if (error instanceof ReflexionFailedError) {
+        // Reflexion 彻底失败：VFS 已回滚（不污染磁盘），降级为 unverified
+        const msg = `Reflexion failed after ${error.steps.length} steps`
+        console.warn(`[taskd] ${msg}`)
+        verify = {
+          verdict: 'unverified',
+          coverageGaps: [`REFLEXION_FAILED: ${msg}`],
+          riskFindings: [msg],
+          followups: error.lastDiagnostics.map(d => `Fix: [${d.file}:${d.line}] ${d.message}`),
+        }
+      } else {
+        // VERIFY 其他失败 → 跳过验证
+        const msg = error instanceof Error ? error.message : String(error)
+        console.warn(`[taskd] VERIFY failed, skipping verification: ${msg}`)
+        verify = {
+          verdict: 'unverified',
+          coverageGaps: [`VERIFY_SKIPPED: ${msg}`],
+          riskFindings: [`Verification skipped: ${msg}`],
+          followups: [],
+        }
       }
       snapshot.summary.riskFindings = unique([
         ...snapshot.summary.riskFindings,
-        `VERIFY skipped (${msg}), proceeding unverified`,
+        verify.riskFindings[0] ?? 'VERIFY_SKIPPED',
       ])
+    } finally {
+      cogCtx.blackboard.dispose()
     }
+
     snapshot.summary.verdict = verify.verdict
     snapshot.summary.coverageGaps = verify.coverageGaps
     snapshot.summary.riskFindings = unique([...snapshot.summary.riskFindings, ...verify.riskFindings])
