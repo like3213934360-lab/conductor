@@ -110,6 +110,95 @@ function withInitTimeout<T>(promise: Promise<T>, method: string, timeoutMs: numb
   })
 }
 
+// ── 心跳探活 & 动态无数据超时 ───────────────────────────────────────────────
+// 解决 Codex/Gemini CLI 在深度推理时长时间静默（进程活着但无 stdout 输出）的误杀问题。
+//
+// 工作流：
+//   noDataTimer 触发
+//     └─ kill(0) 探活
+//          ├─ 进程已死 → 立即 reject WorkerSilentCrashError（不再傻等 35min budget）
+//          └─ 进程存活 → 打印 debug 日志 + 延长 timer（再给 extendedMs）
+
+/** 进程存活但静默崩溃（kill(0) 探活失败） */
+class WorkerSilentCrashError extends Error {
+  constructor(pid: number, silentMs: number) {
+    super(`Worker process ${pid} died silently after ${silentMs / 1000}s of no output (kill(0) probe failed)`)
+    this.name = 'WorkerSilentCrashError'
+  }
+}
+
+interface NoDataTimeoutHandle {
+  /** 每次收到 stdout 数据时调用，重置计时器 */
+  resetNoData(): void
+  /** 在 finally 块中调用，清理计时器防止泄漏 */
+  stopNoData(): void
+}
+
+/**
+ * 启动基于 kill(0) 心跳探活的动态无数据超时。
+ *
+ * @param child       spawn 返回的子进程
+ * @param onCrash     探活失败时调用（传入 WorkerSilentCrashError）
+ * @param initialMs   初始无数据窗口（默认 5 分钟）
+ * @param extendedMs  进程存活时延长的无数据窗口（默认 10 分钟）
+ * @param signal      外层 AbortSignal，触发时自动停止计时器
+ */
+function withNoDataTimeout(
+  child: import('node:child_process').ChildProcess,
+  onCrash: (error: WorkerSilentCrashError) => void,
+  initialMs: number = 5 * 60_000,    // 5 分钟：初始等待窗口
+  extendedMs: number = 10 * 60_000,  // 10 分钟：进程存活时的延长窗口
+  signal?: AbortSignal,
+): NoDataTimeoutHandle {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  const arm = (ms: number) => {
+    if (stopped) return
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      if (stopped) return
+      // ── kill(0) 探活：发送信号 0，不实际 kill，仅检测进程是否存活 ──
+      const pid = child.pid
+      if (pid == null) {
+        // pid 未知（spawn 未就绪），立即视为崩溃
+        onCrash(new WorkerSilentCrashError(-1, ms))
+        return
+      }
+      try {
+        process.kill(pid, 0)
+        // ✅ 进程存活 — Codex 正在深度推理，延长等待窗口
+        console.debug(`[taskd] Worker pid=${pid} is still thinking (no output for ${ms / 1000}s), extending timeout by ${extendedMs / 1000}s`)
+        arm(extendedMs)
+      } catch {
+        // ❌ kill(0) 抛出 → 进程已静默死亡，立即上报
+        onCrash(new WorkerSilentCrashError(pid, ms))
+      }
+    }, ms)
+  }
+
+  // 外层 AbortSignal 触发时清理 timer，防止泄漏
+  const onAbort = () => {
+    stopped = true
+    clearTimeout(timer)
+  }
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  // 启动初始窗口
+  arm(initialMs)
+
+  return {
+    resetNoData() {
+      if (!stopped) arm(initialMs)
+    },
+    stopNoData() {
+      stopped = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
 class CodexAppServerWorkerAdapter implements WorkerAdapter {
   readonly backend: WorkerBackend = 'codex'
 
@@ -143,8 +232,18 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     const stopSyntheticProgress = startSyntheticProgress(onEvent)
     let turnCompleted = false
 
+    // ── 心跳探活动态超时：进程活则延长，进程死则立即 reject ──
+    const noDataHandle = withNoDataTimeout(
+      child,
+      (error) => completionReject(error),
+      5 * 60_000,   // 初始 5 分钟无数据窗口
+      10 * 60_000,  // 进程存活时延长为 10 分钟
+      signal,
+    )
+
     const cleanup = () => {
       stopSyntheticProgress()
+      noDataHandle.stopNoData()  // 🔑 防止 timer 泄漏
       rl.close()
     }
 
@@ -303,6 +402,8 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     }
 
     rl.on('line', (line) => {
+      // 每次收到任意 stdout 数据 → 重置无数据计时器
+      noDataHandle.resetNoData()
       if (!line.trim()) return
       // 🛡️ 防止巨型 JSON-RPC 包阻塞 Event Loop
       if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
@@ -528,6 +629,16 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     const changedFiles = new Set<string>()
     let latestDiff = ''
 
+    // ── 心跳探活动态超时：同 Codex 适配器一致的双层防御 ──
+    let geminiCompletionReject: ((err: Error) => void) | undefined
+    const geminiNoDataHandle = withNoDataTimeout(
+      child,
+      (error) => geminiCompletionReject?.(error),
+      5 * 60_000,   // 初始 5 分钟无数据窗口
+      10 * 60_000,  // 进程存活时延长为 10 分钟
+      signal,
+    )
+
     const abort = () => killProcessTree(child)
     signal.addEventListener('abort', abort, { once: true })
 
@@ -566,7 +677,10 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     })
 
     const completionPromise = new Promise<void>((resolve, reject) => {
+      geminiCompletionReject = reject  // 🔑 暴露给心跳探活使用
       rl.on('line', (line) => {
+        // 每次收到任意 stdout 数据 → 重置无数据计时器
+        geminiNoDataHandle.resetNoData()
         if (!line.trim()) return
         // 🛡️ 防止巨型 JSON 包阻塞 Event Loop
         if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
@@ -682,6 +796,7 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
       await completionPromise
     } finally {
       stopSyntheticProgress()
+      geminiNoDataHandle.stopNoData()  // 🔑 防止 timer 泄漏
       signal.removeEventListener('abort', abort)
       softSignal?.removeEventListener('abort', softAbort)
       rl.close()
