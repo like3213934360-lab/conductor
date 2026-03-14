@@ -2,7 +2,7 @@
  * Antigravity MCP Model Tools
  *
  * Canonical model-domain tool registrations for interactive model work.
- * These tools stay host-facing, while workflow authority lives in antigravity-daemon.
+ * These tools stay host-facing, while long-running task authority lives in antigravity-taskd.
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'

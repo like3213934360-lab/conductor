@@ -3,20 +3,20 @@
  *
  * 新架构下 MCP server 只保留两类依赖：
  * - host-facing model tools
- * - daemon bridge
+ * - task kernel bridge
  */
 import {
   AntigravityModelService,
   ProgressReporter,
   AsyncJobManager,
 } from '@anthropic/antigravity-model-core'
-import { AntigravityDaemonBridge } from './daemon-bridge.js'
+import { AntigravityTaskBridge } from './task-bridge.js'
 
 export interface ServerContext {
   antigravityService: AntigravityModelService
   jobManager: AsyncJobManager
   progressReporter: ProgressReporter
-  daemonBridge: AntigravityDaemonBridge
+  taskBridge: AntigravityTaskBridge
 }
 
 export type MCPContext = ServerContext
@@ -34,6 +34,6 @@ export function createServerContext(deps: ServerContextDeps): ServerContext {
     antigravityService,
     jobManager,
     progressReporter,
-    daemonBridge: new AntigravityDaemonBridge(),
+    taskBridge: new AntigravityTaskBridge(),
   }
 }

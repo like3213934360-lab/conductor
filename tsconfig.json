@@ -16,8 +16,8 @@
     { "path": "packages/antigravity-shared" },
     { "path": "packages/antigravity-core" },
     { "path": "packages/antigravity-persistence" },
-    { "path": "packages/antigravity-daemon" },
     { "path": "packages/antigravity-mcp-server" },
+    { "path": "packages/antigravity-taskd" },
     { "path": "packages/antigravity-model-shared" },
     { "path": "packages/antigravity-model-core" }
   ]

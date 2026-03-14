@@ -30,34 +30,10 @@
   "activationEvents": [
     "onStartupFinished",
     "onCommand:antigravity.openPanel",
-    "onCommand:antigravity.runWorkflow",
-    "onCommand:antigravity.getRunSession",
-    "onCommand:antigravity.getRun",
-    "onCommand:antigravity.streamRun",
-    "onCommand:antigravity.approveGate",
-    "onCommand:antigravity.cancelRun",
-    "onCommand:antigravity.replayRun",
-    "onCommand:antigravity.reloadPolicyPack",
-    "onCommand:antigravity.reloadTrustRegistry",
-    "onCommand:antigravity.exportTraceBundle",
-    "onCommand:antigravity.getReleaseArtifacts",
-    "onCommand:antigravity.getPolicyReport",
-    "onCommand:antigravity.verifyReleaseArtifacts",
-    "onCommand:antigravity.verifyPolicyReport",
-    "onCommand:antigravity.getInvariantReport",
-    "onCommand:antigravity.verifyInvariantReport",
-    "onCommand:antigravity.getReleaseAttestation",
-    "onCommand:antigravity.verifyReleaseAttestation",
-    "onCommand:antigravity.getReleaseBundle",
-    "onCommand:antigravity.verifyReleaseBundle",
-    "onCommand:antigravity.getReleaseDossier",
-    "onCommand:antigravity.verifyReleaseDossier",
-    "onCommand:antigravity.getCertificationRecord",
-    "onCommand:antigravity.verifyCertificationRecord",
-    "onCommand:antigravity.getTransparencyLedger",
-    "onCommand:antigravity.verifyTransparencyLedger",
-    "onCommand:antigravity.runBenchmark",
-    "onCommand:antigravity.runInteropHarness",
+    "onCommand:antigravity.runTask",
+    "onCommand:antigravity.getTask",
+    "onCommand:antigravity.streamTask",
+    "onCommand:antigravity.cancelTask",
     "onCommand:antigravity.toggleArktsLsp"
   ],
   "main": "./dist/extension.js",
@@ -93,125 +69,29 @@
     "commands": [
       {
         "command": "antigravity.openPanel",
-        "title": "Antigravity Workflow: 打开控制面板",
+        "title": "Antigravity Task Kernel: 打开控制面板",
         "icon": "$(dashboard)"
       },
       {
-        "command": "antigravity.runWorkflow",
-        "title": "Antigravity Workflow: 运行 Antigravity 工作流",
+        "command": "antigravity.runTask",
+        "title": "Antigravity Task Kernel: 启动任务",
         "icon": "$(run-all)"
       },
       {
-        "command": "antigravity.getRunSession",
-        "title": "Antigravity Workflow: 查看 Run Session"
+        "command": "antigravity.getTask",
+        "title": "Antigravity Task Kernel: 查看当前任务"
       },
       {
-        "command": "antigravity.getRun",
-        "title": "Antigravity Workflow: 查看当前工作流"
+        "command": "antigravity.streamTask",
+        "title": "Antigravity Task Kernel: 实时查看任务"
       },
       {
-        "command": "antigravity.streamRun",
-        "title": "Antigravity Workflow: 实时查看工作流"
-      },
-      {
-        "command": "antigravity.approveGate",
-        "title": "Antigravity Workflow: 审批工作流门禁"
-      },
-      {
-        "command": "antigravity.cancelRun",
-        "title": "Antigravity Workflow: 取消当前工作流"
-      },
-      {
-        "command": "antigravity.replayRun",
-        "title": "Antigravity Workflow: 重放当前工作流"
-      },
-      {
-        "command": "antigravity.reloadPolicyPack",
-        "title": "Antigravity Workflow: 重载 Policy Pack"
-      },
-      {
-        "command": "antigravity.reloadTrustRegistry",
-        "title": "Antigravity Workflow: 重载 Trust Registry"
-      },
-      {
-        "command": "antigravity.exportTraceBundle",
-        "title": "Antigravity Workflow: 导出 Trace Bundle"
-      },
-      {
-        "command": "antigravity.getReleaseArtifacts",
-        "title": "Antigravity Workflow: 查看 Release Artifacts"
-      },
-      {
-        "command": "antigravity.getPolicyReport",
-        "title": "Antigravity Workflow: 查看 Policy Report"
-      },
-      {
-        "command": "antigravity.verifyReleaseArtifacts",
-        "title": "Antigravity Workflow: 校验 Release Artifacts"
-      },
-      {
-        "command": "antigravity.verifyPolicyReport",
-        "title": "Antigravity Workflow: 校验 Policy Report"
-      },
-      {
-        "command": "antigravity.getInvariantReport",
-        "title": "Antigravity Workflow: 查看 Invariant Report"
-      },
-      {
-        "command": "antigravity.verifyInvariantReport",
-        "title": "Antigravity Workflow: 校验 Invariant Report"
-      },
-      {
-        "command": "antigravity.getReleaseAttestation",
-        "title": "Antigravity Workflow: 查看 Release Attestation"
-      },
-      {
-        "command": "antigravity.verifyReleaseAttestation",
-        "title": "Antigravity Workflow: 校验 Release Attestation"
-      },
-      {
-        "command": "antigravity.getReleaseBundle",
-        "title": "Antigravity Workflow: 查看 Release Bundle"
-      },
-      {
-        "command": "antigravity.verifyReleaseBundle",
-        "title": "Antigravity Workflow: 校验 Release Bundle"
-      },
-      {
-        "command": "antigravity.getReleaseDossier",
-        "title": "Antigravity Workflow: 查看 Release Dossier"
-      },
-      {
-        "command": "antigravity.verifyReleaseDossier",
-        "title": "Antigravity Workflow: 校验 Release Dossier"
-      },
-      {
-        "command": "antigravity.getCertificationRecord",
-        "title": "Antigravity Workflow: 查看 Certification Record"
-      },
-      {
-        "command": "antigravity.verifyCertificationRecord",
-        "title": "Antigravity Workflow: 校验 Certification Record"
-      },
-      {
-        "command": "antigravity.getTransparencyLedger",
-        "title": "Antigravity Workflow: 查看 Transparency Ledger"
-      },
-      {
-        "command": "antigravity.verifyTransparencyLedger",
-        "title": "Antigravity Workflow: 校验 Transparency Ledger"
-      },
-      {
-        "command": "antigravity.runBenchmark",
-        "title": "Antigravity Workflow: 运行 Antigravity Benchmark"
-      },
-      {
-        "command": "antigravity.runInteropHarness",
-        "title": "Antigravity Workflow: 运行互操作 Harness"
+        "command": "antigravity.cancelTask",
+        "title": "Antigravity Task Kernel: 取消当前任务"
       },
       {
         "command": "antigravity.toggleArktsLsp",
-        "title": "Antigravity Workflow: 切换 ArkTS LSP"
+        "title": "Antigravity Task Kernel: 切换 ArkTS LSP"
       }
     ],
     "configuration": {
@@ -322,29 +202,28 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "npm run clean && npm run build:all && npm run build --prefix packages/antigravity-webview && mkdir -p dist && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-mcp-server/src/main.ts --bundle --outfile=dist/antigravity-mcp-server.js --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-daemon/src/main.ts --bundle --outfile=dist/antigravity-daemon.js --external:better-sqlite3 --format=cjs --platform=node --minify",
+    "build": "npm run clean && npm run build:all && npm run build --prefix packages/antigravity-webview && mkdir -p dist && esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-mcp-server/src/main.ts --bundle --outfile=dist/antigravity-mcp-server.js --external:better-sqlite3 --format=cjs --platform=node --minify && esbuild ./packages/antigravity-taskd/src/main.ts --bundle --outfile=dist/antigravity-taskd.js --format=cjs --platform=node --minify",
     "watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "package": "npx vsce package --no-dependencies -o antigravity-workflow.vsix",
-    "install-ext": "npx vsce package --no-dependencies -o antigravity-workflow.vsix && code --install-extension antigravity-workflow.vsix && rm antigravity-workflow.vsix && cp dist/webview.js dist/extension.js dist/antigravity-mcp-server.js dist/antigravity-daemon.js ~/.antigravity/extensions/like3213934360-lab.antigravity-workflow-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
+    "install-ext": "npx vsce package --no-dependencies -o antigravity-workflow.vsix && code --install-extension antigravity-workflow.vsix && rm antigravity-workflow.vsix && cp dist/webview.js dist/extension.js dist/antigravity-mcp-server.js dist/antigravity-taskd.js ~/.antigravity/extensions/like3213934360-lab.antigravity-workflow-0.3.0/dist/ 2>/dev/null; echo '✅ Installed to both VS Code & Antigravity'",
     "build:runtime": "npm run build --prefix packages/antigravity-shared && npm run build --prefix packages/antigravity-core && npm run build --prefix packages/antigravity-persistence",
     "build:antigravity-model": "npm run build --prefix packages/antigravity-model-shared && npm run build --prefix packages/antigravity-model-core",
-    "build:antigravity-daemon": "npm run build --prefix packages/antigravity-daemon",
+    "build:antigravity-taskd": "npm run build --prefix packages/antigravity-taskd",
     "build:antigravity-vscode": "npm run build --prefix packages/antigravity-vscode",
     "build:antigravity-mcp": "npm run build --prefix packages/antigravity-mcp-server",
-    "build:all": "npm run build --prefix packages/ace-bridge && npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run build:antigravity-vscode && npm run build:antigravity-mcp",
+    "build:all": "npm run build --prefix packages/ace-bridge && npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-taskd && npm run build:antigravity-vscode && npm run build:antigravity-mcp",
     "typecheck:ace-bridge": "npm run typecheck --prefix packages/ace-bridge",
     "typecheck:runtime": "npm run typecheck --prefix packages/antigravity-shared && npm run typecheck --prefix packages/antigravity-core && npm run typecheck --prefix packages/antigravity-persistence",
     "typecheck:antigravity-model": "npm run typecheck --prefix packages/antigravity-model-shared && npm run typecheck --prefix packages/antigravity-model-core",
     "typecheck:antigravity-vscode": "npm run typecheck --prefix packages/antigravity-vscode",
-    "typecheck:antigravity-daemon": "npm run typecheck --prefix packages/antigravity-daemon",
+    "typecheck:antigravity-taskd": "npm run typecheck --prefix packages/antigravity-taskd",
     "typecheck:antigravity-mcp": "npm run typecheck --prefix packages/antigravity-mcp-server",
     "check:source-artifacts": "if find packages src -path '*/src/*' \\( -name '*.js' -o -name '*.js.map' -o -name '*.d.ts' -o -name '*.d.ts.map' \\) | grep -q .; then echo 'Source tree contains generated artifacts under src/'; find packages src -path '*/src/*' \\( -name '*.js' -o -name '*.js.map' -o -name '*.d.ts' -o -name '*.d.ts.map' \\) | sort; exit 1; fi",
-    "typecheck:all": "npm run check:source-artifacts && npm run typecheck:ace-bridge && npm run typecheck:runtime && npm run typecheck:antigravity-model && npm run typecheck:antigravity-daemon && npm run typecheck:antigravity-vscode && npm run typecheck:antigravity-mcp && npm run clean:dist-tests",
+    "typecheck:all": "npm run check:source-artifacts && npm run typecheck:ace-bridge && npm run typecheck:runtime && npm run typecheck:antigravity-model && npm run typecheck:antigravity-taskd && npm run typecheck:antigravity-vscode && npm run typecheck:antigravity-mcp && npm run clean:dist-tests",
     "test": "vitest run --config vitest.config.ts",
-    "check:contracts": "vitest run --config vitest.config.ts packages/antigravity-daemon/src/__tests__/server-manifest.spec.ts packages/antigravity-daemon/src/__tests__/runtime-recovery.spec.ts packages/antigravity-daemon/src/__tests__/release-surface.spec.ts packages/antigravity-daemon/src/__tests__/formal-specs.spec.ts packages/antigravity-vscode/src/__tests__/workflow-contract.spec.ts",
+    "check:contracts": "vitest run --config vitest.config.ts packages/antigravity-taskd/src/__tests__/runtime.spec.ts packages/antigravity-vscode/src/__tests__/workflow-contract.spec.ts packages/antigravity-mcp-server/src/__tests__/tool-registry.spec.ts",
     "coverage": "vitest run --config vitest.config.ts --coverage",
-    "smoke:daemon": "npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run smoke --prefix packages/antigravity-daemon",
-    "smoke:mcp": "npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-daemon && npm run build:antigravity-mcp && npm run smoke --prefix packages/antigravity-mcp-server",
+    "smoke:mcp": "npm run build:runtime && npm run build:antigravity-model && npm run build:antigravity-taskd && npm run build:antigravity-mcp && npm run smoke --prefix packages/antigravity-mcp-server",
     "ci": "npm run typecheck:all && npm test && npm run build",
     "turbo:build": "turbo run build",
     "turbo:typecheck": "turbo run typecheck",

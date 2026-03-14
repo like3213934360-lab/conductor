@@ -243,4 +243,86 @@ export interface DaemonStageVerdict {
   evaluatedAt: string
   /** Scope from policy evaluator */
   scope: string
+  /** Phase A: gateway-level audit envelope (present when gateway adds independent logic) */
+  auditEnvelope?: {
+    gatewayTimestamp: string
+    inputFactsKeys: string[]
+    crossStageConstraintApplied: boolean
+    circuitBreakerTriggered: boolean
+  }
+}
+
+// ── B2: Unified Stage Evaluation Types ──────────────────────────────────────
+
+/**
+ * B2-2: Gateway-owned stage facts — structured input that the gateway
+ * uses to build the facts dict internally. Callers provide domain-specific
+ * input; gateway owns the facts→rules evaluation pipeline.
+ */
+export interface StageFacts {
+  /** Domain-specific input parameters keyed by name */
+  readonly parameters: Readonly<Record<string, unknown>>
+  /** Optional caller-provided context (e.g. governance config, scores) */
+  readonly context?: Readonly<Record<string, unknown>>
+}
+
+/**
+ * B2-1: Unified stage evaluation request — the NEW primary entry point
+ * for daemon lifecycle governance. Replaces caller-assembled evaluator pattern.
+ *
+ * Key difference from old path: caller does NOT provide `evaluator` or `rules`.
+ * Gateway resolves those internally from its registered policy pack.
+ */
+export interface StageEvaluationRequest {
+  /** Which daemon lifecycle stage to evaluate */
+  stage: DaemonLifecycleStage
+  /** Run being evaluated */
+  runId: string
+  /** When evaluation occurs */
+  evaluatedAt: string
+  /** Gateway-owned facts input (replaces caller-built facts dict) */
+  stageFacts: StageFacts
+  /** Optional sub-scope within the stage (e.g. gate ID for approval) */
+  stageSubScope?: string
+}
+
+/**
+ * B2-2: Stage decision trace — structured audit artifact produced by
+ * the unified stage evaluation pipeline. Captures the full decision
+ * chain: facts → constraints → rules → verdict.
+ */
+export interface StageDecisionTrace {
+  /** Unique trace ID for this evaluation */
+  traceId: string
+  /** Stage that was evaluated */
+  stage: DaemonLifecycleStage
+  /** Run ID context */
+  runId: string
+  /** Timestamp of evaluation */
+  evaluatedAt: string
+  /** Facts as resolved by the gateway (not caller-built anymore) */
+  resolvedFacts: Record<string, unknown>
+  /** Whether circuit breaker pre-empted evaluation */
+  circuitBreakerPreempted: boolean
+  /** Whether cross-stage constraint pre-empted evaluation */
+  crossStagePreempted: boolean
+  /** Cross-stage constraint rationale (if applicable) */
+  crossStageRationale?: string
+  /** Final verdict effect */
+  effect: string
+  /** Verdict rationale chain */
+  rationale: string[]
+  /** Verdict ID (for correlation) */
+  verdictId: string
+  /** Decision path: which evaluation path was taken */
+  decisionPath: 'circuit-breaker' | 'cross-stage-constraint' | 'policy-evaluation'
+}
+
+/**
+ * B2-1: Extended stage verdict — includes the decision trace
+ * for full audit chain transparency. Compatible with DaemonStageVerdict.
+ */
+export interface UnifiedStageVerdict extends DaemonStageVerdict {
+  /** B2: Full decision trace for audit/observability */
+  decisionTrace: StageDecisionTrace
 }

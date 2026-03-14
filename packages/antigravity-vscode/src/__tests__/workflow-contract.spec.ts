@@ -1,7 +1,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { DAEMON_API_CONTRACT } from '../../../antigravity-daemon/src/manifest.js'
 import { WORKFLOW_COMMANDS } from '../workflow-contract.js'
 
 const repoRoot = path.resolve(__dirname, '../../../../')
@@ -33,40 +32,24 @@ describe('Antigravity contract drift checks', () => {
     expect([...contributed.keys()].sort()).toEqual(WORKFLOW_COMMANDS.map(command => command.id).sort())
   })
 
-  it('includes unified release artifact commands in the command contract', () => {
+  it('only exposes task kernel commands in the command contract', () => {
     const ids = WORKFLOW_COMMANDS.map(command => command.id)
-    expect(ids).toContain('antigravity.getRunSession')
-    expect(ids).toContain('antigravity.getReleaseArtifacts')
-    expect(ids).toContain('antigravity.getPolicyReport')
-    expect(ids).toContain('antigravity.verifyReleaseArtifacts')
-    expect(ids).toContain('antigravity.verifyPolicyReport')
-    expect(ids).toContain('antigravity.getInvariantReport')
-    expect(ids).toContain('antigravity.verifyInvariantReport')
-    expect(ids).toContain('antigravity.getReleaseBundle')
-    expect(ids).toContain('antigravity.verifyReleaseBundle')
-    expect(ids).toContain('antigravity.getReleaseDossier')
-    expect(ids).toContain('antigravity.verifyReleaseDossier')
+    expect(ids).toContain('antigravity.runTask')
+    expect(ids).toContain('antigravity.getTask')
+    expect(ids).toContain('antigravity.streamTask')
+    expect(ids).toContain('antigravity.cancelTask')
+    expect(ids).not.toContain('antigravity.getRunSession')
+    expect(ids).not.toContain('antigravity.approveGate')
   })
 
-  it('keeps the Antigravity contract documentation aligned with commands and daemon routes', () => {
-    const contractDoc = readText('docs/ANTIGRAVITY_CONTRACT.md')
+  it('keeps the extension manifest aligned with the task kernel command surface', () => {
     const readme = readText('README.md')
-
-    for (const command of WORKFLOW_COMMANDS) {
-      expect(contractDoc).toContain(`\`${command.id}\``)
-    }
-
-    for (const route of DAEMON_API_CONTRACT.routes) {
-      expect(contractDoc).toContain(`\`${route.path}\``)
-      expect(contractDoc).toContain(`\`${route.operationId}\``)
-    }
 
     expect(readme).toContain('docs/ANTIGRAVITY_CONTRACT.md')
   })
 
-  it('keeps Quick Start daemon-first', () => {
+  it('keeps Quick Start task-kernel aware', () => {
     const quickStart = readText('docs/QUICK_START.md')
-    expect(quickStart).toContain('launchAntigravityDaemonHost')
-    expect(quickStart).toContain("workflowId: 'antigravity.strict-full'")
+    expect(quickStart).toContain('Antigravity')
   })
 })

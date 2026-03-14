@@ -14,18 +14,18 @@ async function main(): Promise<void> {
   const ctx = createServerContext({
     antigravityService: new AntigravityModelService(),
   })
-  console.error('[Antigravity Workflow Runtime] MCP server 启动: daemon-backed workflow authority enabled')
+  console.error('[Antigravity Workflow Runtime] MCP server 启动: taskd-backed task authority enabled')
   console.error(`[Antigravity Workflow Runtime] 数据目录: ${dataDir}`)
 
   const server = createAntigravityMcpServer(ctx)
   const transport = new StdioServerTransport()
 
   process.once('exit', () => {
-    ctx.daemonBridge.dispose()
+    ctx.taskBridge.dispose()
   })
 
   await server.connect(transport)
-  console.error('[Antigravity Workflow Runtime] MCP Server 已启动 (stdio, daemon-owned workflow authority)')
+  console.error('[Antigravity Workflow Runtime] MCP Server 已启动 (stdio, taskd-owned task authority)')
 }
 
 main().catch((err) => {

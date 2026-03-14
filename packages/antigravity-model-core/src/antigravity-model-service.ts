@@ -2,7 +2,7 @@
  * Antigravity Model Core — 门面服务
  *
  * 统一暴露 Antigravity 模型调度能力的门面类，供外部消费者使用。
- * antigravity-mcp-server / vscode-extension / antigravity-daemon 均通过此类消费。
+ * antigravity-mcp-server / vscode-extension / antigravity-taskd 均通过此类消费。
  */
 
 import * as fs from 'fs';

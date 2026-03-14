@@ -18,7 +18,7 @@
   },
   "include": ["src/**/*.ts"],
   "references": [
-    { "path": "../antigravity-daemon" },
-    { "path": "../antigravity-model-core" }
+    { "path": "../antigravity-model-core" },
+    { "path": "../antigravity-taskd" }
   ]
 }

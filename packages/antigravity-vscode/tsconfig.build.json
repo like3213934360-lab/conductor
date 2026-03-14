@@ -3,8 +3,8 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@anthropic/antigravity-daemon": [
-        "../antigravity-daemon/dist/index.d.ts"
+      "@anthropic/antigravity-taskd": [
+        "../antigravity-taskd/dist/index.d.ts"
       ]
     }
   },

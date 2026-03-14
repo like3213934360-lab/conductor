@@ -65,6 +65,8 @@ export class DashboardPanel {
     private _workflowRemoteWorkersState: any = null;
     private _workflowTrustRegistryState: any = null;
     private _workflowBenchmarkSourceRegistryState: any = null;
+    private _taskStreamDisposable?: vscode.Disposable;
+    private _streamedTaskId?: string;
 
     public static createOrShow(
         extensionUri: vscode.Uri,
@@ -811,27 +813,26 @@ export class DashboardPanel {
                     }
                     case 'startRun': {
                         const goal = typeof message.goal === 'string' ? message.goal.trim() : '';
-                        const workflowId = typeof message.workflowId === 'string' && message.workflowId.trim().length > 0
-                            ? message.workflowId.trim()
-                            : 'antigravity.strict-full';
+                        const mode = message.mode === 'write' ? 'write' : 'analysis';
                         if (!goal) {
                             this._panel.webview.postMessage({
                                 command: 'runError',
-                                message: 'Antigravity workflow goal must not be empty',
+                                message: 'Antigravity task goal must not be empty',
                             });
                             break;
                         }
 
                         this._panel.webview.postMessage({
                             command: 'runPending',
-                            message: 'Antigravity workflow request received. Initializing antigravity-daemon...',
+                            message: 'Antigravity task request received. Initializing antigravity-taskd...',
                         });
 
                         try {
                             const result = await this.workflowOrchestrator.startRun({
                                 goal,
-                                workflowId: workflowId as 'antigravity.strict-full' | 'antigravity.adaptive',
+                                mode,
                             });
+                            await this._ensureTaskStream(result.runId);
                             this._panel.webview.postMessage({
                                 command: 'runStarted',
                                 runId: result.runId,
@@ -841,31 +842,6 @@ export class DashboardPanel {
                             const messageText = error instanceof Error ? error.message : String(error);
                             this._panel.webview.postMessage({
                                 command: 'runError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'approveGate': {
-                        try {
-                            const gateId = typeof message.gateId === 'string' && message.gateId.trim().length > 0
-                                ? message.gateId.trim()
-                                : 'antigravity-final-gate';
-                            const result = await this.workflowOrchestrator.approveGate({
-                                gateId,
-                                approvedBy: 'dashboard-user',
-                                comment: typeof message.comment === 'string' ? message.comment : 'Approved from dashboard',
-                            });
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Gate approved: ${gateId}`,
-                                runId: result.snapshot.runId,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
                                 message: messageText,
                             });
                         }
@@ -889,15 +865,13 @@ export class DashboardPanel {
                         }
                         break;
                     }
-                    case 'replayRun': {
+                    case 'listTaskJobs': {
                         try {
-                            const result = await this.workflowOrchestrator.replayRun();
+                            const jobs = await this.workflowOrchestrator.listJobs();
                             this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Replay started: ${result.runId}`,
-                                runId: result.runId,
+                                command: 'taskJobList',
+                                jobs,
                             });
-                            await this._publishRunSnapshot();
                         } catch (error) {
                             const messageText = error instanceof Error ? error.message : String(error);
                             this._panel.webview.postMessage({
@@ -907,502 +881,13 @@ export class DashboardPanel {
                         }
                         break;
                     }
-                    case 'getRunSession': {
+                    case 'openTaskJob': {
                         try {
-                            const session = await this.workflowOrchestrator.getRunSession();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: session.activeLease
-                                    ? `Active lease: ${session.activeLease.nodeId}@${session.activeLease.leaseId}`
-                                    : 'Run session loaded',
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'resumeRun': {
-                        try {
-                            const result = await this.workflowOrchestrator.resumeRun(undefined, typeof message.comment === 'string' ? message.comment : undefined);
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Run resumed: ${result.snapshot.runId}`,
-                                runId: result.snapshot.runId,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'exportTraceBundle': {
-                        try {
-                            const bundle = await this.workflowOrchestrator.exportTraceBundle();
-                            this._workflowReleaseArtifactsState = {
-                                ...this._workflowReleaseArtifactsState,
-                                traceBundle: {
-                                    ...(this._workflowReleaseArtifactsState?.traceBundle ?? {}),
-                                    path: bundle.bundlePath,
-                                },
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Trace bundle exported: ${bundle.bundlePath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getReleaseArtifacts': {
-                        try {
-                            const artifacts = await this.workflowOrchestrator.getReleaseArtifacts();
-                            this._workflowReleaseArtifactsState = artifacts.releaseArtifacts;
-                            this._workflowReleaseArtifactsVerification = null;
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: 'Release artifacts loaded',
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getPolicyReport': {
-                        try {
-                            const report = await this.workflowOrchestrator.getPolicyReport();
-                            this._workflowPolicyReportState = {
-                                ...(this._workflowPolicyReportState ?? {}),
-                                path: report.reportPath,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Policy report loaded: ${report.reportPath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({ command: 'runActionError', message: messageText });
-                        }
-                        break;
-                    }
-                    case 'verifyReleaseArtifacts': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyReleaseArtifacts();
-                            this._workflowReleaseArtifactsState = report.releaseArtifacts;
-                            this._workflowReleaseArtifactsVerification = {
-                                ok: report.ok,
-                                issues: report.issues,
-                                verifiedAt: report.verifiedAt,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release artifacts ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyPolicyReport': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyPolicyReport();
-                            this._workflowPolicyReportState = {
-                                ...(this._workflowPolicyReportState ?? {}),
-                                path: report.reportPath,
-                                verified: report.ok,
-                                payloadDigestOk: report.payloadDigestOk,
-                                signatureVerified: report.signatureVerified,
-                                signatureRequired: report.signatureRequired,
-                                signaturePolicyId: report.signaturePolicyId,
-                                signatureKeyId: report.signatureKeyId,
-                                signatureIssuer: report.signatureIssuer,
-                                issues: report.issues,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Policy report ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({ command: 'runActionError', message: messageText });
-                        }
-                        break;
-                    }
-                    case 'getInvariantReport': {
-                        try {
-                            const report = await this.workflowOrchestrator.getInvariantReport();
-                            this._workflowInvariantReportState = {
-                                ...(this._workflowInvariantReportState ?? {}),
-                                path: report.reportPath,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Invariant report loaded: ${report.reportPath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyInvariantReport': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyInvariantReport();
-                            this._workflowInvariantReportState = {
-                                ...(this._workflowInvariantReportState ?? {}),
-                                path: report.reportPath,
-                                verified: report.ok,
-                                payloadDigestOk: report.payloadDigestOk,
-                                signatureVerified: report.signatureVerified,
-                                signatureRequired: report.signatureRequired,
-                                signaturePolicyId: report.signaturePolicyId,
-                                signatureKeyId: report.signatureKeyId,
-                                signatureIssuer: report.signatureIssuer,
-                                issues: report.issues,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Invariant report ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getReleaseAttestation': {
-                        try {
-                            const attestation = await this.workflowOrchestrator.getReleaseAttestation();
-                            this._workflowReleaseArtifactsState = {
-                                ...this._workflowReleaseArtifactsState,
-                                releaseAttestation: {
-                                    ...(this._workflowReleaseArtifactsState?.releaseAttestation ?? {}),
-                                    path: attestation.attestationPath,
-                                },
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release attestation loaded: ${attestation.attestationPath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyReleaseAttestation': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyReleaseAttestation();
-                            this._workflowReleaseArtifactsState = {
-                                ...this._workflowReleaseArtifactsState,
-                                releaseAttestation: {
-                                    ...(this._workflowReleaseArtifactsState?.releaseAttestation ?? {}),
-                                    path: report.attestationPath,
-                                    verified: report.ok,
-                                    payloadDigestOk: report.payloadDigestOk,
-                                    signatureVerified: report.signatureVerified,
-                                    signatureRequired: report.signatureRequired,
-                                    signaturePolicyId: report.signaturePolicyId,
-                                    signatureKeyId: report.signatureKeyId,
-                                    signatureIssuer: report.signatureIssuer,
-                                    issues: report.issues,
-                                },
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release attestation ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getReleaseBundle': {
-                        try {
-                            const bundle = await this.workflowOrchestrator.getReleaseBundle();
-                            this._workflowReleaseBundleState = {
-                                ...(this._workflowReleaseBundleState ?? {}),
-                                path: bundle.bundlePath,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release bundle loaded: ${bundle.bundlePath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyReleaseBundle': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyReleaseBundle();
-                            this._workflowReleaseBundleState = {
-                                ...(this._workflowReleaseBundleState ?? {}),
-                                path: report.bundlePath,
-                                verified: report.ok,
-                                payloadDigestOk: report.payloadDigestOk,
-                                signatureVerified: report.signatureVerified,
-                                signatureRequired: report.signatureRequired,
-                                signaturePolicyId: report.signaturePolicyId,
-                                signatureKeyId: report.signatureKeyId,
-                                signatureIssuer: report.signatureIssuer,
-                                issues: report.issues,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release bundle ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getReleaseDossier': {
-                        try {
-                            const dossier = await this.workflowOrchestrator.getReleaseDossier();
-                            this._workflowReleaseDossierState = {
-                                ...(this._workflowReleaseDossierState ?? {}),
-                                path: dossier.dossierPath,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release dossier loaded: ${dossier.dossierPath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyReleaseDossier': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyReleaseDossier();
-                            this._workflowReleaseDossierState = {
-                                ...(this._workflowReleaseDossierState ?? {}),
-                                path: report.dossierPath,
-                                verified: report.ok,
-                                payloadDigestOk: report.payloadDigestOk,
-                                signatureVerified: report.signatureVerified,
-                                signatureRequired: report.signatureRequired,
-                                signaturePolicyId: report.signaturePolicyId,
-                                signatureKeyId: report.signatureKeyId,
-                                signatureIssuer: report.signatureIssuer,
-                                issues: report.issues,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Release dossier ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'getCertificationRecord': {
-                        try {
-                            const record = await this.workflowOrchestrator.getCertificationRecord();
-                            this._workflowCertificationRecordState = {
-                                ...(this._workflowCertificationRecordState ?? {}),
-                                path: record.recordPath,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Certification record loaded: ${record.recordPath}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'verifyCertificationRecord': {
-                        try {
-                            const report = await this.workflowOrchestrator.verifyCertificationRecord();
-                            this._workflowCertificationRecordState = {
-                                ...(this._workflowCertificationRecordState ?? {}),
-                                path: report.recordPath,
-                                verified: report.ok,
-                                payloadDigestOk: report.payloadDigestOk,
-                                signatureVerified: report.signatureVerified,
-                                signatureRequired: report.signatureRequired,
-                                signaturePolicyId: report.signaturePolicyId,
-                                signatureKeyId: report.signatureKeyId,
-                                signatureIssuer: report.signatureIssuer,
-                                issues: report.issues,
-                            };
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Certification record ${report.ok ? 'verified' : 'failed'}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'runBenchmarkHarness': {
-                        try {
-                            this._workflowBenchmarkState = await this.workflowOrchestrator.runBenchmark();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `${this._workflowBenchmarkState.harnessId}: ${this._workflowBenchmarkState.ok ? 'passed' : 'failed'} (${this._workflowBenchmarkState.passedCases}/${this._workflowBenchmarkState.totalCases} cases, ${this._workflowBenchmarkState.passedChecks}/${this._workflowBenchmarkState.totalChecks} checks)`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'runInteropHarness': {
-                        try {
-                            this._workflowInteropState = await this.workflowOrchestrator.runInteropHarness();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `${this._workflowInteropState.harnessId}: ${this._workflowInteropState.ok ? 'passed' : 'failed'} (${this._workflowInteropState.passedChecks}/${this._workflowInteropState.totalChecks})`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'refreshRemoteWorkers': {
-                        try {
-                            this._workflowRemoteWorkersState = await this.workflowOrchestrator.refreshRemoteWorkers();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Remote workers refreshed: ${this._workflowRemoteWorkersState.workers?.length ?? 0}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'reloadPolicyPack': {
-                        try {
-                            const pack = await this.workflowOrchestrator.reloadPolicyPack();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Policy pack reloaded: ${pack.packId}@${pack.version}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'reloadTrustRegistry': {
-                        try {
-                            this._workflowTrustRegistryState = await this.workflowOrchestrator.reloadTrustRegistry();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Trust registry reloaded: ${this._workflowTrustRegistryState.registryId}@${this._workflowTrustRegistryState.version}`,
-                            });
-                            await this._publishRunSnapshot();
-                        } catch (error) {
-                            const messageText = error instanceof Error ? error.message : String(error);
-                            this._panel.webview.postMessage({
-                                command: 'runActionError',
-                                message: messageText,
-                            });
-                        }
-                        break;
-                    }
-                    case 'reloadBenchmarkSourceRegistry': {
-                        try {
-                            this._workflowBenchmarkSourceRegistryState = await this.workflowOrchestrator.reloadBenchmarkSourceRegistry();
-                            this._panel.webview.postMessage({
-                                command: 'runActionSuccess',
-                                message: `Benchmark source registry reloaded: ${this._workflowBenchmarkSourceRegistryState.registryId}@${this._workflowBenchmarkSourceRegistryState.version}`,
-                            });
-                            await this._publishRunSnapshot();
+                            if (typeof message.jobId === 'string' && message.jobId.trim().length > 0) {
+                                this.workflowOrchestrator.setActiveRunId(message.jobId.trim());
+                                await this._ensureTaskStream(message.jobId.trim());
+                                await this._publishRunSnapshot();
+                            }
                         } catch (error) {
                             const messageText = error instanceof Error ? error.message : String(error);
                             this._panel.webview.postMessage({
@@ -1621,93 +1106,57 @@ export class DashboardPanel {
 
     private async _readRunSnapshotFromDaemon(): Promise<any | null> {
         const status = this.workflowOrchestrator.getStatus();
-
-        try {
-            this._workflowRemoteWorkersState = await this.workflowOrchestrator.listRemoteWorkers();
-        } catch {
-            // Ignore remote worker lookup failure and fall back to cached data.
+        const jobs = await this.workflowOrchestrator.listJobs().catch(() => []);
+        if (!status.runId && jobs.length > 0) {
+            this.workflowOrchestrator.setActiveRunId(jobs[0]!.jobId);
         }
-        try {
-            this._workflowTrustRegistryState = await this.workflowOrchestrator.getTrustRegistry();
-        } catch {
-            // Ignore trust registry lookup failure and fall back to cached data.
-        }
-        try {
-            this._workflowBenchmarkSourceRegistryState = await this.workflowOrchestrator.getBenchmarkSourceRegistry();
-        } catch {
-            // Ignore benchmark source registry lookup failure and fall back to cached data.
+        const activeJobId = status.runId ?? jobs[0]?.jobId;
+        if (!activeJobId) {
+            return { jobs: [] };
         }
 
-        if (!status.runId) {
-            if (this._workflowRemoteWorkersState || this._workflowTrustRegistryState || this._workflowBenchmarkSourceRegistryState || this._workflowBenchmarkState || this._workflowInteropState) {
-                return {
-                    remoteWorkers: this._workflowRemoteWorkersState,
-                    trustRegistry: this._workflowTrustRegistryState,
-                    benchmarkSourceRegistry: this._workflowBenchmarkSourceRegistryState,
-                    benchmark: this._workflowBenchmarkState,
-                    interop: this._workflowInteropState,
-                    releaseArtifacts: this._workflowReleaseArtifactsState,
-                    releaseArtifactsVerification: this._workflowReleaseArtifactsVerification,
-                    policyReport: this._workflowPolicyReportState,
-                    invariantReport: this._workflowInvariantReportState,
-                    releaseBundle: this._workflowReleaseBundleState,
-                    releaseDossier: this._workflowReleaseDossierState,
-                    certificationRecord: this._workflowCertificationRecordState,
-                    sourcePath: 'antigravity-daemon',
-                    updatedAt: Date.now(),
-                };
-            }
-            return null;
+        await this._ensureTaskStream(activeJobId);
+        const job = await this.workflowOrchestrator.getJob(activeJobId).catch(() => null);
+        if (!job) {
+            return { jobs };
         }
+        return {
+            jobId: job.jobId,
+            runId: job.jobId,
+            goal: job.goal,
+            mode: job.mode,
+            status: job.status,
+            currentStageId: job.currentStageId,
+            graph: job.graph,
+            workers: job.workers,
+            summary: job.summary,
+            artifacts: job.artifacts,
+            recentEvents: job.recentEvents,
+            jobs,
+            updatedAt: Date.parse(job.updatedAt) || Date.now(),
+            createdAt: Date.parse(job.createdAt) || Date.now(),
+            sourcePath: 'antigravity-taskd',
+        };
+    }
 
-        try {
-            const run = await this.workflowOrchestrator.getRun(status.runId);
-            const state = run.snapshot.runtimeState;
-            const normalizedNodes = this._normalizeWorkflowNodes(state?.nodes || {}, run.snapshot.phase);
-            for (const [nodeId, node] of Object.entries(run.snapshot.nodes)) {
-                normalizedNodes[nodeId] = {
-                    ...normalizedNodes[nodeId],
-                    status: this._normalizeWorkflowNodeStatus((node as any).status, run.snapshot.phase, nodeId, normalizedNodes),
-                    model: (node as any).model,
-                    startedAt: (node as any).startedAt,
-                    completedAt: (node as any).completedAt,
-                    outputSummary: (node as any).outputSummary,
-                    approvalGateId: (node as any).approvalGateId,
-                };
-            }
-
-            return {
-                runId: run.snapshot.runId,
-                version: state?.version ?? 0,
-                status: run.snapshot.status,
-                phase: run.snapshot.phase,
-                workflow: run.snapshot.workflowTemplate,
-                verdict: run.snapshot.verdict,
-                nodes: normalizedNodes,
-                benchmark: this._workflowBenchmarkState,
-                interop: this._workflowInteropState,
-                releaseArtifacts: (run.snapshot as any).releaseArtifacts ?? this._workflowReleaseArtifactsState,
-                releaseArtifactsVerification: this._workflowReleaseArtifactsVerification,
-                policyReport: (run.snapshot as any).policyReport ?? this._workflowPolicyReportState,
-                invariantReport: (run.snapshot as any).invariantReport ?? this._workflowInvariantReportState,
-                releaseBundle: (run.snapshot as any).releaseBundle ?? this._workflowReleaseBundleState,
-                releaseDossier: (run.snapshot as any).releaseDossier ?? this._workflowReleaseDossierState,
-                certificationRecord: (run.snapshot as any).certificationRecord ?? this._workflowCertificationRecordState,
-                remoteWorkers: this._workflowRemoteWorkersState,
-                trustRegistry: this._workflowTrustRegistryState,
-                benchmarkSourceRegistry: this._workflowBenchmarkSourceRegistryState,
-                authorityOwner: run.snapshot.authorityOwner,
-                authorityHost: run.snapshot.authorityHost,
-                hostSessionId: run.snapshot.hostSessionId,
-                timelineCursor: run.snapshot.timelineCursor,
-                latestRisk: state?.latestRisk,
-                routeDecision: state?.routeDecision,
-                sourcePath: 'antigravity-daemon',
-                updatedAt: Date.parse(run.snapshot.updatedAt) || Date.now(),
-            };
-        } catch {
-            return null;
+    private async _ensureTaskStream(jobId: string) {
+        if (this._streamedTaskId === jobId && this._taskStreamDisposable) {
+            return;
         }
+        this._taskStreamDisposable?.dispose();
+        this._streamedTaskId = jobId;
+        this._taskStreamDisposable = await this.workflowOrchestrator.streamRun(jobId, (event) => {
+            this._panel.webview.postMessage({
+                command: 'taskEvent',
+                event: {
+                    snapshot: event.snapshot,
+                    entries: event.entries,
+                    nextCursor: event.nextCursor,
+                },
+            });
+            void this._publishRunSnapshot();
+        });
+        this._disposables.push(this._taskStreamDisposable);
     }
 
     private _normalizeWorkflowNodes(rawNodes: Record<string, any>, phase?: string) {

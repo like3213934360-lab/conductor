@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@anthropic/ace-bridge": "*",
-    "@anthropic/antigravity-daemon": "*",
+    "@anthropic/antigravity-taskd": "*",
     "@anthropic/antigravity-model-shared": "*",
     "@anthropic/antigravity-persistence": "*",
     "vscode-languageclient": "^9.0.0"
@@ -26,16 +26,10 @@
     "configuration": {
       "title": "Antigravity Workflow",
       "properties": {
-        "antigravity.strictTrustMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable strict trust mode for the Antigravity daemon. When enabled, artifact signature verification failures and trust policy violations block instead of warning."
-        },
-        "antigravity.federationFailPolicy": {
+        "antigravity.taskKernel": {
           "type": "string",
-          "enum": ["fallback", "fail-closed"],
-          "default": "fallback",
-          "description": "Controls behavior when remote worker federation fails. 'fallback' uses local execution, 'fail-closed' blocks the node."
+          "default": "taskd",
+          "description": "Selects the active Antigravity execution kernel. The task kernel always uses antigravity-taskd."
         }
       }
     }

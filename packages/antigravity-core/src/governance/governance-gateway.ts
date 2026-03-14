@@ -27,6 +27,10 @@ import type {
   ActionOutcome,
   DaemonLifecycleStage,
   DaemonStageVerdict,
+  StageEvaluationRequest,
+  StageDecisionTrace,
+  StageFacts,
+  UnifiedStageVerdict,
 } from './governance-types.js'
 import type { TrustFactorService } from './trust-factor.js'
 import type { AssuranceEngine } from './assurance-engine.js'
@@ -70,6 +74,20 @@ export class GovernanceGateway {
   // ★ P3-1 fix: 延迟排序 — 注册时设脏标志，评估时排序
   private sortDirty = false
 
+  // ── Phase A: gateway-owned state ──────────────────────────────────────────
+  /** Stage verdict history per run — enables cross-stage constraints */
+  private readonly stageHistory = new Map<string, DaemonStageVerdict[]>()
+  /** Circuit breaker: consecutive block counts per stage type */
+  private readonly stageBlockCounts = new Map<DaemonLifecycleStage, number>()
+  /** Circuit breaker threshold: consecutive blocks before hard-stop */
+  private static readonly CIRCUIT_BREAKER_THRESHOLD = 5
+
+  // ── B2: Gateway-owned facts builder registry ─────────────────────────────
+  /** Maps stage to a facts builder function. Callers register via registerFactsBuilder. */
+  private readonly factsBuilders = new Map<DaemonLifecycleStage, (stageFacts: StageFacts) => Record<string, unknown>>()
+  /** B2: Rules provider — set by runtime to supply policy rules without caller assembly */
+  private rulesProvider?: () => { rules: readonly any[]; evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string } }
+
   constructor(
     trustService: TrustFactorService,
     controls?: GovernanceControl[],
@@ -106,25 +124,39 @@ export class GovernanceGateway {
     this.assuranceEngine = engine
   }
 
+  /** Phase A: Read-only access to stage history for diagnostics */
+  getStageHistory(runId: string): readonly DaemonStageVerdict[] {
+    return this.stageHistory.get(runId) ?? []
+  }
+
+  /** Phase A: Read-only circuit breaker state */
+  getCircuitBreakerState(): ReadonlyMap<DaemonLifecycleStage, number> {
+    return this.stageBlockCounts
+  }
+
+  /** Phase A: Reset circuit breaker for a stage (e.g. after manual intervention) */
+  resetCircuitBreaker(stage: DaemonLifecycleStage): void {
+    this.stageBlockCounts.delete(stage)
+  }
+
   // ── 4 个拦截点 ────────────────────────────────────────────────────────────
 
   /**
-   * PR-11: Authoritative daemon lifecycle stage evaluation.
+   * PR-11 + Phase A: Authoritative daemon lifecycle stage evaluation.
    *
    * This is the SINGLE ENTRY POINT for all daemon governance decisions.
    * The daemon runtime delegates all governance stages here instead of
    * calling evaluateRulesAgainstFacts directly.
    *
-   * Input contract:
-   *  - stage: which daemon lifecycle phase (preflight, release, etc.)
-   *  - evaluator: the pure rule evaluator function
-   *  - context: runId + facts + scope + timing
+   * Phase A enhancements (gateway-owned logic, beyond pure forwarding):
+   *  1. Circuit breaker — if a stage has had ≥ N consecutive blocks, gateway
+   *     short-circuits to block without calling the evaluator.
+   *  2. Cross-stage constraints — gateway checks stageHistory for conflict
+   *     patterns (e.g. preflight block → resume/approval blocked).
+   *  3. Audit envelope — every verdict carries gateway-produced metadata
+   *     documenting what independent logic the gateway applied.
    *
-   * Output contract:
-   *  - DaemonStageVerdict with stage provenance and effect
-   *
-   * This is a pure computation — no state mutation on the gateway.
-   * The caller (daemon runtime) uses the verdict to drive run behavior.
+   * Input contract unchanged. Output contract extended with optional auditEnvelope.
    */
   evaluateDaemonLifecycleStage(input: {
     stage: DaemonLifecycleStage
@@ -137,6 +169,52 @@ export class GovernanceGateway {
     rules: readonly { ruleId: string; scope: string; enabled?: boolean; effect: string; when?: unknown; message?: string; description?: string; evidenceFactKey?: string }[]
     evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string; evidenceIds?: string[]; runId?: string }
   }): DaemonStageVerdict {
+    const gatewayTimestamp = new Date().toISOString()
+    const inputFactsKeys = Object.keys(input.facts)
+
+    // ── Phase A: Circuit breaker check ──────────────────────────────────
+    const blockCount = this.stageBlockCounts.get(input.stage) ?? 0
+    if (blockCount >= GovernanceGateway.CIRCUIT_BREAKER_THRESHOLD) {
+      const cbVerdict: DaemonStageVerdict = {
+        stage: input.stage,
+        effect: 'block',
+        rationale: [`gateway:circuit-breaker — stage ${input.stage} blocked ${blockCount} consecutive times, hard-stop active`],
+        verdictId: `cb-${input.runId}-${input.stage}-${Date.now()}`,
+        evaluatedAt: gatewayTimestamp,
+        scope: input.verdictScope,
+        auditEnvelope: {
+          gatewayTimestamp,
+          inputFactsKeys,
+          crossStageConstraintApplied: false,
+          circuitBreakerTriggered: true,
+        },
+      }
+      this.recordStageVerdict(input.runId, cbVerdict)
+      return cbVerdict
+    }
+
+    // ── Phase A: Cross-stage constraint check ───────────────────────────
+    const crossStageBlock = this.checkCrossStageConstraints(input.runId, input.stage)
+    if (crossStageBlock) {
+      const csVerdict: DaemonStageVerdict = {
+        stage: input.stage,
+        effect: 'block',
+        rationale: [crossStageBlock],
+        verdictId: `cs-${input.runId}-${input.stage}-${Date.now()}`,
+        evaluatedAt: gatewayTimestamp,
+        scope: input.verdictScope,
+        auditEnvelope: {
+          gatewayTimestamp,
+          inputFactsKeys,
+          crossStageConstraintApplied: true,
+          circuitBreakerTriggered: false,
+        },
+      }
+      this.recordStageVerdict(input.runId, csVerdict)
+      return csVerdict
+    }
+
+    // ── Existing: delegate to evaluator ─────────────────────────────────
     const context = {
       runId: input.runId,
       ruleScope: input.ruleScope,
@@ -146,14 +224,248 @@ export class GovernanceGateway {
       fallbackMessage: input.fallbackMessage,
     }
     const verdict = input.evaluator(input.rules as any, context)
-    return {
+
+    const result: DaemonStageVerdict = {
       stage: input.stage,
       effect: verdict.effect,
       rationale: verdict.rationale,
       verdictId: verdict.verdictId,
       evaluatedAt: verdict.evaluatedAt,
       scope: verdict.scope,
+      auditEnvelope: {
+        gatewayTimestamp,
+        inputFactsKeys,
+        crossStageConstraintApplied: false,
+        circuitBreakerTriggered: false,
+      },
     }
+
+    // ── Phase A: Record verdict + update circuit breaker ────────────────
+    this.recordStageVerdict(input.runId, result)
+    if (verdict.effect === 'block') {
+      this.stageBlockCounts.set(input.stage, blockCount + 1)
+    } else {
+      // Reset on non-block — circuit breaker tracks consecutive blocks only
+      this.stageBlockCounts.set(input.stage, 0)
+    }
+
+    return result
+  }
+
+  // ── Phase A: Gateway-owned private methods ────────────────────────────────
+
+  /**
+   * Checks cross-stage constraints from stageHistory.
+   * Returns a rationale string if the stage should be blocked, or null if clear.
+   */
+  private checkCrossStageConstraints(runId: string, stage: DaemonLifecycleStage): string | null {
+    const history = this.stageHistory.get(runId)
+    if (!history || history.length === 0) return null
+
+    // Constraint 1: If preflight was blocked, block resume and approval
+    if (stage === 'daemon:approval' || stage === 'daemon:lease-authorize') {
+      const preflightBlock = history.find(
+        v => v.stage === 'daemon:preflight' && v.effect === 'block',
+      )
+      if (preflightBlock) {
+        return `gateway:cross-stage-constraint — ${stage} blocked because daemon:preflight was blocked (verdictId=${preflightBlock.verdictId})`
+      }
+    }
+
+    // Constraint 2: If skip-authorize has accumulated >= 3 blocks, degrade terminal-release to block
+    if (stage === 'daemon:terminal-release') {
+      const skipBlocks = history.filter(
+        v => v.stage === 'daemon:skip-authorize' && v.effect === 'block',
+      )
+      if (skipBlocks.length >= 3) {
+        return `gateway:cross-stage-constraint — ${stage} blocked due to ${skipBlocks.length} accumulated daemon:skip-authorize blocks`
+      }
+    }
+
+    return null
+  }
+
+  /** Records a verdict into stage history for future cross-stage constraint checks */
+  private recordStageVerdict(runId: string, verdict: DaemonStageVerdict): void {
+    let history = this.stageHistory.get(runId)
+    if (!history) {
+      history = []
+      this.stageHistory.set(runId, history)
+    }
+    history.push(verdict)
+  }
+
+  // ── B2: Unified Stage Evaluation Pipeline ────────────────────────────────
+
+  /**
+   * B2: Register a facts builder for a specific stage.
+   * The gateway will use this builder to assemble facts from StageFacts input.
+   */
+  registerFactsBuilder(
+    stage: DaemonLifecycleStage,
+    builder: (stageFacts: StageFacts) => Record<string, unknown>,
+  ): void {
+    this.factsBuilders.set(stage, builder)
+  }
+
+  /**
+   * B2: Set the rules provider — runtime registers this so the gateway
+   * can resolve rules + evaluator without caller assembly.
+   */
+  setRulesProvider(
+    provider: () => { rules: readonly any[]; evaluator: (rules: readonly any[], context: any) => { verdictId: string; effect: string; rationale: string[]; scope: string; evaluatedAt: string } },
+  ): void {
+    this.rulesProvider = provider
+  }
+
+  /**
+   * B2-1: evaluateStage — the NEW unified entry point for daemon governance.
+   *
+   * Key differences from evaluateDaemonLifecycleStage (old path):
+   *  - Caller provides structured StageFacts, NOT pre-built facts dict
+   *  - Caller does NOT provide rules or evaluator (gateway resolves internally)
+   *  - Gateway produces a StageDecisionTrace for full audit chain
+   *  - Circuit breaker + cross-stage constraints integrated into decision trace
+   *
+   * Falls back to old path if no rulesProvider or factsBuilder registered.
+   */
+  evaluateUnifiedStage(request: StageEvaluationRequest): UnifiedStageVerdict {
+    const traceId = `st-${request.runId}-${request.stage}-${Date.now()}`
+    const gatewayTimestamp = new Date().toISOString()
+
+    // ── Circuit breaker (reuse existing logic) ────────────────────────
+    const blockCount = this.stageBlockCounts.get(request.stage) ?? 0
+    if (blockCount >= GovernanceGateway.CIRCUIT_BREAKER_THRESHOLD) {
+      const trace: StageDecisionTrace = {
+        traceId,
+        stage: request.stage,
+        runId: request.runId,
+        evaluatedAt: gatewayTimestamp,
+        resolvedFacts: request.stageFacts.parameters as Record<string, unknown>,
+        circuitBreakerPreempted: true,
+        crossStagePreempted: false,
+        effect: 'block',
+        rationale: [`gateway:circuit-breaker — stage ${request.stage} blocked ${blockCount} consecutive times, hard-stop active`],
+        verdictId: `cb-${request.runId}-${request.stage}-${Date.now()}`,
+        decisionPath: 'circuit-breaker',
+      }
+      const verdict: UnifiedStageVerdict = {
+        stage: request.stage,
+        effect: 'block',
+        rationale: trace.rationale,
+        verdictId: trace.verdictId,
+        evaluatedAt: gatewayTimestamp,
+        scope: request.stageSubScope ?? request.stage,
+        auditEnvelope: {
+          gatewayTimestamp,
+          inputFactsKeys: Object.keys(request.stageFacts.parameters),
+          crossStageConstraintApplied: false,
+          circuitBreakerTriggered: true,
+        },
+        decisionTrace: trace,
+      }
+      this.recordStageVerdict(request.runId, verdict)
+      return verdict
+    }
+
+    // ── Cross-stage constraints (reuse existing logic) ────────────────
+    const crossStageBlock = this.checkCrossStageConstraints(request.runId, request.stage)
+    if (crossStageBlock) {
+      const trace: StageDecisionTrace = {
+        traceId,
+        stage: request.stage,
+        runId: request.runId,
+        evaluatedAt: gatewayTimestamp,
+        resolvedFacts: request.stageFacts.parameters as Record<string, unknown>,
+        circuitBreakerPreempted: false,
+        crossStagePreempted: true,
+        crossStageRationale: crossStageBlock,
+        effect: 'block',
+        rationale: [crossStageBlock],
+        verdictId: `cs-${request.runId}-${request.stage}-${Date.now()}`,
+        decisionPath: 'cross-stage-constraint',
+      }
+      const verdict: UnifiedStageVerdict = {
+        stage: request.stage,
+        effect: 'block',
+        rationale: trace.rationale,
+        verdictId: trace.verdictId,
+        evaluatedAt: gatewayTimestamp,
+        scope: request.stageSubScope ?? request.stage,
+        auditEnvelope: {
+          gatewayTimestamp,
+          inputFactsKeys: Object.keys(request.stageFacts.parameters),
+          crossStageConstraintApplied: true,
+          circuitBreakerTriggered: false,
+        },
+        decisionTrace: trace,
+      }
+      this.recordStageVerdict(request.runId, verdict)
+      return verdict
+    }
+
+    // ── Build facts: gateway-owned or pass-through ───────────────────
+    const factsBuilder = this.factsBuilders.get(request.stage)
+    const resolvedFacts = factsBuilder
+      ? factsBuilder(request.stageFacts)
+      : { ...request.stageFacts.parameters, ...request.stageFacts.context }
+
+    // ── Policy evaluation: gateway-owned ─────────────────────────────
+    if (!this.rulesProvider) {
+      throw new Error(`B2: evaluateStage called but no rulesProvider registered — gateway cannot resolve rules internally`)
+    }
+    const { rules, evaluator } = this.rulesProvider()
+    const ruleScope = request.stageSubScope ?? request.stage
+    const verdictScope = ruleScope
+    const context = {
+      runId: request.runId,
+      ruleScope,
+      verdictScope,
+      evaluatedAt: request.evaluatedAt,
+      facts: resolvedFacts,
+      fallbackMessage: `Stage ${request.stage} passed under the active policy pack.`,
+    }
+    const rawVerdict = evaluator(rules as any, context)
+
+    const trace: StageDecisionTrace = {
+      traceId,
+      stage: request.stage,
+      runId: request.runId,
+      evaluatedAt: gatewayTimestamp,
+      resolvedFacts,
+      circuitBreakerPreempted: false,
+      crossStagePreempted: false,
+      effect: rawVerdict.effect,
+      rationale: rawVerdict.rationale,
+      verdictId: rawVerdict.verdictId,
+      decisionPath: 'policy-evaluation',
+    }
+
+    const verdict: UnifiedStageVerdict = {
+      stage: request.stage,
+      effect: rawVerdict.effect,
+      rationale: rawVerdict.rationale,
+      verdictId: rawVerdict.verdictId,
+      evaluatedAt: rawVerdict.evaluatedAt,
+      scope: rawVerdict.scope,
+      auditEnvelope: {
+        gatewayTimestamp,
+        inputFactsKeys: Object.keys(resolvedFacts),
+        crossStageConstraintApplied: false,
+        circuitBreakerTriggered: false,
+      },
+      decisionTrace: trace,
+    }
+
+    // Update circuit breaker state
+    this.recordStageVerdict(request.runId, verdict)
+    if (rawVerdict.effect === 'block') {
+      this.stageBlockCounts.set(request.stage, blockCount + 1)
+    } else {
+      this.stageBlockCounts.set(request.stage, 0)
+    }
+
+    return verdict
   }
 
   /**
