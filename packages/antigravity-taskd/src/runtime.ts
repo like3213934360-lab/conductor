@@ -883,6 +883,18 @@ export class AntigravityTaskdRuntime {
       throw new Error(`All ${shardOutcomes.length} shards failed — no results to aggregate`)
     }
 
+    // 🚨 降级阈值防线：如果失败+降级的比例超过 80%，拒绝产出虚假聚合结果
+    const MAX_DEGRADATION_RATIO = 0.8
+    const unhealthyCount = degraded + failed
+    const unhealthyRatio = shardOutcomes.length > 0 ? unhealthyCount / shardOutcomes.length : 0
+    if (unhealthyRatio > MAX_DEGRADATION_RATIO) {
+      throw new Error(
+        `Shard health below threshold: ${succeeded} success, ${degraded} degraded, ${failed} failed ` +
+        `out of ${shardOutcomes.length} (${Math.round(unhealthyRatio * 100)}% unhealthy, max allowed ${MAX_DEGRADATION_RATIO * 100}%). ` +
+        `Refusing to produce a misleading aggregate from insufficient data.`
+      )
+    }
+
     // 🌳 Merkle Tree: 用 shard 结果构建完整性证明
     const merkleRoot = resumedMerkleRoot ?? computeMerkleRoot(shardResults, jobId)
     // 🔒 TOCTOU 防御: 深冻结 shard 结果，防止 Merkle Root 计算后被修改

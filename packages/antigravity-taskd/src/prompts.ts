@@ -46,9 +46,13 @@ function truncateShardForPrompt(shard: ShardAnalysis): ShardAnalysis | { shardId
   const full = JSON.stringify(shard)
   if (full.length <= MAX_SHARD_SUMMARY_BYTES) return shard
   // 截断策略：保留 summary + shardId，丢弃 evidence/symbols/dependencies
+  // 在截断点追加 [TRUNCATED] 标记，防止下游 LLM 语义幻觉
+  const safeSummary = shard.summary.length > 2000
+    ? shard.summary.slice(0, 2000) + '\n…[TRUNCATED: full shard data exceeded 50KB]'
+    : shard.summary
   return {
     shardId: shard.shardId,
-    summary: shard.summary.slice(0, 2000),
+    summary: safeSummary,
     _truncated: true,
   } as any
 }
@@ -58,11 +62,13 @@ export function buildAggregatePrompt(goal: string, shardResults: ShardAnalysis[]
   const truncated = shardResults.map(truncateShardForPrompt)
   let serialized = JSON.stringify(truncated, null, 2)
 
-  // 阶段 2：如果总量仍超出安全上限，退化为纯 summary 列表
+  // 阶段 2：如果总量仍超出安全上限，退化为纯 summary 列表（附截断标记）
   if (Buffer.byteLength(serialized, 'utf8') > MAX_AGGREGATE_PAYLOAD_BYTES) {
     const summaryOnly = shardResults.map(s => ({
       shardId: s.shardId,
-      summary: s.summary.slice(0, 500),
+      summary: s.summary.length > 500
+        ? s.summary.slice(0, 500) + '…[TRUNCATED]'
+        : s.summary,
     }))
     serialized = JSON.stringify(summaryOnly, null, 2)
   }
