@@ -33,7 +33,7 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
   })
 }
 
-export async function startTaskdHttpServer(socketPath: string, runtime: AntigravityTaskdRuntime): Promise<http.Server> {
+export async function startTaskdHttpServer(socketPath: string, runtime: AntigravityTaskdRuntime): Promise<{ server: http.Server }> {
   if (fs.existsSync(socketPath)) {
     fs.rmSync(socketPath, { force: true })
   }
@@ -123,5 +123,5 @@ export async function startTaskdHttpServer(socketPath: string, runtime: Antigrav
     })
   })
 
-  return server
+  return { server }
 }

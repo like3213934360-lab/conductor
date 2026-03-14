@@ -312,6 +312,43 @@ export class AntigravityTaskdRuntime {
     }
   }
 
+  /**
+   * K8s Graceful Shutdown：
+   *   1. 触发所有运行中 Job 的 AbortController
+   *   2. 等待它们的 executeJob Promise 结算（Journal 会在 catch 中 flush）
+   *   3. 清理状态
+   */
+  async shutdown(): Promise<void> {
+    console.log(`[taskd] Shutting down ${this.controllers.size} active job(s)...`)
+    // 触发所有 AbortController → runWorker 内部的 signal.aborted 检查
+    for (const [jobId, controller] of this.controllers) {
+      console.log(`[taskd] Aborting job ${jobId}`)
+      controller.abort()
+    }
+    // 等待所有 Job 自行结束（它们的 executeJob catch 会保存快照）
+    // 给最多 20s 等待（留 5s 余量给 main.ts 的 25s 安全阀）
+    await Promise.race([
+      Promise.allSettled(
+        [...this.controllers.keys()].map(
+          jobId => new Promise<void>(resolve => {
+            const check = () => {
+              const snap = this.jobs.get(jobId)
+              if (!snap || isTerminalStatus(snap.status)) {
+                resolve()
+              } else {
+                setTimeout(check, 200)
+              }
+            }
+            check()
+          })
+        )
+      ),
+      new Promise(resolve => setTimeout(resolve, 20_000)),
+    ])
+    this.controllers.clear()
+    console.log('[taskd] Shutdown complete')
+  }
+
   createJob(input: CreateTaskJobRequest): TaskJobSnapshot {
     const request = CreateTaskJobRequestSchema.parse(input)
     const createdAt = nowIso()

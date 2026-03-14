@@ -102,8 +102,38 @@ function stripDangerousKeys(obj: unknown): unknown {
   return clean
 }
 
-/** 安全反序列化 JSON：先 parse，再清洗原型污染键 */
+/** JSON 最大嵌套深度（防止递归 JSON.parse 击穿 V8 调用栈） */
+const MAX_JSON_DEPTH = 1000
+
+/**
+ * 在调用 JSON.parse 之前，用 O(n) 的线性扫描检测嵌套深度。
+ * 只统计 `[` `{` 的嵌套层数（跳过字符串内部），
+ * 超过 MAX_JSON_DEPTH 则拒绝解析。
+ */
+function checkJsonDepth(raw: string): void {
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw.charCodeAt(i)
+    if (escape) { escape = false; continue }
+    if (ch === 0x5C /* \\ */) { if (inString) escape = true; continue }
+    if (ch === 0x22 /* " */) { inString = !inString; continue }
+    if (inString) continue
+    if (ch === 0x7B /* { */ || ch === 0x5B /* [ */) {
+      depth++
+      if (depth > MAX_JSON_DEPTH) {
+        throw new Error(`JSON nesting depth exceeds ${MAX_JSON_DEPTH} — possible recursive bomb, rejecting`)
+      }
+    } else if (ch === 0x7D /* } */ || ch === 0x5D /* ] */) {
+      depth--
+    }
+  }
+}
+
+/** 安全反序列化 JSON：深度检查 → parse → 清洗原型污染键 */
 function safeJsonParse<T>(raw: string): T {
+  checkJsonDepth(raw)
   return stripDangerousKeys(JSON.parse(raw)) as T
 }
 
