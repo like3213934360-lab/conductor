@@ -5,8 +5,11 @@
  */
 
 import * as vscode from 'vscode';
-import { spawnSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { SettingsManager } from './settings-manager.js';
+
+const execFileAsync = promisify(execFile);
 
 export class AntigravityStatusBar {
     private item: vscode.StatusBarItem;
@@ -83,9 +86,17 @@ export class AntigravityStatusBar {
                 tooltip.appendMarkdown('\n---\n\n');
             }
 
-            // CLI 检测
-            const codexOk = !spawnSync('codex', ['--version'], { encoding: 'utf8', timeout: 3000 }).error;
-            const geminiOk = !spawnSync('gemini', ['--version'], { encoding: 'utf8', timeout: 3000 }).error;
+            // CLI 检测 (异步，不阻塞 Extension Host 主线程)
+            let codexOk = false;
+            let geminiOk = false;
+            try {
+                await execFileAsync('codex', ['--version'], { encoding: 'utf8', timeout: 3000 });
+                codexOk = true;
+            } catch { /* not installed or timeout */ }
+            try {
+                await execFileAsync('gemini', ['--version'], { encoding: 'utf8', timeout: 3000 });
+                geminiOk = true;
+            } catch { /* not installed or timeout */ }
             tooltip.appendMarkdown(`🤖 Codex CLI: ${codexOk ? '✅ 已安装' : '❌ 未安装'}  \n`);
             tooltip.appendMarkdown(`🔷 Gemini CLI: ${geminiOk ? '✅ 已安装' : '❌ 未安装'}  \n`);
             tooltip.appendMarkdown('\n---\n\n_点击打开 Dashboard_');

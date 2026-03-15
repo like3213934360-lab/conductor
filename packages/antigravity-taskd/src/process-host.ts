@@ -48,7 +48,12 @@ export async function spawnAntigravityTaskdProcess(
   options: SpawnAntigravityTaskdProcessOptions,
 ): Promise<AntigravityTaskdProcessHandle> {
   const { paths, env } = createAntigravityTaskdProcessEnv(options)
-  const taskdProcess = spawn(process.execPath, [options.entryPath], {
+  const taskdProcess = spawn(process.execPath, [
+    // 防止大型工程下 VFS + Blackboard + SQLite 堆内存触顶引发
+    // V8 老生代 Stop-The-World GC 卡顿（默认 ~2GB 易频繁触发）
+    '--max-old-space-size=4096',
+    options.entryPath,
+  ], {
     cwd: options.cwd ?? options.workspaceRoot,
     env,
     stdio: 'ignore',

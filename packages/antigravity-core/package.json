@@ -1,7 +1,7 @@
 {
   "name": "@anthropic/antigravity-core",
   "version": "0.1.0",
-  "description": "Antigravity Workflow Runtime \u2014 DAG \u5f15\u64ce\u3001\u98ce\u9669\u8def\u7531\u3001\u5408\u89c4\u5f15\u64ce\u3001\u5e94\u7528\u670d\u52a1",
+  "description": "Antigravity Workflow Runtime — DAG 引擎、风险路由、合规引擎、应用服务",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@anthropic/antigravity-shared": "*",
-    "zod": "^3.24.0"
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

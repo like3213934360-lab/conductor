@@ -232,8 +232,8 @@
     "clean": "rm -rf packages/*/dist dist"
   },
   "dependencies": {
-    "json5": "^2.2.3",
-    "vscode-languageclient": "^9.0.0"
+    "json5": "2.2.3",
+    "vscode-languageclient": "9.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -2,7 +2,7 @@
   "name": "@anthropic/antigravity-vscode",
   "version": "0.1.0",
   "private": true,
-  "description": "Antigravity Workflow VS Code \u96c6\u6210\u5c42 \u2014 workflow control plane + optional ArkTS LSP",
+  "description": "Antigravity Workflow VS Code 集成层 — workflow control plane + optional ArkTS LSP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -15,7 +15,7 @@
     "@anthropic/antigravity-taskd": "*",
     "@anthropic/antigravity-model-shared": "*",
     "@anthropic/antigravity-persistence": "*",
-    "vscode-languageclient": "^9.0.0"
+    "vscode-languageclient": "9.0.1"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",

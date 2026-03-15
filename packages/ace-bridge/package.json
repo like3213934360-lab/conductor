@@ -11,7 +11,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "json5": "^2.2.3"
+    "json5": "2.2.3"
   },
   "devDependencies": {
     "typescript": "^5.3.0",
