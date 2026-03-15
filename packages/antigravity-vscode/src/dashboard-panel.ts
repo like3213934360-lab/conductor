@@ -787,7 +787,12 @@ export class DashboardPanel {
                                 } catch (e) {
                                     console.log('[Antigravity Workflow] Configured model lookup skipped:', (e as Error).message);
                                 }
-                            })();
+                            })().catch((e: unknown) => {
+                                // 网络注册表 / AI 描述补全是后台最终一致任务。
+                                // 若面板已 dispose 导致 postMessage 抛出，静默吞掉防止
+                                // VS Code 扩展宿主进程出现 Unhandled Promise Rejection。
+                                console.log('[Antigravity Workflow] Background ecosystem enrichment error:', (e as Error).message);
+                            });
                         } catch (e: any) {
                             this._panel.webview.postMessage({ command: 'ecosystemData', data: null, error: e.message });
                         }
