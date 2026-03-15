@@ -18,7 +18,7 @@
  * - Shinn et al., "Reflexion" (2023)
  * - Zep/Graphiti: temporal knowledge graphs
  */
-import type Database from 'better-sqlite3'
+import type { WasmDatabase } from '../db/sqlite-client.js'
 import { ManifestIndex } from './manifest-index.js'
 import type { ManifestEntry } from './manifest-index.js'
 import { EpisodicMemory } from './episodic-memory.js'
@@ -50,7 +50,7 @@ const DEFAULT_BUDGET: MemoryBudget = {
 /** 记忆管理器配置 */
 export interface MemoryManagerConfig {
   /** SQLite database 实例 */
-  db: Database.Database
+  db: WasmDatabase
   /** MemGPT 记忆预算 (可选) */
   budget?: Partial<MemoryBudget>
 }

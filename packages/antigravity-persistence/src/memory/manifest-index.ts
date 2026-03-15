@@ -8,7 +8,7 @@
  * - Zep Graphiti: temporal knowledge with validity windows
  */
 import MiniSearch from 'minisearch'
-import type Database from 'better-sqlite3'
+import type { WasmDatabase, WasmStatement } from '../db/sqlite-client.js'
 
 /** Manifest 条目 */
 export interface ManifestEntry {
@@ -61,10 +61,10 @@ interface SearchResult {
  * Manifest 索引 — BM25 + 时间衰减
  */
 export class ManifestIndex {
-  private readonly db: Database.Database
+  private readonly db: WasmDatabase
   private readonly miniSearch: MiniSearch<SearchDocument>
-  private readonly stmtInsert: Database.Statement
-  private readonly stmtGetAll: Database.Statement
+  private readonly stmtInsert: WasmStatement
+  private readonly stmtGetAll: WasmStatement
 
   /** 时间衰减半衰期（毫秒） — 默认 7 天 */
   private readonly halfLifeMs: number
@@ -84,7 +84,7 @@ export class ManifestIndex {
     '都', '一', '个', '上', '也', '很', '到', '说', '要', '他',
   ])
 
-  constructor(db: Database.Database, config?: { halfLifeMs?: number; rrfK?: number; rrfExactWeight?: number; rrfFuzzyWeight?: number; maxIndexSize?: number }) {
+  constructor(db: WasmDatabase, config?: { halfLifeMs?: number; rrfK?: number; rrfExactWeight?: number; rrfFuzzyWeight?: number; maxIndexSize?: number }) {
     this.db = db
     this.halfLifeMs = config?.halfLifeMs ?? 7 * 24 * 60 * 60 * 1000
     this.rrfK = config?.rrfK ?? 60
@@ -245,7 +245,7 @@ export class ManifestIndex {
       FROM manifest
       ORDER BY createdAt DESC
       LIMIT @limit
-    `).all({ limit: this.maxIndexSize }) as ManifestRow[]
+    `).all({ limit: this.maxIndexSize }) as unknown as ManifestRow[]
     const docs = rows.map(row => this.rowToDocument(row))
     if (docs.length > 0) {
       this.miniSearch.addAll(docs)

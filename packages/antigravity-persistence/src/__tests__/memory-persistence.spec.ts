@@ -12,9 +12,9 @@ describe('Persistence schema', () => {
   let tempDir: string
   let sqliteClient: SqliteClient
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-memory-schema-'))
-    sqliteClient = new SqliteClient({ dataDir: tempDir })
+    sqliteClient = await SqliteClient.create({ dataDir: tempDir })
     runMigrations(sqliteClient.getDatabase())
   })
 
@@ -53,7 +53,7 @@ describe('Persistence schema', () => {
       validFrom: '2026-03-11T00:00:00.000Z',
     })
 
-    const columns = db.prepare(`PRAGMA table_info('semanticFacts')`).all() as Array<{ name: string }>
+    const columns = db.prepare(`PRAGMA table_info('semanticFacts')`).all() as unknown as Array<{ name: string }>
     expect(columns.map(column => column.name)).toEqual(expect.arrayContaining([
       'factId',
       'subject',
@@ -100,7 +100,7 @@ describe('Persistence schema', () => {
     })
     expect(result.reflection).not.toBeNull()
 
-    const evaluationColumns = db.prepare(`PRAGMA table_info('reflexionEvaluations')`).all() as Array<{ name: string }>
+    const evaluationColumns = db.prepare(`PRAGMA table_info('reflexionEvaluations')`).all() as unknown as Array<{ name: string }>
     expect(evaluationColumns.map(column => column.name)).toEqual(expect.arrayContaining([
       'runId',
       'success',
@@ -109,7 +109,7 @@ describe('Persistence schema', () => {
       'evaluatedAt',
     ]))
 
-    const reflectionColumns = db.prepare(`PRAGMA table_info('reflexionReflections')`).all() as Array<{ name: string }>
+    const reflectionColumns = db.prepare(`PRAGMA table_info('reflexionReflections')`).all() as unknown as Array<{ name: string }>
     expect(reflectionColumns.map(column => column.name)).toEqual(expect.arrayContaining([
       'runId',
       'rootCause',
@@ -130,7 +130,7 @@ describe('Persistence schema', () => {
       SELECT appliedCount, reinforcementStrength
       FROM reflexionReflections
       WHERE runId = ?
-    `).get('run-episodic-1') as { appliedCount: number, reinforcementStrength: number }
+    `).get('run-episodic-1') as unknown as { appliedCount: number, reinforcementStrength: number }
     expect(counters.appliedCount).toBe(1)
     expect(counters.reinforcementStrength).toBeLessThan(1.0)
   })

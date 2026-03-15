@@ -8,7 +8,7 @@
  * - 设计决策: 使用 SQLite 关系表代替图数据库，
  *   用 (subject, predicate, object, validFrom, validTo) 表示时序知识
  */
-import type Database from 'better-sqlite3'
+import type { WasmDatabase, WasmStatement } from '../db/sqlite-client.js'
 
 /** 语义事实 — 2026 SOTA: importance + pinning */
 export interface SemanticFact {
@@ -39,11 +39,11 @@ export interface FactQuery {
  * 语义记忆 — 关系型时序知识图
  */
 export class SemanticMemory {
-  private readonly db: Database.Database
-  private readonly stmtInsert: Database.Statement
-  private readonly stmtInvalidate: Database.Statement
+  private readonly db: WasmDatabase
+  private readonly stmtInsert: WasmStatement
+  private readonly stmtInvalidate: WasmStatement
 
-  constructor(db: Database.Database) {
+  constructor(db: WasmDatabase) {
     this.db = db
 
     this.stmtInsert = this.db.prepare(`
@@ -134,7 +134,7 @@ export class SemanticMemory {
       LIMIT @limit
     `)
 
-    const rows = stmt.all(params) as FactRow[]
+    const rows = stmt.all(params) as unknown as FactRow[]
 
     // 审计修复 #1: 更新访问时间 (LRU 追踪)
     if (rows.length > 0) {

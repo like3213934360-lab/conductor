@@ -13,6 +13,7 @@ export { SqliteCheckpointStore } from './checkpoint-store/sqlite-checkpoint-stor
 // Database
 export { SqliteClient } from './db/sqlite-client.js'
 export type { SqliteClientConfig } from './db/sqlite-client.js'
+export { WasmDatabase, WasmStatement } from './db/sqlite-client.js'
 export { runMigrations } from './db/migrations.js'
 
 // Memory — @experimental keyword recall, not vector search, not a correctness constraint

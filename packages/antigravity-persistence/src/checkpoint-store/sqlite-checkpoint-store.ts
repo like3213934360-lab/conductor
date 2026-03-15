@@ -6,7 +6,7 @@
  * 参考: Greg Young — "Snapshots are just fold memoization"
  */
 import * as crypto from 'node:crypto'
-import type Database from 'better-sqlite3'
+import type { WasmDatabase, WasmStatement } from '../db/sqlite-client.js'
 import type { CheckpointDTO } from '@anthropic/antigravity-shared'
 import type {
   CheckpointStore,
@@ -18,13 +18,13 @@ import type {
  * 基于 SQLite 的 CheckpointStore 实现
  */
 export class SqliteCheckpointStore implements CheckpointStore {
-  private readonly db: Database.Database
-  private readonly stmtSave: Database.Statement
-  private readonly stmtLoadLatest: Database.Statement
-  private readonly stmtLoadByVersion: Database.Statement
-  private readonly stmtList: Database.Statement
+  private readonly db: WasmDatabase
+  private readonly stmtSave: WasmStatement
+  private readonly stmtLoadLatest: WasmStatement
+  private readonly stmtLoadByVersion: WasmStatement
+  private readonly stmtList: WasmStatement
 
-  constructor(db: Database.Database) {
+  constructor(db: WasmDatabase) {
     this.db = db
 
     this.stmtSave = this.db.prepare(`
@@ -94,7 +94,7 @@ export class SqliteCheckpointStore implements CheckpointStore {
 
   /** 列出所有检查点 */
   async list(runId: string): Promise<CheckpointDTO[]> {
-    const rows = this.stmtList.all(runId) as DatabaseRow[]
+    const rows = this.stmtList.all(runId) as unknown as DatabaseRow[]
     return rows.map(row => this.rowToCheckpoint(row))
   }
 

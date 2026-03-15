@@ -11,14 +11,14 @@
     "typecheck": "npm run clean && tsc -b --pretty"
   },
   "dependencies": {
-    "@anthropic/antigravity-shared": "*",
     "@anthropic/antigravity-core": "*",
-    "better-sqlite3": "11.10.0",
+    "@anthropic/antigravity-shared": "*",
     "minisearch": "7.2.0",
+    "sql.js": "^1.12.0",
     "zod": "3.25.76"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
+    "@types/sql.js": "^1.4.9",
     "typescript": "^5.3.0"
   }
 }

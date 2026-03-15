@@ -16,7 +16,7 @@
  * - Yao et al., "ReAct: Synergizing Reasoning and Acting" (2023)
  * - Madaan et al., "Self-Refine" (2023)
  */
-import type Database from 'better-sqlite3'
+import type { WasmDatabase } from '../db/sqlite-client.js'
 import type { ManifestIndex, ManifestSearchResult } from './manifest-index.js'
 import type {
   EpisodicEntry,
@@ -39,9 +39,9 @@ export type { EpisodicEntry, ReflexionEvaluation, ReflexionReflection, Reflexion
  */
 export class EpisodicMemory implements IEpisodicMemory {
   private readonly manifestIndex: ManifestIndex
-  private readonly db: Database.Database
+  private readonly db: WasmDatabase
 
-  constructor(db: Database.Database, manifestIndex: ManifestIndex) {
+  constructor(db: WasmDatabase, manifestIndex: ManifestIndex) {
     this.db = db
     this.manifestIndex = manifestIndex
   }
@@ -274,7 +274,7 @@ export class EpisodicMemory implements IEpisodicMemory {
         WHERE confidence >= 0.5
         ORDER BY reflectedAt DESC
         LIMIT ?
-      `).all(limit) as ReflectionRow[]
+      `).all(limit) as unknown as ReflectionRow[]
     }
 
     // 目标关键词匹配 (rootCause 中包含任何关键词)
@@ -290,7 +290,7 @@ export class EpisodicMemory implements IEpisodicMemory {
       WHERE confidence >= 0.5 AND (${likeConditions.join(' OR ')})
       ORDER BY confidence DESC, reflectedAt DESC
       LIMIT @limit
-    `).all(params) as ReflectionRow[]
+    `).all(params) as unknown as ReflectionRow[]
   }
 
   /**

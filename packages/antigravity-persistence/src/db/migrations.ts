@@ -3,7 +3,7 @@
  *
  * 使用 user_version PRAGMA 进行版本控制的增量迁移。
  */
-import type Database from 'better-sqlite3'
+import type { WasmDatabase } from './sqlite-client.js'
 
 /** 单个迁移步骤 */
 interface Migration {
@@ -115,7 +115,7 @@ const MIGRATIONS: Migration[] = [
  *
  * 使用 SQLite user_version PRAGMA 追踪已应用的迁移版本。
  */
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(db: WasmDatabase): void {
   const currentVersion = db.pragma('user_version', { simple: true }) as number
 
   const pendingMigrations = MIGRATIONS.filter(m => m.version > currentVersion)
