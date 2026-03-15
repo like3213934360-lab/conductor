@@ -14,6 +14,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { unicodeSafeSlice } from '../prompts.js'
+import type { RedTeamCritic, RedTeamFinding, RedTeamVerdict } from './red-team.js'
 
 // ── CRLF 换行符规范化 ─────────────────────────────────────────────────────────────
 //
@@ -301,14 +302,17 @@ export type ReflexionVerdict = 'pass' | 'retry' | 'rollback'
 export interface ReflexionStepRecord {
   attempt: number
   diagnostics: LspDiagnostic[]
+  /** 红方审查结论（Phase 2: Red-Blue 对抗） */
+  redTeamVerdict?: RedTeamVerdict
   verdict: ReflexionVerdict
   /** 注入给 Codex 的精准修复提示（retry 时有值） */
   patchPrompt?: string
 }
 
-/** 根据 LSP 诊断生成精准的修复 Prompt */
+/** 根据 LSP 诊断 + 红方 Findings 生成精准的修复 Prompt */
 function buildPatchPrompt(
   diagnostics: LspDiagnostic[],
+  redFindings: RedTeamFinding[],
   generatedFiles: Record<string, string>,
   originalGoal: string,
 ): string {
@@ -318,22 +322,47 @@ function buildPatchPrompt(
     .map(d => `  [${d.file}:${d.line}] ${d.message}${d.context ? `\n    Context: ${d.context}` : ''}`)
     .join('\n')
 
+  // 红方 Findings 格式化
+  const redFindingSummary = redFindings
+    .filter(f => f.severity === 'critical' || f.severity === 'major')
+    .slice(0, 8)  // 最多 8 条
+    .map(f => `  [${f.severity.toUpperCase()}] [${f.category}] ${f.file}${f.line ? `:${f.line}` : ''} — ${f.description}${f.counterExample ? `\n    Counter-example: ${f.counterExample}` : ''}`)
+    .join('\n')
+
   const fileList = Object.entries(generatedFiles)
     .map(([f, content]) => `### ${f}\n\`\`\`\n${unicodeSafeSlice(content, 2000)}\n\`\`\``)
     .join('\n\n')
 
-  return [
+  const sections = [
     `Original goal: ${originalGoal}`,
     '',
-    'The following LSP errors were detected in your generated code. Fix ONLY the errors below.',
-    'Do NOT change any logic unrelated to these errors. Return the complete corrected file(s).',
-    '',
-    'LSP Errors:',
-    errorSummary,
+  ]
+
+  if (errorSummary) {
+    sections.push(
+      'The following LSP errors were detected in your generated code:',
+      errorSummary,
+      '',
+    )
+  }
+
+  if (redFindingSummary) {
+    sections.push(
+      'The following LOGIC ISSUES were found by an independent Red Team reviewer:',
+      redFindingSummary,
+      '',
+    )
+  }
+
+  sections.push(
+    'Fix ALL the issues above. Do NOT change any logic unrelated to these errors.',
+    'Return the complete corrected file(s).',
     '',
     'Generated files (for context):',
     fileList,
-  ].join('\n')
+  )
+
+  return sections.join('\n')
 }
 
 export class DefaultReflexionStateMachine {
@@ -347,8 +376,8 @@ export class DefaultReflexionStateMachine {
   /**
    * 执行一轮反思：
    *  1. 将 generatedFiles 热注入到 VFS
-   *  2. LSP 诊断
-   *  3. 决策并记录 step
+   *  2. LSP 诊断 + 红方审查（并行执行）
+   *  3. 双重门控决策：LSP clean AND red approved → pass
    *
    * 返回 verdict：
    *  - 'pass'     → 调用方调用 vfs.commit() 然后进入 WRITE
@@ -360,34 +389,51 @@ export class DefaultReflexionStateMachine {
     generatedFiles: Record<string, string>,
     goal: string,
     lsp: LspDiagnosticsProvider,
+    redTeam?: RedTeamCritic,
+    redTeamSignal?: AbortSignal,
   ): Promise<ReflexionStepRecord> {
     // Step 1：热注入到 VFS（仅内存，不碰磁盘）
     for (const [filePath, content] of Object.entries(generatedFiles)) {
       vfs.write(filePath, content)
     }
 
-    // Step 2：LSP 诊断
-    const diagnostics = await lsp.diagnose(vfs.snapshot())
+    // Step 2：LSP 诊断 + 红方审查（并行执行，互不阻塞）
+    const lspPromise = lsp.diagnose(vfs.snapshot())
+    const redPromise: Promise<RedTeamVerdict | undefined> = redTeam && redTeamSignal
+      ? redTeam.review(goal, vfs.snapshot(), redTeamSignal)
+          .catch((err): RedTeamVerdict => {
+            // 红方崩溃 → 优雅降级，不阻断 LSP 结果
+            console.warn(`[reflexion] Red team review failed (degraded → approved): ${err}`)
+            return { approved: true, findings: [], confidence: 0, backend: 'codex' }
+          })
+      : Promise.resolve(undefined)
+
+    const [diagnostics, redVerdict] = await Promise.all([lspPromise, redPromise])
     const errors = diagnostics.filter(d => d.severity === 'error')
 
+    // Step 3：双重门控决策
     let verdict: ReflexionVerdict
     let patchPrompt: string | undefined
+    const lspClean = errors.length === 0
+    const redApproved = redVerdict ? redVerdict.approved : true
 
-    if (errors.length === 0) {
-      // 零错误 → 通过
+    if (lspClean && redApproved) {
+      // ✅ 双重通过：LSP 零错误 AND 红方批准
       verdict = 'pass'
     } else if (this.steps.length >= this.MAX_STEPS - 1) {
       // 已达最大重试 → 回滚
       verdict = 'rollback'
     } else {
-      // 有错误且还有重试机会 → 生成修复 Prompt
+      // 有问题且还有重试机会 → 合并反馈生成修复 Prompt
       verdict = 'retry'
-      patchPrompt = buildPatchPrompt(errors, generatedFiles, goal)
+      const redFindings = redVerdict?.findings ?? []
+      patchPrompt = buildPatchPrompt(errors, redFindings, generatedFiles, goal)
     }
 
     const record: ReflexionStepRecord = {
       attempt: this.steps.length + 1,
       diagnostics,
+      redTeamVerdict: redVerdict,
       verdict,
       patchPrompt,
     }

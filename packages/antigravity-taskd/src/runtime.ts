@@ -50,6 +50,12 @@ import {
   type RacingExecutor,
   type VirtualFileSystem,
   type LspDiagnosticsProvider,
+  type RedTeamCritic,
+  type SwarmMesh,
+  DynamicRouterPolicy,
+  EpisodicMemoryStore,
+  InMemorySwarmMesh,
+  LlmRedTeamCritic,
 } from './cognitive/index.js'
 
 /** 认知携带器：贯穿单次 Job 全生命周期，通过 buildCognitiveContext() 工厂构建 */
@@ -59,6 +65,9 @@ interface CognitiveJobContext {
   racingExecutor: RacingExecutor
   vfs: VirtualFileSystem
   lsp: LspDiagnosticsProvider
+  memoryStore: EpisodicMemoryStore
+  redTeamCritic: RedTeamCritic
+  swarmMesh: SwarmMesh
 }
 
 interface ExecutionProfile {
@@ -308,6 +317,8 @@ export class AntigravityTaskdRuntime {
   private readonly journal: JournalStore
   private readonly identity: CryptoIdentity
   private readonly governance: GovernanceGateway
+  private readonly memoryStore: EpisodicMemoryStore
+  private readonly swarmMesh: SwarmMesh
 
   constructor(
     private readonly paths: TaskdPaths,
@@ -318,6 +329,8 @@ export class AntigravityTaskdRuntime {
     this.identity = new Ed25519Identity()
     this.journal = new FileJournalStore(paths.jobsDir)
     this.governance = new DefaultGovernanceGateway(this.identity)
+    this.memoryStore = new EpisodicMemoryStore(paths.jobsDir)
+    this.swarmMesh = new InMemorySwarmMesh()
   }
 
   async initialize(): Promise<void> {
@@ -342,13 +355,36 @@ export class AntigravityTaskdRuntime {
    * 实例化四大认知能力，注入到 CognitiveJobContext。
    * runtime.ts 只依赖接口，具体实现可在测试中替换为 mock。
    */
-  private buildCognitiveContext(workspaceRoot: string, signal: AbortSignal): CognitiveJobContext {
+  private buildCognitiveContext(snapshot: TaskJobSnapshot, signal: AbortSignal): CognitiveJobContext {
+    const routerPolicy = new DynamicRouterPolicy()
+
+    // 🛡️ RFC-026 Phase 2: 初始化红方审查器（异源模型：优先选择 reasoning最高且与蓝方不同的模型）
+    const verifyRoutes = routerPolicy.routeMulti('verify', 0, undefined, 2)
+    const redBackend = verifyRoutes.find(r => r.backend !== 'codex')?.backend ?? verifyRoutes[0]?.backend ?? 'gemini'
+
+    const self = this
+    const redTeamCritic = new LlmRedTeamCritic(redBackend, {
+      async runWorker(backend, prompt, workerSignal) {
+        // 执行真正的红方审查
+        const result = await self.runWorker(snapshot, backend, 'reviewer', prompt, [], 'VERIFY', undefined)
+        return {
+          backend: result.backend,
+          workerId: result.workerId,
+          text: result.text,
+          changedFiles: result.changedFiles,
+        }
+      },
+    })
+
     return {
       blackboard: new InMemoryMcpBlackboard(),
-      routerPolicy: new DefaultRouterPolicy(),
+      routerPolicy,
       racingExecutor: new DefaultRacingExecutor(),
-      vfs: new InMemoryVirtualFileSystem(workspaceRoot),
-      lsp: new NoopLspDiagnosticsProvider(),  // 可替换为真实 ArkTS-LSP 实现
+      vfs: new InMemoryVirtualFileSystem(snapshot.workspaceRoot),
+      lsp: new NoopLspDiagnosticsProvider(),
+      memoryStore: this.memoryStore,
+      redTeamCritic,
+      swarmMesh: this.swarmMesh,
     }
   }
 
@@ -386,6 +422,7 @@ export class AntigravityTaskdRuntime {
       new Promise(resolve => setTimeout(resolve, 20_000)),
     ])
     this.controllers.clear()
+    this.swarmMesh.dispose()
     console.log('[taskd] Shutdown complete')
   }
 
@@ -402,6 +439,7 @@ export class AntigravityTaskdRuntime {
       currentStageId: 'SCOUT',
       graph: createGraph(),
       workers: [],
+      totalTokensUsed: 0, // Initialize token counter
       summary: {
         goalSummary: request.goal,
         globalSummary: '',
@@ -670,6 +708,7 @@ export class AntigravityTaskdRuntime {
         role,
         hardBudgetMs: budget.hardBudgetMs,
         softBudgetMs: budget.softBudgetMs,   // 透传给 adapter 做 SIGINT 映射
+        swarmPeers: this.swarmMesh.discoverPeers(workerId),
       }, (event) => {
         this.applyWorkerEvent(snapshot, worker, event)
         this.emitJobEvent(snapshot.jobId, this.mapWorkerEventType(event), {
@@ -695,6 +734,17 @@ export class AntigravityTaskdRuntime {
       if (result.diff) {
         snapshot.artifacts.latestDiff = result.diff
       }
+
+      // 🛡️ 全局大模型经济学断路器 (Global Token Budget)
+      const chars = prompt.length + result.text.length + (result.diff?.length || 0)
+      const estimatedTokens = Math.ceil(chars / 4)
+      snapshot.totalTokensUsed += estimatedTokens
+
+      const GLOBAL_TOKEN_LIMIT = 2_000_000 // 200 万 Token 硬上限（约 $5~10）
+      if (snapshot.totalTokensUsed > GLOBAL_TOKEN_LIMIT) {
+        throw new Error(`[Economic OOM] Global token circuit breaker triggered! Job consumed ${snapshot.totalTokensUsed} tokens, exceeding the limit of ${GLOBAL_TOKEN_LIMIT}.`)
+      }
+
       return result
     } catch (error) {
       worker.status = hardController.signal.aborted && !parentController?.signal.aborted ? 'failed' : 'cancelled'
@@ -834,7 +884,7 @@ export class AntigravityTaskdRuntime {
 
 
     // 构建认知上下文（轻量工厂，< 1ms 开销）— 贯穿全流水线
-    const cogCtx = this.buildCognitiveContext(snapshot.workspaceRoot, signal)
+    const cogCtx = this.buildCognitiveContext(snapshot, signal)
 
     // ── SCOUT 阶段：超时/崩溃时用 fallback manifest 兜底 ─────────
     let manifest: ScoutManifest

@@ -124,3 +124,171 @@ export class DefaultRouterPolicy implements RouterPolicy {
     }
   }
 }
+
+// ── 多模型动态路由 (RFC-026 Phase 1) ─────────────────────────────────────────
+
+/** 模型能力声明 — 从 Conductor Hub 配置读取或预埋 */
+export interface ModelCapability {
+  id: string
+  backend: WorkerBackend
+  scores: {
+    code_quality: number   // [0, 10]
+    long_context: number   // [0, 10]
+    reasoning: number      // [0, 10]
+    speed: number          // [0, 10]
+    cost: number           // [0, 10] — 越低越便宜
+    chinese: number        // [0, 10]
+  }
+  maxContextTokens: number
+  supportedIntents: TaskIntent[]
+}
+
+/** 路由约束条件 */
+export interface RouteConstraints {
+  maxCost?: number
+  preferredLanguage?: 'en' | 'zh'
+  maxLatencyMs?: number
+}
+
+/**
+ * DynamicRouterPolicy — 多模型动态路由策略
+ *
+ * 升级能力：
+ *  1. 维护 ModelCapability 注册表（预埋 + 运行时注入）
+ *  2. route() 保持向后兼容（单模型选择）
+ *  3. routeMulti() 返回 top-N 候选（供 RacingExecutor 赛马）
+ *  4. 意图→能力维度映射的评分矩阵
+ */
+export class DynamicRouterPolicy implements RouterPolicy {
+  private readonly models = new Map<string, ModelCapability>()
+
+  /** 默认预埋模型 */
+  private static readonly BUILTIN_MODELS: ModelCapability[] = [
+    {
+      id: 'codex',
+      backend: 'codex',
+      scores: { code_quality: 9, long_context: 6, reasoning: 8, speed: 7, cost: 5, chinese: 5 },
+      maxContextTokens: 128_000,
+      supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
+    },
+    {
+      id: 'gemini',
+      backend: 'gemini',
+      scores: { code_quality: 7, long_context: 10, reasoning: 8, speed: 6, cost: 6, chinese: 6 },
+      maxContextTokens: 1_000_000,
+      supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
+    },
+  ]
+
+  /** 意图→能力维度权重矩阵 */
+  private static readonly INTENT_WEIGHTS: Record<TaskIntent, Record<keyof ModelCapability['scores'], number>> = {
+    scout:    { code_quality: 0.1, long_context: 0.5, reasoning: 0.2, speed: 0.1, cost: 0.05, chinese: 0.05 },
+    analyze:  { code_quality: 0.15, long_context: 0.2, reasoning: 0.4, speed: 0.1, cost: 0.1, chinese: 0.05 },
+    generate: { code_quality: 0.5, long_context: 0.1, reasoning: 0.2, speed: 0.1, cost: 0.05, chinese: 0.05 },
+    verify:   { code_quality: 0.2, long_context: 0.15, reasoning: 0.45, speed: 0.1, cost: 0.05, chinese: 0.05 },
+  }
+
+  constructor() {
+    // 加载预埋模型
+    for (const model of DynamicRouterPolicy.BUILTIN_MODELS) {
+      this.models.set(model.id, model)
+    }
+  }
+
+  /** 注册来自 Hub 的模型能力 */
+  registerModel(capability: ModelCapability): void {
+    this.models.set(capability.id, capability)
+  }
+
+  /** 淘汰模型（断路器触发） */
+  deregisterModel(modelId: string): void {
+    this.models.delete(modelId)
+  }
+
+  /** 获取已注册模型列表 */
+  listModels(): ModelCapability[] {
+    return [...this.models.values()]
+  }
+
+  /**
+   * 🔧 route() — 向后兼容接口
+   * 内部调用 routeMulti() 并取第一名。
+   */
+  route(intent: TaskIntent, contextTokenEstimate: number = 0): RouterDecision {
+    const candidates = this.routeMulti(intent, contextTokenEstimate)
+    if (candidates.length === 0) {
+      // 保底降级：退化到 DefaultRouterPolicy 行为
+      return new DefaultRouterPolicy().route(intent, contextTokenEstimate)
+    }
+    return candidates[0]!
+  }
+
+  /**
+   * 🎯 routeMulti() — 多模型路由核心
+   *
+   * 根据意图的能力维度权重，对每个候选模型计算加权得分，
+   * 返回 top-N 候选（默认 top-2，供 RacingExecutor 赛马使用）。
+   */
+  routeMulti(
+    intent: TaskIntent,
+    contextTokenEstimate: number = 0,
+    constraints?: RouteConstraints,
+    topN: number = 2,
+  ): RouterDecision[] {
+    const weights = DynamicRouterPolicy.INTENT_WEIGHTS[intent]
+    const manifest = intent === 'generate' ? READ_WRITE_MANIFEST : READ_ONLY_MANIFEST
+
+    // 候选筛选
+    const candidates: Array<{ model: ModelCapability; score: number }> = []
+
+    for (const model of this.models.values()) {
+      // 筛选 1：意图支持
+      if (!model.supportedIntents.includes(intent)) continue
+      // 筛选 2：上下文窗口足够
+      if (contextTokenEstimate > 0 && contextTokenEstimate > model.maxContextTokens) continue
+      // 筛选 3：成本约束
+      if (constraints?.maxCost !== undefined && model.scores.cost > constraints.maxCost) continue
+
+      // 加权评分
+      let score = 0
+      for (const [dim, weight] of Object.entries(weights)) {
+        score += (model.scores[dim as keyof ModelCapability['scores']] ?? 0) * weight
+      }
+
+      // 语言偏好加权
+      if (constraints?.preferredLanguage === 'zh') {
+        score += model.scores.chinese * 0.15  // 额外中文加成
+      }
+
+      candidates.push({ model, score })
+    }
+
+    // 按得分降序排列
+    candidates.sort((a, b) => b.score - a.score)
+
+    // 返回 top-N，确保异构性（尽量不重复同一 backend）
+    const result: RouterDecision[] = []
+    const usedBackends = new Set<string>()
+
+    for (const { model } of candidates) {
+      if (result.length >= topN) break
+      // 优先异构：如果已有该 backend，降低优先级但不完全排除
+      if (usedBackends.has(model.backend) && result.length < topN - 1) continue
+      result.push({ backend: model.backend, manifest })
+      usedBackends.add(model.backend)
+    }
+
+    // 如果异构策略导致结果不足，回填同构候选
+    if (result.length < topN) {
+      for (const { model } of candidates) {
+        if (result.length >= topN) break
+        if (!result.some(r => r.backend === model.backend)) {
+          result.push({ backend: model.backend, manifest })
+        }
+      }
+    }
+
+    return result
+  }
+}
+

@@ -145,6 +145,7 @@ export const TaskJobSnapshotSchema = z.object({
   artifacts: TaskJobArtifactsSchema,
   recentEvents: z.array(TaskJobEventSchema).default([]),
   fileHints: z.array(z.string()).default([]),
+  totalTokensUsed: z.number().int().nonnegative().default(0),
   updatedAt: z.string(),
   createdAt: z.string(),
 })
@@ -204,6 +205,7 @@ export interface WorkerRunRequest {
   role: WorkerRole
   hardBudgetMs: number
   softBudgetMs?: number  // 软超时预算，adapter 可用来做优雅降级
+  swarmPeers?: import('./cognitive/swarm-mesh.js').PeerDescriptor[]
 }
 
 export interface WorkerRunResult {

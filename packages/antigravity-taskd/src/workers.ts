@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process'
 import * as readline from 'node:readline'
 import { buildFileContext } from './file-context.js'
 import type { WorkerAdapter, WorkerBackend, WorkerEvent, WorkerRunRequest, WorkerRunResult } from './schema.js'
+import { buildPeerDiscoveryPrompt } from './cognitive/swarm-mesh.js'
+import type { PeerDescriptor } from './cognitive/swarm-mesh.js'
 
 interface JsonRpcResponse {
   id?: number | string
@@ -76,6 +78,15 @@ function extractStrings(value: unknown): string[] {
 function appendContext(prompt: string, cwd: string, filePaths: string[]): string {
   const { context } = buildFileContext(cwd, filePaths)
   return context ? `${prompt}\n\n${context}` : prompt
+}
+
+/**
+ * 将 Swarm Peer 信息注入到 Worker Prompt 中。
+ * 如果 peers 为空，返回空字符串（零开销）。
+ */
+function injectPeerContext(prompt: string, peers: PeerDescriptor[]): string {
+  const peerPrompt = buildPeerDiscoveryPrompt(peers)
+  return peerPrompt ? `${peerPrompt}\n\n${prompt}` : prompt
 }
 
 // ── JSON-RPC 安全常量 ──────────────────────────────────────────
@@ -564,7 +575,7 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
           approvalPolicy: 'never',
           sandbox: request.mode === 'write' ? 'workspace-write' : 'read-only',
           serviceName: 'antigravity-taskd',
-          developerInstructions: `Role=${request.role}. Follow the JSON contract exactly.`,
+          developerInstructions: `Role=${request.role}. Follow the JSON contract exactly.${request.swarmPeers?.length ? ` Swarm mode: ${request.swarmPeers.length} peers available.` : ''}`,
           ephemeral: true,
           experimentalRawEvents: false,
           persistExtendedHistory: false,
@@ -615,7 +626,10 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
     signal: AbortSignal,
     softSignal?: AbortSignal,
   ): Promise<WorkerRunResult> {
-    const fullPrompt = appendContext(request.prompt, request.cwd, request.filePaths)
+    const fullPrompt = injectPeerContext(
+      appendContext(request.prompt, request.cwd, request.filePaths),
+      request.swarmPeers ?? [],
+    )
     const args = [
       '-p',
       fullPrompt,

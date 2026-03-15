@@ -8,9 +8,10 @@
 export type { McpBlackboard, McpResource, McpResourceDescriptor } from './blackboard.js'
 export { InMemoryMcpBlackboard, ResourceNotFoundError, ResourceTooLargeError } from './blackboard.js'
 
-export type { TaskIntent, RouterPolicy, RouterDecision, ToolManifest } from './router.js'
+export type { TaskIntent, RouterPolicy, RouterDecision, ToolManifest, ModelCapability, RouteConstraints } from './router.js'
 export {
   DefaultRouterPolicy,
+  DynamicRouterPolicy,
   READ_ONLY_MANIFEST,
   READ_WRITE_MANIFEST,
   READ_ONLY_TOOLS,
@@ -39,3 +40,19 @@ export {
 
 export type { ArkTsLspProviderOptions } from './arkts-lsp-provider.js'
 export { ArkTsLspProvider, LspInitializationError, LspDisposedError } from './arkts-lsp-provider.js'
+
+export type { BugFixEpisode, EpisodicStats } from './memory.js'
+export { EpisodicMemoryStore, formatEpisodesForPrompt } from './memory.js'
+
+export type { RedTeamFinding, RedTeamVerdict, RedTeamCritic, RedTeamWorkerExecutor } from './red-team.js'
+export { NoopRedTeamCritic, LlmRedTeamCritic } from './red-team.js'
+
+export type { PeerDescriptor, DraftDescriptor, Draft, SwarmMesh } from './swarm-mesh.js'
+export {
+  InMemorySwarmMesh,
+  NoopSwarmMesh,
+  MicroMcpServer,
+  MicroMcpClient,
+  generateSocketPath,
+  buildPeerDiscoveryPrompt,
+} from './swarm-mesh.js'
