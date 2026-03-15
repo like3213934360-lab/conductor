@@ -2,7 +2,7 @@
   "name": "@anthropic/antigravity-taskd",
   "version": "0.1.0",
   "private": true,
-  "description": "Antigravity long-running task kernel",
+  "description": "Liquid Swarm Orchestrator — The cognitive kernel powering Antigravity AI. Tri-state adaptive dispatch (Frugal/Racing/MoA Fusion), Per-Intent ELO routing, P2P Micro-MCP Mesh, Neuro-Symbolic Reflexion, and enterprise-grade air-gapped sandbox",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

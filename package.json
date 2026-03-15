@@ -1,7 +1,7 @@
 {
   "name": "antigravity-workflow",
   "displayName": "Antigravity Workflow",
-  "description": "Antigravity-first multi-agent workflow system with optional ArkTS LSP support",
+  "description": "Antigravity AI: The Next-Gen Liquid Agentic IDE — Powered by the Liquid Swarm Orchestrator, a tri-state adaptive multi-agent kernel with speculative racing, MoA output fusion, per-intent ELO routing, and enterprise-grade air-gapped sandbox",
   "version": "0.3.0",
   "publisher": "like3213934360-lab",
   "license": "MIT",
@@ -20,11 +20,14 @@
   ],
   "keywords": [
     "antigravity",
-    "workflow",
-    "conductor",
+    "liquid-swarm",
     "multi-agent",
     "ai-orchestration",
+    "mixture-of-agents",
+    "speculative-racing",
+    "elo-routing",
     "mcp",
+    "agentic-ide",
     "arkts-lsp"
   ],
   "activationEvents": [
