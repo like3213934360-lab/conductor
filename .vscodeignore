@@ -1,10 +1,11 @@
 # 打包到 VSIX 时排除的文件
-# esbuild 已将所有源码打包到 dist/extension.js, 不需要源文件
+# esbuild 已将所有源码打包到 dist/, 不需要源文件
 
 # 源码 (已打包进 dist/)
 src/**
 packages/**
 *.ts
+*.tsx
 tsconfig*.json
 
 # 开发文件
@@ -17,14 +18,18 @@ tsconfig*.json
 node_modules/**
 **/*.map
 **/*.d.ts
+**/*.tsbuildinfo
 
-# 构建产物/临时文件
-*.vsix
-*.tgz
+# 构建工具配置
+vitest.config.*
+turbo.json
 .eslintrc*
 .prettierrc*
 code-linter.json5
-vitest.config.*
+
+# 分发/临时
+*.vsix
+*.tgz
 
 # 文档 (不打包进 VSIX)
 CHANGELOG.md
