@@ -261,13 +261,12 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
   }
 
   /**
-   * 路径沙箱禁锢（Path Jailing）：
+   * 路径沙箱禁锢（Path Jailing）+ 大小写规范化：
    * 1. path.resolve() 规范化 `../` 穿越
    * 2. 判断 resolved path 是否以 jailRoot 开头
    * 3. realpathSync 在构造时已解析软链接，防止 symlink 逃逸
-   *
-   * 如果 LLM 被 Prompt Injection 诱导请求 `/etc/passwd`，
-   * 此处立即抛出 PathTraversalError，绝不碰磁盘。
+   * 4. 对已存在的文件，使用 realpathSync.native() 获取磁盘真实大小写
+   *    防止 LLM 幻觉将 `App.ts` 写为 `app.ts` 导致 VFS Map 分裂
    */
   private resolve(filePath: string): string {
     const resolved = path.isAbsolute(filePath)
@@ -279,7 +278,19 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
       throw new PathTraversalError(filePath, this.jailRoot)
     }
 
-    return resolved
+    // ── 大小写规范化（Case-Insensitive FS 防 LLM 幻觉） ──────────────────
+    // macOS (APFS) 和 Windows (NTFS) 默认不区分大小写但保留大小写。
+    // 如果 LLM 将 `src/App.ts` 错写为 `src/app.ts`，VFS Map 中会创建两个 key
+    // 指向同一物理文件，导致 LSP 重复定义报错和 commit 覆盖竞态。
+    //
+    // 修复：文件存在时用 realpathSync.native() 获取磁盘真实大小写路径。
+    // 新建文件无法规范化，使用 path.resolve 结果（会在首次 commit 时创建）。
+    try {
+      return fs.realpathSync.native(resolved)
+    } catch {
+      // 文件尚不存在（新建文件）→ 使用 resolved 原始路径
+      return resolved
+    }
   }
 }
 

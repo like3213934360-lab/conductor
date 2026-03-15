@@ -22,9 +22,24 @@ export interface WorkspaceFileEntry {
 
 export function listWorkspaceFiles(workspaceRoot: string, maxFiles = 400): WorkspaceFileEntry[] {
   const results: WorkspaceFileEntry[] = []
+  // ── 循环软链接防御：记录已访问目录的 dev:ino ────────────────────────
+  // entry.isDirectory() 跟随软链接，如果 a → b → a 会无限递归。
+  // 通过记录真实 inode（fs.statSync 跟随链接后的 dev+ino）阻断环路。
+  const visited = new Set<string>()
 
   function visit(currentDir: string): void {
     if (results.length >= maxFiles) return
+
+    // ── 环路检测：检查当前目录的真实 inode 是否已经访问过 ──────────
+    try {
+      const dirStat = fs.statSync(currentDir)
+      const dirKey = `${dirStat.dev}:${dirStat.ino}`
+      if (visited.has(dirKey)) return  // 循环软链接 → 静默跳过
+      visited.add(dirKey)
+    } catch {
+      return  // 目录不可访问 → 跳过
+    }
+
     const entries = fs.readdirSync(currentDir, { withFileTypes: true })
     for (const entry of entries) {
       if (results.length >= maxFiles) return
