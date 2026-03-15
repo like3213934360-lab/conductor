@@ -271,6 +271,17 @@ npm run ci
 
 ---
 
+## 📚 深入文档
+
+| 文档 | 说明 |
+|------|------|
+| [docs/ANTIGRAVITY_CONTRACT.md](docs/ANTIGRAVITY_CONTRACT.md) | 命令契约规范 — MCP 工具与扩展命令的对外 API 契约 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构详解 — 流水线各阶段实现细节与模块交互 |
+| [docs/QUICK_START.md](docs/QUICK_START.md) | 快速上手 — 从安装到第一次运行任务的完整指南 |
+| [docs/API_COOKBOOK.md](docs/API_COOKBOOK.md) | API Cookbook — 常见集成场景的代码示例 |
+
+---
+
 ## 📄 开源许可
 
 [MIT](./LICENSE) © [like3213934360-lab](https://github.com/like3213934360-lab)

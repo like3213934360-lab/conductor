@@ -832,6 +832,10 @@ export class AntigravityTaskdRuntime {
       }
     }
 
+
+    // 构建认知上下文（轻量工厂，< 1ms 开销）— 贯穿全流水线
+    const cogCtx = this.buildCognitiveContext(snapshot.workspaceRoot, signal)
+
     // ── SCOUT 阶段：超时/崩溃时用 fallback manifest 兜底 ─────────
     let manifest: ScoutManifest
     if (resumedManifest) {
@@ -847,7 +851,8 @@ export class AntigravityTaskdRuntime {
         fileHintEntries.map(file => `${file.path} (${file.size} bytes)`),
       )
       try {
-        const scoutResult = await this.runWorker(snapshot, 'codex', 'scout', scoutPrompt, [], 'SCOUT')
+        const scoutDecision = cogCtx.routerPolicy.route('scout')
+        const scoutResult = await this.runWorker(snapshot, scoutDecision.backend, 'scout', scoutPrompt, [], 'SCOUT')
         manifest = coerceScoutManifest(snapshot.goal, scoutResult.text, fileHintEntries)
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
@@ -899,9 +904,10 @@ export class AntigravityTaskdRuntime {
     } else if (profile.kind === 'single') {
       const shard = manifest.shards[0] ?? createFallbackScoutManifest(snapshot.goal, relevantEntries).shards[0]
       if (!shard) throw new Error('No shard available for analysis')
-      this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: ['codex'] })
+      const singleDecision = cogCtx.routerPolicy.route('analyze')
+      this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: [singleDecision.backend] })
       const outcome = await this.runWorkerSafe(
-        snapshot, 'codex', 'analyzer',
+        snapshot, singleDecision.backend, 'analyzer',
         buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths),
         unique([...shard.sharedFiles, ...shard.filePaths]),
         'SHARD_ANALYZE', shard.shardId,
@@ -909,33 +915,35 @@ export class AntigravityTaskdRuntime {
       shardOutcomes.push(outcome)
       if (outcome.result) shardResults.push(outcome.result)
       this.emitJobEvent(jobId, 'shard.completed', {
-        shardId: shard.shardId, backend: 'codex', outcome: outcome.status,
+        shardId: shard.shardId, backend: singleDecision.backend, outcome: outcome.status,
       })
     } else if (profile.kind === 'dual') {
       const shardFilePaths = manifest.relevantPaths.length > 0 ? manifest.relevantPaths : relevantEntries.map(file => file.path)
       const sharedFiles = pickSharedFiles(shardFilePaths)
       const shardId = 'shard-1'
-      this.emitJobEvent(jobId, 'shard.started', { shardId, backends: ['codex', 'gemini'] })
-      // dual 模式：两个后端并行分析同一 shard，各自容错
-      const [codexOutcome, geminiOutcome] = await Promise.all([
+      // dual 模式：Router 选出两个互补后端，推测性赛马
+      const analyzerDecision = cogCtx.routerPolicy.route('analyze')
+      const reviewerDecision = cogCtx.routerPolicy.route('verify')
+      this.emitJobEvent(jobId, 'shard.started', { shardId, backends: [analyzerDecision.backend, reviewerDecision.backend] })
+      const [analyzerOutcome, reviewerOutcome] = await Promise.all([
         this.runWorkerSafe(
-          snapshot, 'codex', 'analyzer',
+          snapshot, analyzerDecision.backend, 'analyzer',
           buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
           unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE', `${shardId}:codex`,
+          'SHARD_ANALYZE', `${shardId}:${analyzerDecision.backend}`,
         ),
         this.runWorkerSafe(
-          snapshot, 'gemini', 'reviewer',
+          snapshot, reviewerDecision.backend, 'reviewer',
           buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
           unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE', `${shardId}:gemini`,
+          'SHARD_ANALYZE', `${shardId}:${reviewerDecision.backend}`,
         ),
       ])
-      shardOutcomes.push(codexOutcome, geminiOutcome)
-      if (codexOutcome.result) shardResults.push(codexOutcome.result)
-      if (geminiOutcome.result) shardResults.push(geminiOutcome.result)
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'codex', outcome: codexOutcome.status })
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: 'gemini', outcome: geminiOutcome.status })
+      shardOutcomes.push(analyzerOutcome, reviewerOutcome)
+      if (analyzerOutcome.result) shardResults.push(analyzerOutcome.result)
+      if (reviewerOutcome.result) shardResults.push(reviewerOutcome.result)
+      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: analyzerDecision.backend, outcome: analyzerOutcome.status })
+      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: reviewerDecision.backend, outcome: reviewerOutcome.status })
     } else {
       // sharded 模式：2 个 worker 并行消费 shard 队列，单个失败不影响其余
       const shards = manifest.shards.length > 0 ? manifest.shards : createFallbackScoutManifest(snapshot.goal, relevantEntries).shards
@@ -944,9 +952,10 @@ export class AntigravityTaskdRuntime {
         while (queue.length > 0) {
           const shard = queue.shift()
           if (!shard) return
-          this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: [`codex-${index + 1}`] })
+          const poolDecision = cogCtx.routerPolicy.route('analyze')
+          this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: [`${poolDecision.backend}-${index + 1}`] })
           const outcome = await this.runWorkerSafe(
-            snapshot, 'codex', 'analyzer',
+            snapshot, poolDecision.backend, 'analyzer',
             buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths),
             unique([...shard.sharedFiles, ...shard.filePaths]),
             'SHARD_ANALYZE', shard.shardId,
@@ -954,7 +963,7 @@ export class AntigravityTaskdRuntime {
           shardOutcomes.push(outcome)
           if (outcome.result) shardResults.push(outcome.result)
           this.emitJobEvent(jobId, 'shard.completed', {
-            shardId: shard.shardId, backend: 'codex', outcome: outcome.status,
+            shardId: shard.shardId, backend: poolDecision.backend, outcome: outcome.status,
           })
         }
       })
@@ -1021,9 +1030,10 @@ export class AntigravityTaskdRuntime {
     } else {
       this.markStageStarted(snapshot, 'AGGREGATE', 'Aggregating shard outputs')
       try {
+        const aggregateDecision = cogCtx.routerPolicy.route('analyze')
         const aggregateResult = await withRetry(
           () => this.runWorker(
-            snapshot, 'codex', 'aggregator',
+            snapshot, aggregateDecision.backend, 'aggregator',
             buildAggregatePrompt(snapshot.goal, shardResults as ShardAnalysis[]),
             [], 'AGGREGATE',
           ),
@@ -1064,11 +1074,9 @@ export class AntigravityTaskdRuntime {
 
     // ── VERIFY 阶段：ReflexionStateMachine 闭环（最多 MAX_STEPS=2 轮）────
     this.markStageStarted(snapshot, 'VERIFY', 'Running reviewer with LSP reflexion')
-    const verifyBackend: WorkerBackend = profile.kind === 'single' ? 'codex' : 'gemini'
+    const verifyDecision = cogCtx.routerPolicy.route('verify')
     let verify: VerifyAnalysis
 
-    // 构建认知上下文（轻量工厂，< 1ms 开销）
-    const cogCtx = this.buildCognitiveContext(snapshot.workspaceRoot, signal)
     const reflexion = new DefaultReflexionStateMachine()
 
     // 当前生成文件（write 模式时从 aggregate 结果中提取）
@@ -1103,7 +1111,7 @@ export class AntigravityTaskdRuntime {
     try {
       const verifyResult = await withRetry(
         () => this.runWorker(
-          snapshot, verifyBackend, 'reviewer',
+          snapshot, verifyDecision.backend, 'reviewer',
           buildVerifyPrompt(snapshot.goal, aggregate, shardResults),
           [], 'VERIFY',
         ),
@@ -1133,8 +1141,9 @@ export class AntigravityTaskdRuntime {
           if (step.verdict === 'retry' && step.patchPrompt) {
             // 用 LSP 精准 patch prompt 要求 Codex 修复
             console.warn(`[taskd] Reflexion retry ${step.attempt}/${reflexion.MAX_STEPS}: ${step.diagnostics.length} errors`)
+            const generateDecision = cogCtx.routerPolicy.route('generate')
             const patchResult = await this.runWorker(
-              snapshot, 'codex', 'writer',
+              snapshot, generateDecision.backend, 'writer',
               step.patchPrompt,
               [], 'VERIFY',
             )

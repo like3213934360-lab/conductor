@@ -90,6 +90,37 @@ class FakeGeminiAdapter implements WorkerAdapter {
 
   async run(request: WorkerRunRequest, onEvent: (event: WorkerEvent) => void): Promise<WorkerRunResult> {
     onEvent({ type: 'started', timestamp: Date.now(), phase: 'thinking', message: `${request.role} started`, progress: 0.05 })
+    if (request.role === 'scout') {
+      return {
+        backend: 'gemini',
+        workerId: request.workerId,
+        text: JSON.stringify({
+          goalSummary: 'scouted goal',
+          relevantPaths: request.filePaths.length > 0 ? request.filePaths : ['src/index.ts'],
+          shards: [{
+            shardId: 'shard-1',
+            filePaths: request.filePaths.length > 0 ? request.filePaths : ['src/index.ts'],
+            sharedFiles: [],
+          }],
+          unknowns: [],
+          riskFlags: [],
+        }),
+        changedFiles: [],
+      }
+    }
+    if (request.role === 'reviewer') {
+      return {
+        backend: 'gemini',
+        workerId: request.workerId,
+        text: JSON.stringify({
+          verdict: 'pass',
+          coverageGaps: [],
+          riskFindings: [],
+          followups: [],
+        }),
+        changedFiles: [],
+      }
+    }
     return {
       backend: 'gemini',
       workerId: request.workerId,
