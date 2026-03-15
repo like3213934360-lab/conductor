@@ -37,7 +37,23 @@
     "onCommand:antigravity.getTask",
     "onCommand:antigravity.streamTask",
     "onCommand:antigravity.cancelTask",
-    "onCommand:antigravity.toggleArktsLsp"
+    "onCommand:antigravity.toggleArktsLsp",
+    "onCommand:antigravity.lso.quickstart",
+    "onCommand:antigravity.lso.genesis",
+    "onCommand:antigravity.lso.probe",
+    "onCommand:antigravity.lso.designSystem",
+    "onCommand:antigravity.lso.blueprint",
+    "onCommand:antigravity.lso.challenge",
+    "onCommand:antigravity.lso.forge",
+    "onCommand:antigravity.lso.change",
+    "onCommand:antigravity.lso.explore",
+    "onCommand:antigravity.lso.craft",
+    "onCommand:antigravity.lso.upgrade",
+    "onCommand:antigravity.lso.swarmAnalyze",
+    "onCommand:antigravity.lso.redTeamVerify",
+    "onCommand:antigravity.lso.eloTuning",
+    "onCommand:antigravity.lso.airgapDeploy",
+    "onCommand:antigravity.lso.daemon"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -95,6 +111,72 @@
       {
         "command": "antigravity.toggleArktsLsp",
         "title": "Antigravity Task Kernel: 切换 ArkTS LSP"
+      },
+      {
+        "command": "antigravity.lso.quickstart",
+        "title": "LSO: 🚀 智能路由入口 (Quickstart)",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "antigravity.lso.genesis",
+        "title": "LSO: 🌅 从零启动 (Genesis)"
+      },
+      {
+        "command": "antigravity.lso.probe",
+        "title": "LSO: 🔍 系统风险探测 (Probe)"
+      },
+      {
+        "command": "antigravity.lso.designSystem",
+        "title": "LSO: 📐 系统详设 (Design System)"
+      },
+      {
+        "command": "antigravity.lso.blueprint",
+        "title": "LSO: 📋 任务拆解 (Blueprint)"
+      },
+      {
+        "command": "antigravity.lso.challenge",
+        "title": "LSO: ⚔️ 对抗审查 (Challenge)"
+      },
+      {
+        "command": "antigravity.lso.forge",
+        "title": "LSO: 🔨 编码执行 (Forge)"
+      },
+      {
+        "command": "antigravity.lso.change",
+        "title": "LSO: 🔧 微调变更 (Change)"
+      },
+      {
+        "command": "antigravity.lso.explore",
+        "title": "LSO: 🧭 技术探索 (Explore)"
+      },
+      {
+        "command": "antigravity.lso.craft",
+        "title": "LSO: 🛠️ 元创建 (Craft)"
+      },
+      {
+        "command": "antigravity.lso.upgrade",
+        "title": "LSO: ⬆️ 升级编排 (Upgrade)"
+      },
+      {
+        "command": "antigravity.lso.swarmAnalyze",
+        "title": "LSO: 🧬 三态蜂群分析 (Swarm Analyze)",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "antigravity.lso.redTeamVerify",
+        "title": "LSO: 🛡️ 红队验证 (Red Team Verify)"
+      },
+      {
+        "command": "antigravity.lso.eloTuning",
+        "title": "LSO: 🧠 ELO 路由调优 (ELO Tuning)"
+      },
+      {
+        "command": "antigravity.lso.airgapDeploy",
+        "title": "LSO: 🔒 物理隔离部署 (Air-Gap Deploy)"
+      },
+      {
+        "command": "antigravity.lso.daemon",
+        "title": "LSO: ⚙️ 守护进程管理 (Daemon)"
       }
     ],
     "configuration": {

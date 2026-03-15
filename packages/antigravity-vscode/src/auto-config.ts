@@ -73,23 +73,43 @@ export function autoRegisterMcpConfig(extensionPath: string) {
 }
 
 /**
- * 自动安装 AI 路由 Skill (幂等，每次激活覆盖以保持最新)
+ * 自动安装所有 LSO Skill 到 Antigravity 全局技能目录 (幂等，每次激活覆盖以保持最新)
+ * 
+ * 扫描 extensionPath/skills/ 下的所有子目录，
+ * 将每个包含 SKILL.md 的子目录复制到 ~/.gemini/antigravity/skills/{skill-name}/SKILL.md
  */
 export function autoInstallSkill(extensionPath: string) {
-    const srcSkillFile = path.join(extensionPath, 'skills', 'antigravity-routing', 'SKILL.md');
-    if (!fs.existsSync(srcSkillFile)) {
-        console.warn('[Antigravity Workflow] SKILL.md not found, skipping');
+    const srcSkillsRoot = path.join(extensionPath, 'skills');
+    if (!fs.existsSync(srcSkillsRoot)) {
+        console.warn('[Antigravity Workflow] skills/ directory not found, skipping');
         return;
     }
 
-    const destDir = path.join(os.homedir(), '.gemini', 'antigravity', 'skills', 'antigravity-routing');
-    const destFile = path.join(destDir, 'SKILL.md');
+    const globalSkillsRoot = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
+    let installed = 0;
+
     try {
-        if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-        fs.copyFileSync(srcSkillFile, destFile);
-        console.log('[Antigravity Workflow] Installed AI routing Skill ✅');
+        const entries = fs.readdirSync(srcSkillsRoot, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+
+            const srcSkillFile = path.join(srcSkillsRoot, entry.name, 'SKILL.md');
+            if (!fs.existsSync(srcSkillFile)) continue;
+
+            const destDir = path.join(globalSkillsRoot, entry.name);
+            const destFile = path.join(destDir, 'SKILL.md');
+
+            try {
+                if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+                fs.copyFileSync(srcSkillFile, destFile);
+                installed++;
+            } catch (err) {
+                console.error(`[Antigravity Workflow] Failed to install skill ${entry.name}:`, err);
+            }
+        }
+        console.log(`[Antigravity Workflow] Installed ${installed} LSO skills to Antigravity ✅`);
     } catch (err) {
-        console.error('[Antigravity Workflow] Failed to install Skill:', err);
+        console.error('[Antigravity Workflow] Failed to scan skills directory:', err);
     }
 }
 
