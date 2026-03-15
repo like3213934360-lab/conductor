@@ -73,44 +73,13 @@ export function autoRegisterMcpConfig(extensionPath: string) {
 }
 
 /**
- * 自动安装所有 LSO Skill 到 Antigravity 全局技能目录 (幂等，每次激活覆盖以保持最新)
- * 
- * 扫描 extensionPath/skills/ 下的所有子目录，
- * 将每个包含 SKILL.md 的子目录复制到 ~/.gemini/antigravity/skills/{skill-name}/SKILL.md
+ * LSO Skills 现在位于项目级 .agents/skills/ 目录（由 Anws 管理），
+ * 编辑器会自动扫描该目录，无需复制到全局。
+ * 此函数保留为 no-op 以保持 API 兼容。
  */
-export function autoInstallSkill(extensionPath: string) {
-    const srcSkillsRoot = path.join(extensionPath, 'skills');
-    if (!fs.existsSync(srcSkillsRoot)) {
-        console.warn('[Antigravity Workflow] skills/ directory not found, skipping');
-        return;
-    }
-
-    const globalSkillsRoot = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
-    let installed = 0;
-
-    try {
-        const entries = fs.readdirSync(srcSkillsRoot, { withFileTypes: true });
-        for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-
-            const srcSkillFile = path.join(srcSkillsRoot, entry.name, 'SKILL.md');
-            if (!fs.existsSync(srcSkillFile)) continue;
-
-            const destDir = path.join(globalSkillsRoot, entry.name);
-            const destFile = path.join(destDir, 'SKILL.md');
-
-            try {
-                if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-                fs.copyFileSync(srcSkillFile, destFile);
-                installed++;
-            } catch (err) {
-                console.error(`[Antigravity Workflow] Failed to install skill ${entry.name}:`, err);
-            }
-        }
-        console.log(`[Antigravity Workflow] Installed ${installed} LSO skills to Antigravity ✅`);
-    } catch (err) {
-        console.error('[Antigravity Workflow] Failed to scan skills directory:', err);
-    }
+export function autoInstallSkill(_extensionPath: string) {
+    // Skills are now project-level in .agents/skills/ — no global install needed.
+    console.log('[Antigravity Workflow] Skills are project-level (.agents/skills/), skipping global install')
 }
 
 /**
