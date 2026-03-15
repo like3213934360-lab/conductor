@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/antigravity-model-core",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Antigravity Workflow \u2014 \u7eaf Node \u8fd0\u884c\u65f6\uff1a\u667a\u80fd\u8def\u7531\u3001\u591a\u6a21\u578b\u8c03\u7528\u3001\u5e76\u884c\u67e5\u8be2\u3001\u6295\u7968\u5f15\u64ce\u3001CLI Agent",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -2,7 +2,7 @@
   "name": "antigravity-workflow",
   "displayName": "Antigravity Workflow",
   "description": "Antigravity AI: The Next-Gen Liquid Agentic IDE — Powered by the Liquid Swarm Orchestrator, a tri-state adaptive multi-agent kernel with speculative racing, MoA output fusion, per-intent ELO routing, and enterprise-grade air-gapped sandbox",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "publisher": "like3213934360-lab",
   "license": "MIT",
   "workspaces": [

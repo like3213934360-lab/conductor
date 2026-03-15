@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/ace-bridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DevEco Studio ace-server bridge — 项目解析 + ace-server 启动器",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

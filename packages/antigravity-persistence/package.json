@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/antigravity-persistence",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Antigravity Workflow Runtime — 持久化层 (JSONL EventStore + SQLite CheckpointStore + Memory)",
   "type": "module",
   "main": "./dist/index.js",

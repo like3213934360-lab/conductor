@@ -12,7 +12,11 @@ tsconfig*.json
 .omc/**
 .git/**
 .github/**
-.agents/**
+.agents/workflows/**
+.agents/skills/*/scripts/**
+.agents/skills/*/examples/**
+.agents/skills/*/resources/**
+# .agents/skills/*/SKILL.md 会被保留 — 这是 autoInstallSkill() 的数据源
 .claude/**
 .gemini/**
 node_modules/**

@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/antigravity-vscode",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Antigravity Workflow VS Code 集成层 — workflow control plane + optional ArkTS LSP",
   "main": "dist/index.js",

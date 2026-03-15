@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/antigravity-webview",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Antigravity Workflow Dashboard React WebView — 概览/模型管理/历史/路由/调度/测试",
   "scripts": {

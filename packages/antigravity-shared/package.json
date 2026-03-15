@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/antigravity-shared",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Antigravity Workflow Runtime — 共享 Schema、状态定义、事件类型、错误码",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
