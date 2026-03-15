@@ -20,6 +20,7 @@ export function registerTaskRunTool(server: McpServer, ctx: ServerContext): void
           goal: args.goal,
           mode: args.mode ?? 'analysis',
           workspaceRoot,
+          enableMoA: false,
           fileHints: args.files ?? [],
         }, workspaceRoot)
         return jsonContent(result)

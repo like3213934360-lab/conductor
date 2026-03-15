@@ -31,6 +31,17 @@ turbo.json
 .prettierrc*
 code-linter.json5
 
+# 开发/工具产物（不属于运行时）
+.codex/**
+.hvigor/**
+.anws/**
+.arkts-cache/**
+skills/**
+spec/**
+.gitignore
+ARCHITECTURE.md
+AGENTS.md
+
 # 分发/临时
 *.vsix
 *.tgz

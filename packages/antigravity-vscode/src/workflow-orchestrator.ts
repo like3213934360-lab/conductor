@@ -109,6 +109,7 @@ export class WorkflowOrchestrator implements vscode.Disposable {
       goal,
       mode,
       workspaceRoot: runtime.workspaceRoot,
+      enableMoA: false,
       fileHints: files,
     })
     this.activeRunId = created.jobId

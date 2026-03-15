@@ -30,7 +30,7 @@ export async function activateAntigravityHost(context: ExtensionContext): Promis
     const [{ SqliteClient }] = await Promise.all([
       import('@anthropic/antigravity-persistence'),
     ])
-    sqliteClient = new SqliteClient({ dataDir, dbName: 'antigravity-workflow.db' })
+    sqliteClient = await SqliteClient.create({ dataDir, dbName: 'antigravity-workflow.db' })
     const historyRepo = new RequestHistoryRepository(sqliteClient as any)
     const dbPath = path.join(dataDir, 'db', 'antigravity-workflow.db')
 
