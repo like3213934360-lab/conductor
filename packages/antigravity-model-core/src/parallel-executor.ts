@@ -6,10 +6,12 @@
  * - Worker-pool 并发模型 (可配置 maxConcurrency)
  * - 故障隔离 — 一个失败不影响其他
  * - 超时取消 + 结构化输出
+ * - 预检门控 — provider 不存在时自动回退 (v43)
  */
 
 import { AntigravityModelService } from './antigravity-model-service.js';
 import { buildFileContext } from './file-context.js';
+import { gatekeeperResolve, gatekeeperResolveBatch } from './provider-gatekeeper.js';
 
 // ── 类型定义 ──────────────────────────────────────────────────────────────────
 
@@ -224,19 +226,33 @@ function enrichPromptWithFiles(task: SubTask): string {
 async function dispatchTask(task: SubTask, service: AntigravityModelService, signal?: AbortSignal): Promise<string> {
     // CLI 任务: 预注入文件上下文, 避免 Codex/Gemini 自行读文件
     const prompt = enrichPromptWithFiles(task);
+    const config = service.getConfig();
+
     switch (task.type) {
         case 'codex':
             return service.codexTask(prompt, task.working_dir, signal);
         case 'gemini':
             return service.geminiTask(prompt, task.model, task.working_dir, signal);
         case 'ask': {
-            const r = await service.ask({ message: task.prompt, modelHint: task.model_hint, systemPrompt: task.system_prompt, filePaths: task.file_paths, signal });
+            // ── 预检门控 (v43): 验证 model_hint 可用性，不可用则回退 ──
+            let resolvedHint = task.model_hint;
+            if (resolvedHint) {
+                const gate = gatekeeperResolve(resolvedHint, config);
+                resolvedHint = gate.resolvedHint;
+            }
+            const r = await service.ask({ message: task.prompt, modelHint: resolvedHint, systemPrompt: task.system_prompt, filePaths: task.file_paths, signal });
             return r.text;
         }
         case 'multi_ask': {
+            // ── 预检门控 (v43): 批量验证 model_hints ──
+            let resolvedHints = task.model_hints;
+            if (resolvedHints && resolvedHints.length > 0) {
+                const batch = gatekeeperResolveBatch(resolvedHints, config);
+                resolvedHints = batch.resolvedHints;
+            }
             const r = await service.multiAsk({
                 message: task.prompt,
-                modelHints: task.model_hints,
+                modelHints: resolvedHints,
                 systemPrompt: task.system_prompt,
                 filePaths: task.file_paths,
                 signal,
@@ -244,10 +260,21 @@ async function dispatchTask(task: SubTask, service: AntigravityModelService, sig
             return r.formatted;
         }
         case 'consensus': {
+            // ── 预检门控 (v43): 验证 judgeModelHint + candidate hints ──
+            let resolvedHints = task.model_hints;
+            let resolvedJudge = task.judge_model_hint;
+            if (resolvedHints && resolvedHints.length > 0) {
+                const batch = gatekeeperResolveBatch(resolvedHints, config);
+                resolvedHints = batch.resolvedHints;
+            }
+            if (resolvedJudge) {
+                const gate = gatekeeperResolve(resolvedJudge, config);
+                resolvedJudge = gate.resolvedHint;
+            }
             const r = await service.consensus({
                 message: task.prompt,
-                modelHints: task.model_hints,
-                judgeModelHint: task.judge_model_hint,
+                modelHints: resolvedHints,
+                judgeModelHint: resolvedJudge,
                 systemPrompt: task.system_prompt,
                 filePaths: task.file_paths,
             });

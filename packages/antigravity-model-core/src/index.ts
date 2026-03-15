@@ -11,3 +11,5 @@ export { ProgressReporter, ScopedReporter } from './progress-reporter.js';
 export type { ProgressEvent, ProgressCallback, ProgressPhase } from './progress-reporter.js';
 export { AsyncJobManager, formatJobStatus } from './async-job-manager.js';
 export type { AsyncJob, JobStatus, JobType, StartJobOptions } from './async-job-manager.js';
+export { gatekeeperResolve, gatekeeperResolveBatch, probeAvailability, clearAvailabilityCache } from './provider-gatekeeper.js';
+export type { GatekeeperResult, ProviderAvailability } from './provider-gatekeeper.js';
