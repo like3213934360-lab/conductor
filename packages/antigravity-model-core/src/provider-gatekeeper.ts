@@ -49,12 +49,19 @@ let _cachedProbe: { availability: ProviderAvailability; timestamp: number } | nu
 const CACHE_TTL_MS = 60_000; // 缓存 1 分钟
 
 /**
- * 探测当前可用的 providers（带原子缓存）
+ * 🛡️ Coalescing Promise — Thundering Herd 防线
  *
- * 🛡️ 并发安全保证：
- *  1. cache + timestamp 封装为单一不可变对象引用
- *  2. 赋值 `_cachedProbe = { ... }` 是 V8 指针原子操作
- *  3. 两个并发调用最多各探测一次，不会出现半更新读取
+ * 当缓存失效时，N 个并发调用者中只有第一个会执行真实探测，
+ * 其余全部 await 同一个 inflight Promise。
+ * 探测完成后 Promise 自动清空，下次失效时重新创建。
+ */
+let _inflightProbe: Promise<ProviderAvailability> | null = null;
+
+/**
+ * 探测当前可用的 providers（同步版本，保持向后兼容）
+ *
+ * ⚠️ 在高并发场景下请使用 probeAvailabilityAsync() 替代，
+ * 同步版本无法防止 Thundering Herd。
  */
 export function probeAvailability(config: AntigravityModelConfig, forceRefresh = false): ProviderAvailability {
     const now = Date.now();
@@ -76,6 +83,59 @@ export function probeAvailability(config: AntigravityModelConfig, forceRefresh =
     // 单一赋值：原子更新缓存引用
     _cachedProbe = { availability, timestamp: now };
     return availability;
+}
+
+/**
+ * 🛡️ 探测当前可用的 providers（异步版本，Thundering Herd 安全）
+ *
+ * Coalescing Promise 模式：
+ *  1. 缓存命中 → 立即返回（零开销）
+ *  2. 已有在途探测 → await 同一个 Promise（消除 Herd）
+ *  3. 首发请求 → 创建探测 Promise，后续调用者共享
+ *
+ * 适用于 Swarm Mesh 场景下上百个 Worker 同时探测可用模型。
+ */
+export async function probeAvailabilityAsync(
+    config: AntigravityModelConfig,
+    forceRefresh = false,
+): Promise<ProviderAvailability> {
+    const now = Date.now();
+    const snapshot = _cachedProbe;
+
+    // ① 缓存命中 → 零开销返回
+    if (!forceRefresh && snapshot && (now - snapshot.timestamp) < CACHE_TTL_MS) {
+        return snapshot.availability;
+    }
+
+    // ② 已有在途探测 → 共享 Promise（消除 Thundering Herd）
+    if (_inflightProbe && !forceRefresh) {
+        return _inflightProbe;
+    }
+
+    // ③ 首发请求 → 创建唯一探测 Promise
+    _inflightProbe = (async () => {
+        const apiModels = (config.models || [])
+            .filter(m => m.enabled && m.apiKey)
+            .map(m => m.id.toLowerCase());
+
+        const codexAvailable = isCliInstalled('codex');
+        const geminiAvailable = isCliInstalled('gemini');
+
+        const availability: ProviderAvailability = {
+            apiModels,
+            codexAvailable,
+            geminiAvailable,
+        };
+
+        // 原子更新缓存
+        _cachedProbe = { availability, timestamp: Date.now() };
+        return availability;
+    })().finally(() => {
+        // 🗑️ 探测完成后清空 inflight，允许下次 TTL 过期时重新探测
+        _inflightProbe = null;
+    });
+
+    return _inflightProbe;
 }
 
 function isCliInstalled(cmd: string): boolean {
@@ -187,4 +247,5 @@ export function gatekeeperResolveBatch(
  */
 export function clearAvailabilityCache(): void {
     _cachedProbe = null;
+    _inflightProbe = null;
 }
