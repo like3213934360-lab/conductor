@@ -178,6 +178,16 @@ export class DynamicRouterPolicy implements RouterPolicy {
       maxContextTokens: 1_000_000,
       supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
     },
+    // 🛡️ SOC2 Air-Gap: 本地模型兜底 — 物理隔离网络中的唯一存活者
+    // 分数刻意低于云端模型，确保联网时不会被优先选择；
+    // 但在 Air-Gap 模式下（deregister 掉 codex/gemini），它将自动成为唯一候选。
+    {
+      id: 'ollama',
+      backend: 'ollama',
+      scores: { code_quality: 5, long_context: 4, reasoning: 5, speed: 8, cost: 10, chinese: 7 },
+      maxContextTokens: 32_000,
+      supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
+    },
   ]
 
   /** 意图→能力维度权重矩阵 */

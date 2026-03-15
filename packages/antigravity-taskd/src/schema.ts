@@ -28,7 +28,7 @@ export type TaskStageId = z.infer<typeof TaskStageIdSchema>
 export const TaskStageStatusSchema = z.enum(['pending', 'running', 'completed', 'failed', 'skipped'])
 export type TaskStageStatus = z.infer<typeof TaskStageStatusSchema>
 
-export const WorkerBackendSchema = z.enum(['codex', 'gemini'])
+export const WorkerBackendSchema = z.enum(['codex', 'gemini', 'ollama'])
 export type WorkerBackend = z.infer<typeof WorkerBackendSchema>
 
 export const WorkerRoleSchema = z.enum(['scout', 'analyzer', 'reviewer', 'aggregator', 'writer'])

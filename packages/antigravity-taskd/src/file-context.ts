@@ -12,6 +12,74 @@ const IGNORE_DIRS = new Set([
   'build',
 ])
 
+// ── SOC2 CC6.1: 敏感文件强制黑名单 ─────────────────────────────────────────
+// 这些文件永远不会被收集进 Prompt，防止凭证泄露到云端 LLM。
+const SENSITIVE_EXTENSIONS = new Set([
+  '.pem', '.key', '.p12', '.pfx', '.jks', '.keystore',
+  '.cert', '.crt', '.der', '.pkcs12',
+])
+
+const SENSITIVE_FILENAMES = new Set([
+  '.env', '.env.local', '.env.production', '.env.staging', '.env.development',
+  '.env.test', '.env.example',
+  'credentials', 'credentials.json',
+  'service-account.json', 'service_account.json',
+  'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+  '.npmrc', '.pypirc', '.netrc', '.docker/config.json',
+])
+
+/** 判断文件名或扩展名是否属于敏感文件 */
+function isSensitiveFile(filename: string): boolean {
+  const base = path.basename(filename).toLowerCase()
+  const ext = path.extname(base).toLowerCase()
+  // 检查精确文件名
+  if (SENSITIVE_FILENAMES.has(base)) return true
+  // 检查 .env* 变体
+  if (base.startsWith('.env')) return true
+  // 检查敏感扩展名
+  if (SENSITIVE_EXTENSIONS.has(ext)) return true
+  // 检查 SSH 私钥
+  if (base.startsWith('id_') && !ext) return true
+  return false
+}
+
+// ── SOC2 CC6.7: 凭证脱敏正则拦截器 ──────────────────────────────────────────
+// 即使文件本身不在黑名单中，代码注释/硬编码中的凭证也会被掩码。
+const SECRET_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  // AWS Access Key
+  { pattern: /AKIA[0-9A-Z]{16}/g, label: 'AWS_KEY' },
+  // AWS Secret Key (40 chars base64-ish)
+  { pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}/g, label: 'AWS_SECRET' },
+  // Generic API Key / Secret / Token / Password assignments
+  { pattern: /(?:api[_-]?key|secret[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|password|passwd|db_password|database_url|private[_-]?key)\s*[:=]\s*['"]?[^\s'"]{8,}/gi, label: 'CREDENTIAL' },
+  // PEM Private Keys
+  { pattern: /-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, label: 'PRIVATE_KEY' },
+  // JWT Tokens (3-part base64)
+  { pattern: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, label: 'JWT' },
+  // GitHub / GitLab / Slack tokens
+  { pattern: /(?:gh[ps]_[A-Za-z0-9_]{36,}|glpat-[A-Za-z0-9_-]{20,}|xox[bpras]-[A-Za-z0-9-]{10,})/g, label: 'SERVICE_TOKEN' },
+  // OpenAI / Anthropic API keys
+  { pattern: /sk-[A-Za-z0-9]{20,}/g, label: 'LLM_API_KEY' },
+  // Stripe keys
+  { pattern: /(?:sk_live_|pk_live_|sk_test_|pk_test_)[A-Za-z0-9]{20,}/g, label: 'STRIPE_KEY' },
+  // Generic hex secrets (32+ chars)
+  { pattern: /(?:secret|token|key)\s*[:=]\s*['"]?[0-9a-f]{32,}['"]?/gi, label: 'HEX_SECRET' },
+]
+
+/**
+ * 凭证脱敏：扫描文件内容，将匹配的高风险凭证替换为 [***REDACTED:<label>***]
+ * 防止密钥通过 Prompt 泄露到云端 LLM。
+ */
+export function redactSecrets(content: string): string {
+  let redacted = content
+  for (const { pattern, label } of SECRET_PATTERNS) {
+    // 每次使用前重置 lastIndex（全局正则状态问题）
+    pattern.lastIndex = 0
+    redacted = redacted.replace(pattern, `[***REDACTED:${label}***]`)
+  }
+  return redacted
+}
+
 const MAX_FILE_BYTES = 200 * 1024
 const MAX_TOTAL_BYTES = 1024 * 1024
 
@@ -43,7 +111,9 @@ export function listWorkspaceFiles(workspaceRoot: string, maxFiles = 400): Works
     const entries = fs.readdirSync(currentDir, { withFileTypes: true })
     for (const entry of entries) {
       if (results.length >= maxFiles) return
-      if (entry.name.startsWith('.') && entry.name !== '.env' && entry.name !== '.github') continue
+      if (entry.name.startsWith('.') && entry.name !== '.github') continue
+      // 🛡️ SOC2 CC6.1: 敏感文件强制跳过 — 防止凭证泄露
+      if (isSensitiveFile(entry.name)) continue
       if (IGNORE_DIRS.has(entry.name)) continue
 
       const absPath = path.join(currentDir, entry.name)
@@ -85,7 +155,10 @@ export function buildFileContext(workspaceRoot: string, filePaths: string[]): { 
     totalBytes += stat.size
     if (totalBytes > MAX_TOTAL_BYTES) break
 
-    const content = fs.readFileSync(absolutePath, 'utf8')
+    // 🛡️ SOC2 CC6.7: 即使文件不在黑名单中，也要对内容进行凭证脱敏
+    if (isSensitiveFile(relativePath)) continue
+    const rawContent = fs.readFileSync(absolutePath, 'utf8')
+    const content = redactSecrets(rawContent)
     const label = path.relative(workspaceRoot, absolutePath)
     sections.push(`=== FILE: ${label} ===\n${content.trimEnd()}\n=== END FILE ===`)
     loadedPaths.push(label)

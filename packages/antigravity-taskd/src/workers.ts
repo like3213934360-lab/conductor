@@ -849,9 +849,93 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
   }
 }
 
+// ── Ollama Local Worker (Air-Gap / SOC2 Compliant) ──────────────────────────
+// 🛡️ 零网络依赖：通过 `ollama run` 调用本地模型（Llama-3 / Qwen / DeepSeek-Local 等）
+// 仅在 Air-Gap 模式或用户显式配置 local-only 时被路由策略选中。
+
+class OllamaWorkerAdapter implements WorkerAdapter {
+  readonly backend: WorkerBackend = 'ollama'
+
+  async run(
+    request: WorkerRunRequest,
+    onEvent: (event: WorkerEvent) => void,
+    signal: AbortSignal,
+    softSignal?: AbortSignal,
+  ): Promise<WorkerRunResult> {
+    const fullPrompt = injectPeerContext(
+      appendContext(request.prompt, request.cwd, request.filePaths),
+      request.swarmPeers ?? [],
+    )
+
+    // 使用环境变量 OLLAMA_MODEL 或默认 qwen2.5-coder:7b
+    const model = process.env.OLLAMA_MODEL || 'qwen2.5-coder:7b'
+
+    const child = spawn('ollama', ['run', model], {
+      cwd: request.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    })
+
+    if (!child.stdin || !child.stdout) {
+      throw new Error('Ollama CLI did not expose stdio handles')
+    }
+
+    child.stdin.on('error', () => {})
+
+    const stopSyntheticProgress = startSyntheticProgress(onEvent)
+    let finalText = ''
+
+    // 将 prompt 写入 stdin 并关闭（ollama run 从 stdin 读取 prompt）
+    child.stdin.write(fullPrompt)
+    child.stdin.end()
+
+    onEvent({ type: 'started', timestamp: Date.now(), phase: 'thinking', message: `Ollama ${model} processing...` })
+
+    child.stdout.setEncoding('utf8')
+    for await (const chunk of child.stdout) {
+      finalText += chunk
+      onEvent({
+        type: 'progress',
+        timestamp: Date.now(),
+        phase: 'working',
+        message: `Received ${finalText.length} chars`,
+        progress: Math.min(0.9, finalText.length / 10000),
+      })
+    }
+
+    stopSyntheticProgress()
+
+    // 等待进程退出
+    await new Promise<void>((resolve, reject) => {
+      child.on('exit', (code) => {
+        if (code === 0 || code === null) resolve()
+        else reject(new Error(`Ollama process exited with code ${code}`))
+      })
+      child.on('error', reject)
+    })
+
+    // 信号中断检查
+    if (signal.aborted) {
+      if (!child.killed) killProcessTree(child)
+      throw new Error('Ollama worker cancelled by signal')
+    }
+
+    onEvent({ type: 'completed', timestamp: Date.now(), phase: 'done', message: 'Ollama completed' })
+
+    return {
+      backend: 'ollama',
+      workerId: request.workerId,
+      text: finalText.trim(),
+      diff: undefined,
+      changedFiles: [],
+    }
+  }
+}
+
 export function createWorkerAdapters(): Record<WorkerBackend, WorkerAdapter> {
   return {
     codex: new CodexAppServerWorkerAdapter(),
     gemini: new GeminiStreamJsonWorkerAdapter(),
+    ollama: new OllamaWorkerAdapter(),
   }
 }

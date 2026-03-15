@@ -184,6 +184,7 @@ describe('AntigravityTaskdRuntime', () => {
     }, {
       codex: new FakeCodexAdapter(),
       gemini: new FakeGeminiAdapter(),
+      ollama: new FakeCodexAdapter(),  // 复用 FakeCodex 作为 Ollama 的 mock
     })
     await runtime.initialize()
 
@@ -210,6 +211,7 @@ describe('AntigravityTaskdRuntime', () => {
     }, {
       codex: new FakeCodexAdapter(),
       gemini: new FakeGeminiAdapter(),
+      ollama: new FakeCodexAdapter(),
     })
     await runtime.initialize()
 
