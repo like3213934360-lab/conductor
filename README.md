@@ -2,12 +2,12 @@
 
 # ⚡ Antigravity Workflow
 
-**A next-generation multi-agent code intelligence platform, built for the ArkTS/HarmonyOS ecosystem.**
+**面向 ArkTS/HarmonyOS 生态深度定制的下一代多智能体代码智能平台**
 
-Powered by **MCP (Model Context Protocol)** · Orchestrated by **Codex + Gemini CLI** · Validated by **ArkTS LSP**
+由 **MCP (Model Context Protocol)** 驱动 · **Codex + Gemini CLI** 协同编排 · **ArkTS LSP** 闭环验证
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue?style=flat-square)](./package.json)
-[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](./LICENSE)
+[![版本](https://img.shields.io/badge/版本-0.3.0-blue?style=flat-square)](./package.json)
+[![许可证](https://img.shields.io/badge/许可证-MIT-green?style=flat-square)](./LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blue?style=flat-square&logo=visual-studio-code)](https://marketplace.visualstudio.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 
@@ -15,255 +15,255 @@ Powered by **MCP (Model Context Protocol)** · Orchestrated by **Codex + Gemini 
 
 ---
 
-## 🚀 Overview
+## 🚀 项目愿景
 
-Antigravity Workflow is a **production-grade multi-agent task kernel** embedded inside a VS Code extension. It solves the **ArkTS-scale code-intelligence problem**: large `.ets` codebases that no single model call can reason about in one shot.
+Antigravity Workflow 是一个**生产级多智能体任务调度核心**，以 VS Code 扩展形态交付。它专门解决**大规模 ArkTS 代码库的智能分析难题**：任何单次大模型调用都无法一次性完成推理的超大 `.ets` 代码仓库，可通过本系统进行批量、并行、可恢复的深度分析与代码生成。
 
-The system dispatches a long-running AI job — **SCOUT → SHARD → AGGREGATE → VERIFY → WRITE** — across parallel Codex and Gemini CLI worker processes, validates generated code against a live ArkTS Language Server, and atomically commits results to disk only after passing LSP diagnostics.
+系统将一次 AI 任务拆解为完整流水线 — **SCOUT → SHARD → AGGREGATE → VERIFY → WRITE** — 跨多个并行 Codex/Gemini CLI 工作进程调度，利用 ArkTS 语言服务器验证生成代码，仅在通过 LSP 诊断后才原子提交到磁盘。
 
-### ✨ Hardened Technical Features
+### ✨ 核心技术特性
 
-| # | Feature | Implementation |
-|---|---------|----------------|
-| 1 | **Map-Reduce Task Kernel** | `antigravity-taskd` splits any codebase into shards processed by worker pools, then reduces partial results into a single aggregate — with **durable checkpoint resumption** via JSONL EventStore + SQLite |
-| 2 | **LSP-Driven Reflexion Loop** | After code generation, generated files are written into an **in-memory VFS**; the ArkTS LSP (`arkts-lsp-provider`) runs `textDocument/didOpen→diagnostics→didClose` in a serialised mutex — up to 2 retry cycles before rollback |
-| 3 | **Speculative Racing Execution** | `DefaultRacingExecutor` launches Codex and Gemini concurrently; the first valid result cancels the other via `AbortSignal` + `onAborted()` lifecycle hook — guaranteed resource cleanup, no EventLoop ghost timers |
-| 4 | **15-Tool MCP Surface** | `antigravity-mcp-server` exposes a typed, domain-gated MCP tool catalog (`model` domain: `ai_ask / ai_codex_task / ai_gemini_task / ai_parallel_tasks / ai_consensus …`; `task` domain: `task.run / task.getState / task.advance / task.cancel / task.list`) — fully callable by any MCP-compatible AI host |
+| # | 特性 | 实现机制 |
+|---|------|---------|
+| 1 | **Map-Reduce 任务调度内核** | `antigravity-taskd` 将代码库拆分为 Shard 并行推理，再将分片结果归约为全局分析。每个阶段均有 **JSONL EventStore + SQLite 断点续传**，崩溃后可从最后完成阶段恢复 |
+| 2 | **LSP 驱动的反思纠错闭环** | 生成代码先写入**纯内存 VFS**；`arkts-lsp-provider` 在 `LspSessionMutex` 排他锁保护下运行 `didOpen → publishDiagnostics → didClose` 完整会话；最多 2 轮修复重试，失败则回滚 |
+| 3 | **投机竞速并行执行** | `DefaultRacingExecutor` 同时启动 Codex 和 Gemini 两条路径；胜出者通过 `AbortSignal + onAborted()` 生命周期钩子立即终止失败方，确保 LSP 资源零泄漏 |
+| 4 | **15 工具 MCP 接口面** | `antigravity-mcp-server` 对外暴露类型安全、领域隔离的 MCP 工具目录（`model` 域：`ai_ask / ai_codex_task / ai_gemini_task / ai_parallel_tasks / ai_consensus …`；`task` 域：`task.run / task.getState / task.advance / task.cancel / task.list`） |
 
 ---
 
-## 🏗️ Package Architecture
+## 🏗️ 包架构拓扑
 
 ```
-antigravity-workflow/                    ← VS Code Extension root (dist/extension.js)
+antigravity-workflow/                    ← VS Code 扩展根包 (dist/extension.js)
 │
 ├── packages/
 │   │
-│   ├── antigravity-taskd/               ← 🧠 CORE: Long-running task kernel
+│   ├── antigravity-taskd/               ← 🧠 核心：长任务调度内核
 │   │   src/
-│   │   ├── runtime.ts                   #  5-stage Map-Reduce pipeline (SCOUT/SHARD/AGGREGATE/VERIFY/WRITE)
-│   │   ├── workers.ts                   #  Codex App Server + Gemini Stream-JSON worker adapters
-│   │   ├── journal.ts                   #  Durable checkpoint store (stage-typed payload, VERIFY+vfsPendingPaths)
-│   │   ├── merkle.ts                    #  Deterministic SHA-256 Merkle tree integrity proof for shards
-│   │   ├── server.ts                    #  Unix-socket + HTTP server that receives job commands from mcp-server
+│   │   ├── runtime.ts                   #  5 阶段 Map-Reduce 流水线 (SCOUT/SHARD/AGGREGATE/VERIFY/WRITE)
+│   │   ├── workers.ts                   #  Codex App Server + Gemini Stream-JSON 工作进程适配器
+│   │   ├── journal.ts                   #  阶段级断点续传存储（强类型 payload，VERIFY 含 vfsPendingPaths）
+│   │   ├── merkle.ts                    #  确定性 SHA-256 Merkle 树 Shard 完整性证明
+│   │   ├── server.ts                    #  接收 mcp-server 指令的 Unix Socket + HTTP 服务
 │   │   └── cognitive/
-│   │       ├── blackboard.ts            #  MCP-based lazy-pull semantic context board (5MB per-file guard)
-│   │       ├── router.ts                #  CQRS-safe intent router: read-only vs read-write tool manifest
-│   │       ├── racing.ts                #  Speculative parallel execution with onAborted() cleanup hooks
-│   │       ├── reflexion.ts             #  In-memory VFS + LSP-driven correction state machine (MAX_STEPS=2)
-│   │       └── arkts-lsp-provider.ts   #  Custom JSON-RPC 2.0 LSP client + LspSessionMutex (no external deps)
+│   │       ├── blackboard.ts            #  基于 MCP 的懒加载语义黑板（单文件 5MB 防爆限制）
+│   │       ├── router.ts                #  CQRS 安全意图路由器：只读 vs 读写工具清单隔离
+│   │       ├── racing.ts                #  投机竞速执行器，含 onAborted() 资源清理钩子
+│   │       ├── reflexion.ts             #  内存 VFS + LSP 驱动反思状态机（最多 2 轮重试）
+│   │       └── arkts-lsp-provider.ts   #  手写 JSON-RPC 2.0 LSP 客户端 + LspSessionMutex（零外部依赖）
 │   │
-│   ├── antigravity-mcp-server/          ← 🔌 MCP Protocol Gateway
-│   │   #  Registers 15 MCP tools across 'model' and 'task' domains; exposes stdio/http transport;
-│   │   #  bridges AI host ↔ taskd HTTP API via task-bridge.ts
+│   ├── antigravity-mcp-server/          ← 🔌 MCP 协议网关
+│   │   #  注册 15 个 MCP 工具（model + task 两大领域）；提供 stdio/http transport；
+│   │   #  通过 task-bridge.ts 桥接 AI 宿主 ↔ taskd HTTP API
 │   │
-│   ├── antigravity-vscode/              ← 🖥️ VS Code Integration Layer
-│   │   #  Registers all extension commands, manages ArkTS LSP lifecycle (arkts-lsp-controller),
-│   │   #  renders the Dashboard WebView panel, and orchestrates the workflow control plane
+│   ├── antigravity-vscode/              ← 🖥️  VS Code 集成层
+│   │   #  注册全部扩展命令；管理 ArkTS LSP 生命周期（arkts-lsp-controller）；
+│   │   #  渲染 Dashboard WebView 面板；负责 workflow 控制平面编排
 │   │
-│   ├── antigravity-webview/             ← 🎨 Dashboard React UI
-│   │   #  React + Vite webview rendering Overview / Model Management / Job History / Routing / Scheduler tabs
+│   ├── antigravity-webview/             ← 🎨 Dashboard React 仪表盘
+│   │   #  React + Vite WebView，提供概览 / 模型管理 / 任务历史 / 路由 / 调度 / 测试等 Tab
 │   │
-│   ├── antigravity-core/                ← ⚙️ DAG Engine & Governance
-│   │   #  Implements the DAG state machine, risk routing, compliance engine, and application service layer
+│   ├── antigravity-core/                ← ⚙️  DAG 引擎与合规治理
+│   │   #  实现 DAG 状态机、风险路由、合规引擎和应用服务层（依赖 antigravity-shared）
 │   │
-│   ├── antigravity-persistence/         ← 💾 Persistence Layer
-│   │   #  JSONL EventStore for event-sourced job history + SQLite CheckpointStore (better-sqlite3) + in-memory adapter
+│   ├── antigravity-persistence/         ← 💾 持久化层
+│   │   #  JSONL EventStore（事件溯源）+ SQLite CheckpointStore（better-sqlite3）+ 内存适配器
 │   │
-│   ├── antigravity-shared/              ← 📐 Shared Schema & Types
-│   │   #  Zod-validated shared schemas: job states, event types, error codes, DAG node definitions
+│   ├── antigravity-shared/              ← 📐 共享 Schema 与类型
+│   │   #  Zod 校验的共享定义：Job 状态、事件类型、错误码、DAG 节点结构
 │   │
-│   ├── antigravity-model-shared/        ← 🏷️ Model Registry Contracts
-│   │   #  Model catalog types, task-type enum, routing configuration schema — zero runtime dependencies
+│   ├── antigravity-model-shared/        ← 🏷️  模型注册表协议
+│   │   #  模型目录类型、任务类型枚举、路由配置 Schema — 零运行时依赖
 │   │
-│   ├── antigravity-model-core/          ← 🤖 Multi-Model Routing Runtime
-│   │   #  Smart routing, parallel multi-model queries, voting/consensus engine, CLI agent invocation
+│   ├── antigravity-model-core/          ← 🤖 多模型路由运行时
+│   │   #  智能路由、并行多模型查询、投票/共识引擎、CLI Agent 调用
 │   │
-│   └── ace-bridge/                      ← 🛠️ DevEco Studio Bridge
-│       #  Parses DevEco project metadata (JSON5) and launches the ace-server LSP process
+│   └── ace-bridge/                      ← 🛠️  DevEco Studio 桥接
+│       #  解析 DevEco 项目元数据（JSON5），启动 ace-server LSP 进程
 ```
 
 ---
 
-## 🔄 Data Flow
+## 🔄 核心数据流转
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                         Developer                              │
-│  VS Code: Cmd+Shift+P → "Antigravity: 启动任务"                │
-└───────────────────────┬────────────────────────────────────────┘
-                        │ activates
+┌─────────────────────────────────────────────────────────────────┐
+│                           开发者                                │
+│  VS Code：Cmd+Shift+P → "Antigravity: 启动任务"                 │
+└───────────────────────┬─────────────────────────────────────────┘
+                        │ 命令激活
                         ▼
-┌───────────────────────────────────────────────────────────────┐
-│  antigravity-vscode  (extension host)                         │
-│  • Registers commands & ArkTS LSP (ace-bridge → ace-server)   │
-│  • Manages Dashboard WebView panel                            │
-│  • Delegates task commands to → workflow-orchestrator.ts      │
-└───────────────────────┬───────────────────────────────────────┘
-                        │ MCP stdio/http call
+┌─────────────────────────────────────────────────────────────────┐
+│  antigravity-vscode  （扩展宿主进程）                           │
+│  • 注册命令 & 管理 ArkTS LSP（ace-bridge → ace-server）         │
+│  • 管理 Dashboard WebView 面板渲染                              │
+│  • 将任务指令委托给 → workflow-orchestrator.ts                  │
+└───────────────────────┬─────────────────────────────────────────┘
+                        │ MCP stdio/http 调用
                         ▼
-┌───────────────────────────────────────────────────────────────┐
-│  antigravity-mcp-server  (MCP Protocol Gateway)               │
-│  • Authenticates domain (model | task)                        │
-│  • Routes task.run → task-bridge.ts → taskd HTTP API          │
-│  • Routes ai_* tools → antigravity-model-core (multi-model)   │
-└───────────────────────┬───────────────────────────────────────┘
-                        │ HTTP/Unix socket
+┌─────────────────────────────────────────────────────────────────┐
+│  antigravity-mcp-server  （MCP 协议网关）                       │
+│  • 验证工具领域（model | task）                                 │
+│  • task.run → task-bridge.ts → taskd HTTP API                   │
+│  • ai_* 工具 → antigravity-model-core（多模型并行路由）         │
+└───────────────────────┬─────────────────────────────────────────┘
+                        │ HTTP / Unix Socket
                         ▼
-┌───────────────────────────────────────────────────────────────┐
-│  antigravity-taskd  (Task Kernel — the heavy lifter)          │
-│                                                               │
-│  SCOUT  ─────── Codex/Gemini identifies relevant file shards  │
-│    │                                                          │
-│  SHARD  ─────── N parallel worker processes (racing enabled)  │
-│    │            ShardAnalysis per file group                  │
-│  AGGREGATE ──── Merkle-verified reduction of shard results    │
-│    │                                                          │
-│  VERIFY ─────── Code written to in-memory VFS                 │
-│    │            ↕ JSON-RPC  LspSessionMutex                   │
-│    │         ArkTS LSP (arkts-lsp-provider)                   │
-│    │            Reflexion: up to 2 fix cycles                 │
-│    │                                                          │
-│  WRITE  ─────── Atomic fsync+rename commit to physical disk   │
-│                                                               │
-│  Journal: JSONL checkpoints at every stage boundary          │
-│  (crash-resume from any stage, VFS desync detection)         │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  antigravity-taskd  （任务调度内核 — 重型计算核心）             │
+│                                                                 │
+│  SCOUT  ─── Codex/Gemini 识别相关文件 Shard 切片               │
+│    │                                                            │
+│  SHARD  ─── N 个并行工作进程（支持投机竞速）                    │
+│    │        每个 Shard 产出 ShardAnalysis                       │
+│  AGGREGATE ── Merkle 校验后合并所有 Shard 结果                  │
+│    │                                                            │
+│  VERIFY ─── 生成代码写入纯内存 VFS                              │
+│    │        ↕ JSON-RPC  LspSessionMutex 排他锁                 │
+│    │     ArkTS LSP（arkts-lsp-provider）诊断                   │
+│    │        反思状态机：最多 2 轮修复重试                        │
+│    │                                                            │
+│  WRITE  ─── fsync + rename 原子提交到物理磁盘                   │
+│                                                                 │
+│  Journal：每个阶段边界写入 JSONL 断点                           │
+│  （支持从任意阶段崩溃恢复，含 VFS 脑裂检测）                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🛠️ Development Guide
+## 🛠️ 开发与构建指南
 
-### Prerequisites
+### 环境要求
 
-| Tool | Version |
+| 工具 | 版本要求 |
 |------|---------|
 | **Node.js** | ≥ 20 |
-| **npm** _(workspaces)_ | ≥ 10 |
+| **npm** （Workspaces 模式）| ≥ 10 |
 | **VS Code** | ≥ 1.85.0 |
-| **Codex CLI** | latest (`codex app-server` mode) |
-| **Gemini CLI** | latest (`gemini --output-format stream-json`) |
-| **DevEco Studio** | ≥ 4.x _(optional, for ArkTS LSP)_ |
+| **Codex CLI** | 最新版（`codex app-server` 模式）|
+| **Gemini CLI** | 最新版（`gemini --output-format stream-json`）|
+| **DevEco Studio** | ≥ 4.x（可选，用于 ArkTS LSP 功能）|
 
-### Install Dependencies
+### 安装依赖
 
 ```bash
 npm install
 ```
 
-### Build
+### 构建
 
 ```bash
-# Full production build (all packages + webview + extension bundle)
+# 完整生产构建（所有子包 + WebView + 扩展 Bundle）
 npm run build
 
-# Build only the task kernel
+# 仅构建任务调度内核
 npm run build:antigravity-taskd
 
-# Build only the MCP server
+# 仅构建 MCP Server
 npm run build:antigravity-mcp
 
-# Incremental watch mode (extension entry only)
+# 增量 Watch 模式（仅监听扩展入口）
 npm run watch
 ```
 
-### Type-check
+### 类型检查
 
 ```bash
-# Full monorepo type-check (runs clean check first)
+# 全 Monorepo 类型检查（含 src 目录产物污染检测）
 npm run typecheck:all
 
-# Per-package
+# 按包单独检查
 npm run typecheck:antigravity-taskd
 npm run typecheck:antigravity-mcp
 npm run typecheck:antigravity-vscode
 ```
 
-### Test
+### 测试
 
 ```bash
-# All tests
+# 全量测试
 npm test
 
-# Contract tests only (fast, for CI gates)
+# 契约测试（快速，适合 CI 门控）
 npm run check:contracts
 
-# MCP server smoke test (builds then exercises live MCP tools)
+# MCP Server 烟雾测试（构建后对 MCP 工具进行端到端调用）
 npm run smoke:mcp
 
-# Coverage report
+# 覆盖率报告
 npm run coverage
 ```
 
-### Debug in VS Code
+### VS Code 调试
 
-1. Press **F5** — launches the Extension Development Host.
-2. Open an ArkTS project (`.ets` files).
-3. Run **`Cmd+Shift+P` → `Antigravity: 打开控制面板`** to open the Dashboard.
-4. Set `arkts.deveco.path` in Settings if DevEco Studio is not auto-detected.
+1. 按 **F5** — 启动扩展开发宿主窗口。
+2. 在宿主窗口中打开任意 ArkTS 项目（含 `.ets` 文件）。
+3. 执行 **`Cmd+Shift+P` → `Antigravity: 打开控制面板`** 打开仪表盘。
+4. 如 DevEco Studio 未被自动检测，请在设置中配置 `arkts.deveco.path`。
 
-### Package & Install as VSIX
+### 打包与安装 VSIX
 
 ```bash
-# Build + package into .vsix
+# 构建并打包为 .vsix 安装包
 npm run package
 
-# Build, package, install into VS Code, and sync dist files
+# 构建 → 打包 → 安装到 VS Code → 同步 dist 文件（一键完成）
 npm run install-ext
 ```
 
-### CI Pipeline
+### CI 流水线
 
 ```bash
-# Full CI: typecheck → test → build
+# 完整 CI：类型检查 → 测试 → 构建
 npm run ci
 ```
 
-### Configuration (`settings.json`)
+### 配置项（`settings.json`）
 
 ```jsonc
 {
-  // Custom DevEco Studio installation path (auto-detect if blank)
+  // DevEco Studio 安装路径（留空则自动检测）
   "arkts.deveco.path": "/Applications/DevEco-Studio.app",
 
-  // LSP communication log level
+  // LSP 通信日志级别
   "arkts.trace.server": "off",       // "off" | "messages" | "verbose"
 
-  // Default fallback model for non-specialised routing
+  // 默认兜底路由大模型
   "antigravity.defaultModel": "deepseek",
 
-  // Auto-purge job history older than N days
+  // 自动清理超过 N 天的历史记录
   "antigravity.retentionDays": 30
 }
 ```
 
-### Environment Variables (taskd)
+### 环境变量（taskd 进程）
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ANTIGRAVITY_WORKSPACE_ROOT` | _(required)_ | Absolute path to the workspace being analysed |
-| `ANTIGRAVITY_DATA_DIR` | `<root>/.antigravity/data` | Journal & checkpoint storage directory |
-| `ANTIGRAVITY_SOCKET_PATH` | `<root>/.antigravity/taskd.sock` | Unix domain socket for MCP → taskd IPC |
-| `ANTIGRAVITY_TOOL_DOMAINS` | `model,task` | Comma-separated MCP tool domains to expose |
-
----
-
-## 🏛️ Architectural Guarantees
-
-| Concern | Mechanism |
-|---------|-----------|
-| **Crash recovery** | 5-stage JSONL journal; resumes from last completed stage; VFS desync detection via `vfsPendingPaths` |
-| **Memory safety** | VFS is pure in-memory; commits use `fsync + rename`; 5MB per-file blackboard guard |
-| **Concurrency** | `LspSessionMutex` (FIFO Promise queue) serialises LSP access across concurrent shards |
-| **OS pipe deadlock** | Raw `child.stderr.on('data', () => {})` drain under readline prevents 64KB pipe saturation |
-| **Unicode safety** | `unicodeSafeSlice()` uses `Intl.Segmenter` / `Array.from()` — never cuts surrogate pairs |
-| **Deterministic hashing** | `deterministicStringify()` key-sorts all objects before SHA-256 — consistent Merkle roots across Node.js versions |
-| **CRLF portability** | `normalizeCRLF()` sniffs disk line-endings and normalises LLM output to match — LSP offsets stay accurate on Windows |
+| 变量名 | 默认值 | 说明 |
+|--------|-------|------|
+| `ANTIGRAVITY_WORKSPACE_ROOT` | **必填** | 被分析工作区的绝对路径 |
+| `ANTIGRAVITY_DATA_DIR` | `<root>/.antigravity/data` | Journal 与断点文件存储目录 |
+| `ANTIGRAVITY_SOCKET_PATH` | `<root>/.antigravity/taskd.sock` | MCP → taskd 进程间通信的 Unix Socket 路径 |
+| `ANTIGRAVITY_TOOL_DOMAINS` | `model,task` | MCP 对外暴露的工具领域（逗号分隔）|
 
 ---
 
-## 📄 License
+## 🏛️ 架构安全保证
+
+| 关注点 | 防御机制 |
+|--------|---------|
+| **崩溃恢复** | 5 阶段 JSONL Journal；从最后完成阶段恢复；`vfsPendingPaths` 检测 VFS-Journal 脑裂 |
+| **内存安全** | VFS 纯内存操作；`fsync + rename` 原子落盘；黑板单文件 5MB 上限 |
+| **并发安全** | `LspSessionMutex`（FIFO Promise 队列）串行化多 Shard 对 LSP 的并发访问 |
+| **OS 管道死锁** | `child.stderr.on('data', () => {})` 原始 drain 底网，防止 64KB 管道塞满导致子进程被内核挂起 |
+| **Unicode 安全** | `unicodeSafeSlice()` 使用 `Intl.Segmenter` / `Array.from()`，绝不切断代理对 |
+| **确定性哈希** | `deterministicStringify()` 递归按键名字典序排序，跨 Node.js 版本 Merkle 根完全一致 |
+| **CRLF 可移植性** | `normalizeCRLF()` 嗅探磁盘换行符并强制对齐 LLM 输出，确保 Windows 下 LSP Offset 不错位 |
+
+---
+
+## 📄 开源许可
 
 [MIT](./LICENSE) © [like3213934360-lab](https://github.com/like3213934360-lab)
 ]]>
