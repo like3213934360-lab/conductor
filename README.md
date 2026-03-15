@@ -9,7 +9,7 @@
 
 *驱动核心：**Liquid Swarm Orchestrator（液态蜂群调度内核）** — 一个会思考、竞速、融合并自我进化的认知引擎。*
 
-[![Version](https://img.shields.io/badge/version-0.3.0-00D4FF?style=for-the-badge)](./package.json)
+[![Version](https://img.shields.io/badge/version-1.0.0-00D4FF?style=for-the-badge)](./package.json)
 [![License](https://img.shields.io/badge/license-MIT-00FF88?style=for-the-badge)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 [![VS Code](https://img.shields.io/badge/VS%20Code-≥1.85-007ACC?style=for-the-badge&logo=visual-studio-code)](https://marketplace.visualstudio.com/)
