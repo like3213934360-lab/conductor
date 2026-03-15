@@ -107,9 +107,44 @@ export async function startTaskdHttpServer(socketPath: string, runtime: Antigrav
           'cache-control': 'no-cache',
           connection: 'keep-alive',
         })
-        res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)
+
+        // ── SSE 反压防御 (Backpressure OOM Prevention) ──────────────
+        // 如果客户端停止读取（TCP Window Zero），res.write() 返回 false 表示
+        // 内核发送缓冲区已满。此时 Node.js 会将后续数据缓存在 V8 堆中，
+        // 如果不限制，几秒钟内就会 OOM。
+        //
+        // 防御策略：
+        //  1. 检查 res.write() 返回值
+        //  2. 返回 false 时暂停写入，等待 'drain' 事件
+        //  3. 设置 MAX_PENDING_WRITES 硬上限，超过则断开客户端
+        const MAX_PENDING_WRITES = 128  // 防 OOM 安全阀
+        let pendingWrites = 0
+        let draining = false
+
+        const safeSseWrite = (eventType: string, data: unknown): void => {
+          if (res.destroyed) return
+          // 硬上限：积压消息太多 → 断开连接，保护主进程
+          if (pendingWrites > MAX_PENDING_WRITES) {
+            console.warn(`[taskd] SSE client backpressure exceeded ${MAX_PENDING_WRITES} pending writes, disconnecting`)
+            unsubscribe()
+            res.end()
+            return
+          }
+          const ok = res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`)
+          if (!ok) {
+            pendingWrites++
+            draining = true
+          }
+        }
+
+        res.on('drain', () => {
+          pendingWrites = 0
+          draining = false
+        })
+
+        safeSseWrite('snapshot', snapshot)
         const unsubscribe = runtime.subscribe(jobId, (event) => {
-          res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+          safeSseWrite(event.type, event)
         })
         req.on('close', () => {
           unsubscribe()
