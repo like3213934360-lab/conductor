@@ -27,6 +27,39 @@ function sha256(data: string): string {
   return crypto.createHash('sha256').update(data, 'utf8').digest('hex')
 }
 
+// ── 确定性 JSON 序列化 ───────────────────────────────────────────────────────────────
+//
+// JavaScript 引擎不保证 Object key 迭代顺序，且不同 Node.js 版本枚举顺序可能不同。
+// JSON.stringify({"code":"a","id":1}) 和 JSON.stringify({"id":1,"code":"a"})
+// 在逻辑上完全等价，但 SHA-256 完全不同。
+// 导致：
+//  - Merkle 树溭男 "False Cache Miss"（相同数据不同哈希）
+//  - SLSA 供应链签名堡垓失败
+//
+// 输入类型限制：只应该传入可序列化的中间层（不包含 undefined / Function / Symbol）。
+// 如果遇到不支持的值，序列化为 null（与JSON.stringify行为一致）。
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+
+function deterministicStringify(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'boolean' || typeof value === 'number') return JSON.stringify(value)
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (Array.isArray(value)) {
+    return '[' + value.map(deterministicStringify).join(',') + ']'
+  }
+  if (typeof value === 'object') {
+    // 排序 keys 保证确定性
+    const keys = Object.keys(value as object).sort()
+    const pairs = keys.map(k =>
+      `${JSON.stringify(k)}:${deterministicStringify((value as Record<string, unknown>)[k])}`
+    )
+    return '{' + pairs.join(',') + '}'
+  }
+  // Function / Symbol / undefined → null（与JSON.stringify行为一致）
+  return 'null'
+}
+
 function hashPair(left: string, right: string): string {
   // 保证拼接顺序一致：小的在前
   const ordered = left < right ? left + right : right + left
@@ -40,9 +73,10 @@ export interface Hashable {
 }
 
 function leafHash(item: Hashable, salt?: string): string {
-  const data = salt
-    ? `${salt}:${JSON.stringify(item)}`  // 绑定 jobId 防重放
-    : JSON.stringify(item)
+  // 关键：必须用 deterministicStringify 而非 JSON.stringify
+  // 确保不同 Node.js版本 / 不同 Worker 返回相同对象时哈希一致
+  const serialized = deterministicStringify(item)
+  const data = salt ? `${salt}:${serialized}` : serialized
   return sha256(data)
 }
 

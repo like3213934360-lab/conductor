@@ -1,5 +1,44 @@
 import type { AggregateAnalysis, ScoutManifest, ShardAnalysis, TaskJobMode, VerifyAnalysis } from './schema.js'
 
+// ── Unicode 安全截断 (Surrogate-Pair Safe) ────────────────────────────────
+//
+// JavaScript 字符串基于 UTF-16 Code Units。单个 Emoji（如 👨‍👩‍👧‍👦）可能占 11 个 Code Units。
+// 直接 str.slice(0, N) 可能切断属か surrograte pair，产生孤立代理符（U+D800–U+DFFF）。
+// 孤立代理符进入 LLM Tokenizer 的 C++ 层会导致崩溃或严重解码幻觉。
+//
+// 策略：优先用 Intl.Segmenter（按 Grapheme Cluster 切）。
+//       降级：如不支持，用 Array.from()（按 Code Point 切）。
+//       两者均不会切断 代理对，比 .slice() 安全。
+//
+// 注意：返回的是字符串片段，长度计数单位不同（Grapheme > CodePoint > CodeUnit）。
+// 对于多数常规文本，返回结果小于等于 N 个字符。
+export function unicodeSafeSlice(str: string, maxCodeUnits: number): string {
+  if (str.length <= maxCodeUnits) return str
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    // Intl.Segmenter 按 grapheme cluster 切（最安全）
+    // 籍籍累加 UTF-16 长度直到超过 maxCodeUnits
+    const segmenter = new Intl.Segmenter()
+    let result = ''
+    let codeUnits = 0
+    for (const { segment } of segmenter.segment(str)) {
+      if (codeUnits + segment.length > maxCodeUnits) break
+      result += segment
+      codeUnits += segment.length
+    }
+    return result
+  }
+  // 降级：按 Unicode Code Point 切（Array.from 识别全部 surrogate pair）
+  const codePoints = Array.from(str)
+  let result = ''
+  let codeUnits = 0
+  for (const cp of codePoints) {
+    if (codeUnits + cp.length > maxCodeUnits) break
+    result += cp
+    codeUnits += cp.length
+  }
+  return result
+}
+
 export function buildScoutPrompt(goal: string, mode: TaskJobMode, fileHints: string[], workspaceFiles: string[]): string {
   return [
     'You are the SCOUT stage of a long-running Antigravity task kernel.',
@@ -48,7 +87,7 @@ function truncateShardForPrompt(shard: ShardAnalysis): ShardAnalysis | { shardId
   // 截断策略：保留 summary + shardId，丢弃 evidence/symbols/dependencies
   // 在截断点追加 [TRUNCATED] 标记，防止下游 LLM 语义幻觉
   const safeSummary = shard.summary.length > 2000
-    ? shard.summary.slice(0, 2000) + '\n…[TRUNCATED: full shard data exceeded 50KB]'
+    ? unicodeSafeSlice(shard.summary, 2000) + '\n…[TRUNCATED: full shard data exceeded 50KB]'
     : shard.summary
   return {
     shardId: shard.shardId,

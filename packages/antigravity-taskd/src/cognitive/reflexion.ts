@@ -13,6 +13,38 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { unicodeSafeSlice } from '../prompts.js'
+
+// ── CRLF 换行符规范化 ─────────────────────────────────────────────────────────────
+//
+// LSP 内部用 Offset (byte/char count) 定位请求。
+// 如果磁盘文件用 CRLF，而 VFS 内容用 LF，每一个换行符偏移差 1 byte。
+// 随着行数增加，偏移差累积，导致所有 Diagnostics 的行号 / 列号全部错位。
+//
+// 策略：
+//  1. 展示磁盘区文件的探测其换行符式（1 个 \r\n = CRLF，否则 LF）
+//  2. 将内容先全部强制转化为 LF（去掉出现的 \r）
+//  3. 在是 CRLF 环境时再把 LF 一式掌压回 CRLF
+//  结果：VFS 内容永远与磁盘文件多用同一的换行符
+
+function sniffLineEnding(diskContent: string | undefined): '\r\n' | '\n' {
+  if (!diskContent) return '\n'  // 新建文件：默认 LF
+  // 只需找到一个 \r\n 即确定为 CRLF
+  return diskContent.includes('\r\n') ? '\r\n' : '\n'
+}
+
+/**
+ * 将 LLM 输出的内容强制转换为与磁盘文件一致的换行符样式。
+ * 防止 LF (模型输出) vs CRLF (磁盘文件) 导致的 LSP Offset 雪崩。
+ */
+export function normalizeCRLF(content: string, diskContent: string | undefined): string {
+  // Step 1: strip all \r — 得到纯 LF 内容
+  const lf = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  // Step 2: 若磁盘应用 CRLF，将所有 \n 转回 CRLF
+  return sniffLineEnding(diskContent) === '\r\n'
+    ? lf.replace(/\n/g, '\r\n')
+    : lf
+}
 
 // ── 错误类型 ──────────────────────────────────────────────────────────────────
 
@@ -95,15 +127,23 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
   write(filePath: string, content: string): void {
     const absPath = this.resolve(filePath)
     // 首次写入：记录磁盘原始状态（用于 diff 和 rollback）
+    let diskContent: string | undefined
     if (!this.diskSnapshot.has(absPath)) {
       try {
-        this.diskSnapshot.set(absPath, fs.readFileSync(absPath, 'utf8'))
+        diskContent = fs.readFileSync(absPath, 'utf8')
+        this.diskSnapshot.set(absPath, diskContent)
       } catch {
         // 文件原本不存在（新建文件）
+        diskContent = undefined
         this.diskSnapshot.set(absPath, undefined)
       }
+    } else {
+      diskContent = this.diskSnapshot.get(absPath)
     }
-    this.memory.set(absPath, content)
+    // CRLF 规范化：将 LLM 输出的换行符强制对齐到磁盘文件的样式
+    // 防止 LF vs CRLF 导致 LSP Offset 全错位
+    const normalized = normalizeCRLF(content, diskContent)
+    this.memory.set(absPath, normalized)
   }
 
   read(filePath: string): string | undefined {
@@ -194,7 +234,7 @@ function buildPatchPrompt(
     .join('\n')
 
   const fileList = Object.entries(generatedFiles)
-    .map(([f, content]) => `### ${f}\n\`\`\`\n${content.slice(0, 2000)}\n\`\`\``)
+    .map(([f, content]) => `### ${f}\n\`\`\`\n${unicodeSafeSlice(content, 2000)}\n\`\`\``)
     .join('\n\n')
 
   return [
