@@ -250,9 +250,9 @@ npm run ci
 
 | 变量名 | 默认值 | 说明 |
 |--------|-------|------|
-| `ANTIGRAVITY_WORKSPACE_ROOT` | **必填** | 被分析工作区的绝对路径 |
-| `ANTIGRAVITY_DATA_DIR` | `<root>/.antigravity/data` | Journal 与断点文件存储目录 |
-| `ANTIGRAVITY_SOCKET_PATH` | `<root>/.antigravity/taskd.sock` | MCP → taskd 进程间通信的 Unix Socket 路径 |
+| `ANTIGRAVITY_TASKD_WORKSPACE_ROOT` | **必填** | 被分析工作区的绝对路径 |
+| `ANTIGRAVITY_TASKD_DATA_DIR` | `<root>/data/antigravity_taskd/` | Journal 与断点文件存储目录 |
+| `ANTIGRAVITY_TASKD_SOCKET_PATH` | `$TMPDIR/antigravity-taskd-<safe>.sock` | MCP → taskd 进程间通信的 Unix Socket 路径 |
 | `ANTIGRAVITY_TOOL_DOMAINS` | `model,task` | MCP 对外暴露的工具领域（逗号分隔）|
 
 ---
