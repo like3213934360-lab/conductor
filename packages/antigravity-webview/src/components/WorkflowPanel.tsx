@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { glass, radius, s } from '../theme'
 import type { Lang } from './Dashboard'
 import { vscode } from '../vscode-api'
@@ -145,6 +145,16 @@ const WorkflowPanel: React.FC<{ lang: Lang }> = ({ lang }) => {
   const [jobs, setJobs] = useState<JobListEntry[]>([])
   const [banner, setBanner] = useState<string>('')
 
+  // ── 防抖：高频 taskEvent 时批量合并为一次 snapshot 拉取 ─────────────────
+  const snapshotDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const debouncedFetchSnapshot = useCallback(() => {
+    if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
+    snapshotDebounceRef.current = setTimeout(() => {
+      vscode.postMessage({ command: 'getRunSnapshot' })
+      snapshotDebounceRef.current = null
+    }, 300)
+  }, [])
+
   useEffect(() => {
     const onMessage = (event: MessageEvent<any>) => {
       const message = event.data
@@ -174,7 +184,8 @@ const WorkflowPanel: React.FC<{ lang: Lang }> = ({ lang }) => {
           vscode.postMessage({ command: 'getRunSnapshot' })
           break
         case 'taskEvent':
-          vscode.postMessage({ command: 'getRunSnapshot' })
+          // 防抖：高频 SSE 事件（50+/s）合并为 300ms 一次 snapshot 拉取
+          debouncedFetchSnapshot()
           break
         default:
           break
@@ -183,8 +194,11 @@ const WorkflowPanel: React.FC<{ lang: Lang }> = ({ lang }) => {
     window.addEventListener('message', onMessage)
     vscode.postMessage({ command: 'getRunSnapshot' })
     vscode.postMessage({ command: 'listTaskJobs' })
-    return () => window.removeEventListener('message', onMessage)
-  }, [l.pending])
+    return () => {
+      window.removeEventListener('message', onMessage)
+      if (snapshotDebounceRef.current) clearTimeout(snapshotDebounceRef.current)
+    }
+  }, [l.pending, debouncedFetchSnapshot])
 
   const activeStages = snapshot?.graph ?? []
   const activeWorkers = snapshot?.workers ?? []
