@@ -73,13 +73,49 @@ export function autoRegisterMcpConfig(extensionPath: string) {
 }
 
 /**
- * LSO Skills 现在位于项目级 .agents/skills/ 目录（由 Anws 管理），
- * 编辑器会自动扫描该目录，无需复制到全局。
- * 此函数保留为 no-op 以保持 API 兼容。
+ * 混合技能同步：项目级源 → 全局 UI 可见
+ *
+ * 源文件在 .agents/skills/（版本控制、跟随项目），
+ * 激活时同步到 ~/.gemini/antigravity/skills/ 让聊天 UI 的 / 菜单能看到。
  */
 export function autoInstallSkill(_extensionPath: string) {
-    // Skills are now project-level in .agents/skills/ — no global install needed.
-    console.log('[Antigravity Workflow] Skills are project-level (.agents/skills/), skipping global install')
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders?.length) return;
+
+    const globalSkillsRoot = path.join(os.homedir(), '.gemini', 'antigravity', 'skills');
+    let installed = 0;
+
+    for (const folder of workspaceFolders) {
+        const projectSkillsRoot = path.join(folder.uri.fsPath, '.agents', 'skills');
+        if (!fs.existsSync(projectSkillsRoot)) continue;
+
+        try {
+            const entries = fs.readdirSync(projectSkillsRoot, { withFileTypes: true });
+            for (const entry of entries) {
+                if (!entry.isDirectory()) continue;
+
+                const srcSkillFile = path.join(projectSkillsRoot, entry.name, 'SKILL.md');
+                if (!fs.existsSync(srcSkillFile)) continue;
+
+                const destDir = path.join(globalSkillsRoot, entry.name);
+                const destFile = path.join(destDir, 'SKILL.md');
+
+                try {
+                    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+                    fs.copyFileSync(srcSkillFile, destFile);
+                    installed++;
+                } catch (err) {
+                    console.error(`[Antigravity Workflow] Failed to sync skill ${entry.name}:`, err);
+                }
+            }
+        } catch (err) {
+            console.error(`[Antigravity Workflow] Failed to scan ${projectSkillsRoot}:`, err);
+        }
+    }
+
+    if (installed > 0) {
+        console.log(`[Antigravity Workflow] Synced ${installed} project skills to global ✅`);
+    }
 }
 
 /**
