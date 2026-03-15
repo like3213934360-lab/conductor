@@ -217,6 +217,8 @@ export interface WorkerRunResult {
   text: string
   diff?: string
   changedFiles: string[]
+  /** 实际 Token 消耗（Worker/Adapter 可选上报） */
+  tokensUsed?: { input: number; output: number }
 }
 
 export interface WorkerAdapter {

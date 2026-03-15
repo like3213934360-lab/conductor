@@ -182,7 +182,7 @@ export interface RouteConstraints {
 
 // ── ELO 动态表现状态 ─────────────────────────────────────────────────────────
 
-/** 单个模型的运行时 ELO 状态 */
+/** 单个模型的运行时 ELO 状态 — Per-Intent 细粒度版 */
 interface ModelEloState {
   /** 累计胜场 */
   wins: number
@@ -195,14 +195,31 @@ interface ModelEloState {
   /** 指数移动平均延迟（ms），α = 0.3 */
   emaLatencyMs: number
   /**
-   * 动态表现乘数 — 作用于 routeMulti() 的静态评分
-   * 1.0 = 基线（等效于静态配置）
-   * > 1.0 = 超额表现（胜率高、延迟低）
-   * < 1.0 = 表现衰退（错误多、延迟高）
+   * 🎯 Per-Intent 动态表现乘数 — 每种 intent 独立进化
    *
-   * 🛡️ 硬性钳位 [0.3, 2.0]：防止路由雪崩（永远不会完全归零）
+   * codex 可能在 generate 上表现卓越（multiplier > 1.0），
+   * 但在 analyze 上频繁超时（multiplier < 1.0）——不会互相殃及。
+   *
+   * 🛡️ 硬性钳位 [0.3, 2.0]
    */
-  performanceMultiplier: number
+  intentMultiplier: Record<TaskIntent, number>
+  /**
+   * 📊 EMA Token 成本（每次调用的平均 total token）
+   * 用于 routeMulti 的性价比评估
+   */
+  emaCostPerCall: number
+  /** 总 Token 消耗追踪 */
+  totalTokensConsumed: number
+}
+
+/** 融合质量追踪器 */
+interface FusionQualityTracker {
+  /** 融合次数 */
+  fusionCount: number
+  /** 累计融合 confidence delta 总和 */
+  totalConfidenceDelta: number
+  /** EMA 融合增益 */
+  emaFusionGain: number
 }
 
 /** EMA 平滑系数 — 越大对最新数据越敏感 */
@@ -221,11 +238,23 @@ const ERROR_PENALTY = 0.15
 const VALIDATE_FAIL_PENALTY = 0.10
 /** 延迟惩罚阈值（ms）— 超过此值的平均延迟会额外扣分 */
 const LATENCY_PENALTY_THRESHOLD_MS = 30_000
+/** 性价比权重 — 成本因子对最终评分的影响比例 */
+const COST_EFFICIENCY_WEIGHT = 0.1
+/** 高成本模型的 Token 阈值（每次调用 > 此值则扣分） */
+const HIGH_COST_TOKEN_THRESHOLD = 8_000
+/** 融合增益阈值 — EMA 增益低于此值自动关闭自动融合 */
+const FUSION_GAIN_DISABLE_THRESHOLD = -0.05
+/** 默认 Intent 列表 */
+const ALL_INTENTS: TaskIntent[] = ['scout', 'analyze', 'generate', 'verify']
 
 export class DynamicRouterPolicy implements RouterPolicy {
   private readonly models = new Map<string, ModelCapability>()
   /** 🧬 每个模型的 ELO 运行时状态 */
   private readonly eloState = new Map<string, ModelEloState>()
+  /** 📊 融合质量追踪器 */
+  private readonly fusionTracker: FusionQualityTracker = {
+    fusionCount: 0, totalConfidenceDelta: 0, emaFusionGain: 0,
+  }
 
   /** 默认预埋模型 */
   private static readonly BUILTIN_MODELS: ModelCapability[] = [
@@ -243,7 +272,7 @@ export class DynamicRouterPolicy implements RouterPolicy {
       maxContextTokens: 1_000_000,
       supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
     },
-    // 🛡️ SOC2 Air-Gap: 本地模型兜底 — 物理隔离网络中的唯一存活者
+    // 🛡️ SOC2 Air-Gap: 本地模型兜底
     {
       id: 'ollama',
       backend: 'ollama',
@@ -262,28 +291,29 @@ export class DynamicRouterPolicy implements RouterPolicy {
   }
 
   constructor() {
-    // 加载预埋模型
     for (const model of DynamicRouterPolicy.BUILTIN_MODELS) {
       this.models.set(model.id, model)
       this.eloState.set(model.id, this.createDefaultEloState())
     }
   }
 
-  /** 创建默认 ELO 状态（基线 1.0） */
+  /** 创建默认 ELO 状态（所有 intent 基线 1.0） */
   private createDefaultEloState(): ModelEloState {
+    const intentMultiplier: Record<TaskIntent, number> = { scout: 1.0, analyze: 1.0, generate: 1.0, verify: 1.0 }
     return {
       wins: 0, losses: 0, errors: 0, validateFailures: 0,
-      emaLatencyMs: 10_000,  // 初始假设 10 秒（保守估计）
-      performanceMultiplier: 1.0,
+      emaLatencyMs: 10_000,
+      intentMultiplier,
+      emaCostPerCall: 4_000,  // 初始假设 4K tokens/call
+      totalTokensConsumed: 0,
     }
   }
 
-  /** 钳位函数：防止乘数越界引发路由雪崩 */
+  /** 钳位函数 */
   private static clampMultiplier(value: number): number {
     return Math.max(MULTIPLIER_FLOOR, Math.min(MULTIPLIER_CEILING, value))
   }
 
-  /** 注册来自 Hub 的模型能力 */
   registerModel(capability: ModelCapability): void {
     this.models.set(capability.id, capability)
     if (!this.eloState.has(capability.id)) {
@@ -291,97 +321,139 @@ export class DynamicRouterPolicy implements RouterPolicy {
     }
   }
 
-  /** 淘汰模型（断路器触发） */
   deregisterModel(modelId: string): void {
     this.models.delete(modelId)
     this.eloState.delete(modelId)
   }
 
-  /** 获取已注册模型列表 */
   listModels(): ModelCapability[] {
     return [...this.models.values()]
   }
 
-  /** 获取模型的 ELO 状态（调试/监控用） */
   getEloState(modelId: string): ModelEloState | undefined {
     return this.eloState.get(modelId)
   }
 
-  /** 获取所有模型的 ELO 排名快照 */
-  getEloRankings(): Array<{ modelId: string; multiplier: number; wins: number; losses: number; errors: number; emaLatencyMs: number }> {
-    const rankings: Array<{ modelId: string; multiplier: number; wins: number; losses: number; errors: number; emaLatencyMs: number }> = []
+  /** 获取所有模型的 ELO 排名快照（含 per-intent 细分） */
+  getEloRankings(): Array<{
+    modelId: string
+    wins: number; losses: number; errors: number
+    emaLatencyMs: number; emaCostPerCall: number
+    intentMultiplier: Record<TaskIntent, number>
+  }> {
+    const rankings: Array<{
+      modelId: string
+      wins: number; losses: number; errors: number
+      emaLatencyMs: number; emaCostPerCall: number
+      intentMultiplier: Record<TaskIntent, number>
+    }> = []
     for (const [modelId, state] of this.eloState) {
       rankings.push({
         modelId,
-        multiplier: state.performanceMultiplier,
-        wins: state.wins,
-        losses: state.losses,
-        errors: state.errors,
+        wins: state.wins, losses: state.losses, errors: state.errors,
         emaLatencyMs: Math.round(state.emaLatencyMs),
+        emaCostPerCall: Math.round(state.emaCostPerCall),
+        intentMultiplier: { ...state.intentMultiplier },
       })
     }
-    return rankings.sort((a, b) => b.multiplier - a.multiplier)
+    // 按 analyze intent 的乘数排序（最常用的 intent）
+    return rankings.sort((a, b) => b.intentMultiplier.analyze - a.intentMultiplier.analyze)
   }
 
-  // ── 🧬 ELO 反馈回路 ──────────────────────────────────────────────────────
+  /**
+   * 📊 获取融合质量追踪数据
+   * 返回 shouldAutoFuse = emaFusionGain 是否高于阈值
+   */
+  getFusionQuality(): { fusionCount: number; emaFusionGain: number; shouldAutoFuse: boolean } {
+    return {
+      fusionCount: this.fusionTracker.fusionCount,
+      emaFusionGain: this.fusionTracker.emaFusionGain,
+      shouldAutoFuse: this.fusionTracker.fusionCount < 3 || this.fusionTracker.emaFusionGain > FUSION_GAIN_DISABLE_THRESHOLD,
+    }
+  }
+
+  // ── 🧬 ELO 反馈回路（Per-Intent 版） ─────────────────────────────────────
 
   /**
-   * 消化赛马战报，更新各模型的 ELO 动态表现因子。
+   * 消化赛马战报，更新对应模型在**特定 intent** 上的 ELO 因子。
    *
-   * 调权算法：EMA 平滑步进（α = 0.3）
-   *  - Winner：multiplier += WIN_REWARD，EMA 延迟更新
-   *  - Loser（被 abort）：multiplier -= LOSS_PENALTY
-   *  - Error：multiplier -= ERROR_PENALTY（断路器衰减）
-   *  - Validate Failed：multiplier -= VALIDATE_FAIL_PENALTY
-   *  - 延迟惩罚：EMA 延迟超过 30s 额外扣 0.05
-   *
-   * 所有调权后钳位到 [0.3, 2.0]，防止任何模型被完全踢出或无限膨胀。
+   * 升级点：
+   *  - Per-Intent 乘数：只调整 telemetry.intent 对应的乘数维度
+   *  - Token 成本追踪：从 candidate.tokensUsed 更新 emaCostPerCall
+   *  - 全局延迟 EMA 仍然跨 intent 共享（延迟是物理属性，不分 intent）
    */
   ingestTelemetry(telemetry: RaceTelemetry): void {
+    // 如果未指定 intent，降级为更新所有 intent（兼容旧代码）
+    const targetIntents: TaskIntent[] = telemetry.intent ? [telemetry.intent] : ALL_INTENTS
+
     for (const candidate of telemetry.candidates) {
-      // 通过 backend 查找对应的模型 ID
       const modelId = this.findModelIdByBackend(candidate.backend)
       if (!modelId) continue
 
       const state = this.eloState.get(modelId)
       if (!state) continue
 
-      // 📊 更新 EMA 延迟（仅对有实际延迟的候选）
+      // 📊 更新全局 EMA 延迟
       if (candidate.latencyMs > 0) {
         state.emaLatencyMs = EMA_ALPHA * candidate.latencyMs + (1 - EMA_ALPHA) * state.emaLatencyMs
       }
 
-      // 🎯 根据结果调整 performanceMultiplier
-      switch (candidate.outcome) {
-        case 'winner':
-          state.wins++
-          state.performanceMultiplier += WIN_REWARD
-          break
-        case 'loser':
-          state.losses++
-          state.performanceMultiplier -= LOSS_PENALTY
-          break
-        case 'error':
-          state.errors++
-          state.performanceMultiplier -= ERROR_PENALTY
-          break
-        case 'validate_failed':
-          state.validateFailures++
-          state.performanceMultiplier -= VALIDATE_FAIL_PENALTY
-          break
+      // 💰 更新 Token 成本追踪
+      if (candidate.tokensUsed) {
+        const totalTokens = candidate.tokensUsed.input + candidate.tokensUsed.output
+        state.emaCostPerCall = EMA_ALPHA * totalTokens + (1 - EMA_ALPHA) * state.emaCostPerCall
+        state.totalTokensConsumed += totalTokens
       }
 
-      // ⏱️ 额外延迟惩罚：EMA 延迟超过阈值，进一步降低速度分的等效加权
-      if (state.emaLatencyMs > LATENCY_PENALTY_THRESHOLD_MS) {
-        state.performanceMultiplier -= 0.05
-      }
+      // 🎯 Per-Intent 乘数调整 — 只影响当前赛马所属的 intent
+      for (const intent of targetIntents) {
+        switch (candidate.outcome) {
+          case 'winner':
+            state.wins++
+            state.intentMultiplier[intent] += WIN_REWARD
+            break
+          case 'loser':
+            state.losses++
+            state.intentMultiplier[intent] -= LOSS_PENALTY
+            break
+          case 'error':
+            state.errors++
+            state.intentMultiplier[intent] -= ERROR_PENALTY
+            break
+          case 'validate_failed':
+            state.validateFailures++
+            state.intentMultiplier[intent] -= VALIDATE_FAIL_PENALTY
+            break
+        }
 
-      // 🛡️ 钳位：绝对防止路由雪崩
-      state.performanceMultiplier = DynamicRouterPolicy.clampMultiplier(state.performanceMultiplier)
+        // ⏱️ 额外延迟惩罚
+        if (state.emaLatencyMs > LATENCY_PENALTY_THRESHOLD_MS) {
+          state.intentMultiplier[intent] -= 0.05
+        }
+
+        // 🛡️ 钳位
+        state.intentMultiplier[intent] = DynamicRouterPolicy.clampMultiplier(state.intentMultiplier[intent]!)
+      }
     }
   }
 
-  /** 通过 backend 名称查找模型 ID（反向映射） */
+  /**
+   * 📊 消化融合质量数据 — 追踪 MoA 融合是否真正带来了质量提升
+   *
+   * @param fusionConfidence 融合结果的 confidence
+   * @param draftConfidences 各草稿的 confidence 列表
+   */
+  ingestFusionQuality(fusionConfidence: number, draftConfidences: number[]): void {
+    if (draftConfidences.length === 0) return
+    const avgDraftConfidence = draftConfidences.reduce((a, b) => a + b, 0) / draftConfidences.length
+    const delta = fusionConfidence - avgDraftConfidence  // 正值 = 融合有提升
+
+    this.fusionTracker.fusionCount++
+    this.fusionTracker.totalConfidenceDelta += delta
+    this.fusionTracker.emaFusionGain = EMA_ALPHA * delta + (1 - EMA_ALPHA) * this.fusionTracker.emaFusionGain
+  }
+
+  /** 通过 backend 名称查找模型 ID */
   private findModelIdByBackend(backend: WorkerBackend): string | undefined {
     for (const [id, model] of this.models) {
       if (model.backend === backend) return id
@@ -391,27 +463,23 @@ export class DynamicRouterPolicy implements RouterPolicy {
 
   // ── 路由接口 ──────────────────────────────────────────────────────────────
 
-  /**
-   * 🔧 route() — 向后兼容接口
-   * 内部调用 routeMulti() 并取第一名。
-   */
   route(intent: TaskIntent, contextTokenEstimate: number = 0): RouterDecision {
     const candidates = this.routeMulti(intent, contextTokenEstimate)
     if (candidates.length === 0) {
-      // 保底降级：退化到 DefaultRouterPolicy 行为
       return new DefaultRouterPolicy().route(intent, contextTokenEstimate)
     }
     return candidates[0]!
   }
 
   /**
-   * 🎯 routeMulti() — 多模型路由核心（ELO 加权版）
+   * 🎯 routeMulti() — 多模型路由核心（Per-Intent ELO + 性价比加权版）
    *
-   * 评分公式：finalScore = staticScore × performanceMultiplier
+   * 评分公式：
+   *   finalScore = staticScore × intentMultiplier[intent] × costEfficiencyFactor
    *
-   * staticScore 来自意图权重矩阵 × 模型能力声明；
-   * performanceMultiplier 来自赛马战报的 ELO 实时反馈。
-   * 当 multiplier = 1.0 时等价于旧的纯静态路由。
+   * costEfficiencyFactor：
+   *   emaCostPerCall > 8K tokens → 扣 0.1 × (cost / 8K)
+   *   emaCostPerCall ≤ 8K tokens → 不扣分
    */
   routeMulti(
     intent: TaskIntent,
@@ -422,15 +490,11 @@ export class DynamicRouterPolicy implements RouterPolicy {
     const weights = DynamicRouterPolicy.INTENT_WEIGHTS[intent]
     const manifest = intent === 'generate' ? READ_WRITE_MANIFEST : READ_ONLY_MANIFEST
 
-    // 候选筛选
     const candidates: Array<{ model: ModelCapability; score: number }> = []
 
     for (const model of this.models.values()) {
-      // 筛选 1：意图支持
       if (!model.supportedIntents.includes(intent)) continue
-      // 筛选 2：上下文窗口足够
       if (contextTokenEstimate > 0 && contextTokenEstimate > model.maxContextTokens) continue
-      // 筛选 3：成本约束
       if (constraints?.maxCost !== undefined && model.scores.cost > constraints.maxCost) continue
 
       // 静态加权评分
@@ -439,35 +503,39 @@ export class DynamicRouterPolicy implements RouterPolicy {
         staticScore += (model.scores[dim as keyof ModelCapability['scores']] ?? 0) * weight
       }
 
-      // 语言偏好加权
       if (constraints?.preferredLanguage === 'zh') {
         staticScore += model.scores.chinese * 0.15
       }
 
-      // 🧬 ELO 动态乘数：将静态分数乘以运行时表现因子
+      // 🧬 Per-Intent ELO 动态乘数
       const elo = this.eloState.get(model.id)
-      const multiplier = elo?.performanceMultiplier ?? 1.0
-      const finalScore = staticScore * multiplier
+      const intentMul = elo?.intentMultiplier[intent] ?? 1.0
+
+      // 💰 性价比因子：高成本模型被轻微惩罚
+      let costFactor = 1.0
+      if (elo && elo.emaCostPerCall > HIGH_COST_TOKEN_THRESHOLD) {
+        costFactor = 1.0 - COST_EFFICIENCY_WEIGHT * (elo.emaCostPerCall / HIGH_COST_TOKEN_THRESHOLD - 1.0)
+        costFactor = Math.max(0.7, costFactor)  // 成本因子下限 0.7，不会因为贵而完全被踢
+      }
+
+      const finalScore = staticScore * intentMul * costFactor
 
       candidates.push({ model, score: finalScore })
     }
 
-    // 按得分降序排列
     candidates.sort((a, b) => b.score - a.score)
 
-    // 返回 top-N，确保异构性（尽量不重复同一 backend）
+    // 返回 top-N，确保异构性
     const result: RouterDecision[] = []
     const usedBackends = new Set<string>()
 
     for (const { model } of candidates) {
       if (result.length >= topN) break
-      // 优先异构：如果已有该 backend，降低优先级但不完全排除
       if (usedBackends.has(model.backend) && result.length < topN - 1) continue
       result.push({ backend: model.backend, manifest })
       usedBackends.add(model.backend)
     }
 
-    // 如果异构策略导致结果不足，回填同构候选
     if (result.length < topN) {
       for (const { model } of candidates) {
         if (result.length >= topN) break

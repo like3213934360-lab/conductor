@@ -993,7 +993,11 @@ export class AntigravityTaskdRuntime {
       const burnRate = snapshot.totalTokensUsed / GLOBAL_TOKEN_LIMIT
       const isHighComplexity = estimatedShardTokens > 5_000
       const isBudgetSafe = burnRate < 0.5
-      const useFusionMode = snapshot.enableMoA || (isHighComplexity && isBudgetSafe)
+      // 📊 融合质量自适应：如果历史融合数据显示融合没有带来质量提升，自动降级为赛马
+      const fusionQuality = cogCtx.routerPolicy instanceof DynamicRouterPolicy
+        ? cogCtx.routerPolicy.getFusionQuality()
+        : { shouldAutoFuse: true }
+      const useFusionMode = (snapshot.enableMoA || (isHighComplexity && isBudgetSafe)) && fusionQuality.shouldAutoFuse
       const shardFilePaths = manifest.relevantPaths.length > 0 ? manifest.relevantPaths : relevantEntries.map(file => file.path)
       const sharedFiles = pickSharedFiles(shardFilePaths)
       const shardId = 'shard-1'
@@ -1064,7 +1068,7 @@ export class AntigravityTaskdRuntime {
           console.log(`[taskd] 🧬 MoA Fusion mode activated for shard ${shardId} (estimatedTokens=${estimatedShardTokens}, burnRate=${burnRate.toFixed(3)})`)
 
           const FUSION_TIMEOUT_MS = 120_000  // 融合硬超时：2 分钟
-          const fusionResult = await cogCtx.racingExecutor.fuse<ShardOutcome>(candidates, signal, FUSION_TIMEOUT_MS)
+          const fusionResult = await cogCtx.racingExecutor.fuse<ShardOutcome>(candidates, signal, FUSION_TIMEOUT_MS, 'analyze')
 
           if (fusionResult.canFuse) {
             // ✅ 收集到 ≥ 2 份草稿 → 进入终极合成
@@ -1100,6 +1104,20 @@ export class AntigravityTaskdRuntime {
                 fusionElapsedMs: fusionResult.elapsedMs,
               })
               console.log(`[taskd] 🧬 Fusion complete: ${synthesizerBackend} synthesized ${fusionResult.drafts.length} drafts (${fusionResult.elapsedMs}ms)`)
+
+              // 📊 融合质量追踪 — 计算 confidence delta 并反馈给路由策略
+              if (cogCtx.routerPolicy instanceof DynamicRouterPolicy) {
+                const fusionConf = synthOutcome.result.confidence ?? 0
+                const draftConfs = fusionResult.drafts
+                  .map(d => d.result.result?.confidence ?? 0)
+                  .filter(c => c > 0)
+                if (draftConfs.length > 0) {
+                  cogCtx.routerPolicy.ingestFusionQuality(fusionConf, draftConfs)
+                  const avgDraft = draftConfs.reduce((a, b) => a + b, 0) / draftConfs.length
+                  const delta = fusionConf - avgDraft
+                  console.log(`[taskd] 📊 Fusion quality delta: ${delta > 0 ? '+' : ''}${delta.toFixed(3)} (fused=${fusionConf.toFixed(3)}, avgDraft=${avgDraft.toFixed(3)})`)
+                }
+              }
             } else {
               // 🛡️ 降级回退 1：融合失败 → 采纳第一份草稿
               console.warn(`[taskd] 🧬 Fusion synthesizer failed, falling back to first draft`)
@@ -1126,7 +1144,7 @@ export class AntigravityTaskdRuntime {
           // ═══════════════════════════════════════════════════════════════════
           // 🏎️ RACING MODE — 赛马模式（预算或复杂度不满足融合条件）
           // ═══════════════════════════════════════════════════════════════════
-          const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+          const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal, 'analyze')
 
           const winnerOutcome = raceResult.result
           shardOutcomes.push(winnerOutcome)
@@ -1208,7 +1226,7 @@ export class AntigravityTaskdRuntime {
           }))
 
           try {
-            const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+            const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal, 'analyze')
             shardOutcomes.push(raceResult.result)
             if (raceResult.result.result) shardResults.push(raceResult.result.result)
             this.emitJobEvent(jobId, 'shard.completed', {

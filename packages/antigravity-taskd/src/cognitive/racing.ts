@@ -70,6 +70,8 @@ export interface RaceCandidateTelemetry {
   latencyMs: number
   /** 报错时的错误信息 */
   error?: string
+  /** 实际 Token 消耗（Worker 上报） */
+  tokensUsed?: { input: number; output: number }
 }
 
 /** 一场赛马的完整战报 — 由 RacingExecutor 在每场比赛结束后发射 */
@@ -82,12 +84,16 @@ export interface RaceTelemetry {
   winner?: WorkerBackend
   /** 时间戳 */
   timestamp: number
+  /** 🎯 本次赛马所属的 TaskIntent（供 per-intent ELO 用） */
+  intent?: import('./router.js').TaskIntent
 }
 
 export interface RacingExecutor {
   race<T>(
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
+    /** 🎯 本次赛马所属的 intent（可选，供 per-intent ELO 用） */
+    intent?: import('./router.js').TaskIntent,
   ): Promise<RacingResult<T>>
 
   /**
@@ -102,6 +108,8 @@ export interface RacingExecutor {
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
     timeoutMs: number,
+    /** 🎯 本次融合所属的 intent（可选，供 per-intent ELO 用） */
+    intent?: import('./router.js').TaskIntent,
   ): Promise<FusionResult<T>>
 }
 
@@ -127,6 +135,7 @@ export class DefaultRacingExecutor implements RacingExecutor {
   async race<T>(
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
+    intent?: import('./router.js').TaskIntent,
   ): Promise<RacingResult<T>> {
     if (candidates.length === 0) {
       throw new Error('RacingExecutor: at least one candidate required')
@@ -222,12 +231,12 @@ export class DefaultRacingExecutor implements RacingExecutor {
       })
 
       // 📊 发射战报：胜者确定后
-      this.emitTelemetry(startMs, telemetryData, result.winner)
+      this.emitTelemetry(startMs, telemetryData, result.winner, intent)
 
       return result
     } catch (raceError) {
       // 📊 全军覆没也要发射战报
-      this.emitTelemetry(startMs, telemetryData, undefined)
+      this.emitTelemetry(startMs, telemetryData, undefined, intent)
       throw raceError
     } finally {
       parentSignal.removeEventListener('abort', onParentAbort)
@@ -243,6 +252,7 @@ export class DefaultRacingExecutor implements RacingExecutor {
     startMs: number,
     candidates: RaceCandidateTelemetry[],
     winner: WorkerBackend | undefined,
+    intent?: import('./router.js').TaskIntent,
   ): void {
     if (!this.onRaceComplete) return
     try {
@@ -251,6 +261,7 @@ export class DefaultRacingExecutor implements RacingExecutor {
         candidates,
         winner,
         timestamp: Date.now(),
+        intent,
       })
     } catch {
       // 战报回调不能影响赛马流程
@@ -263,6 +274,7 @@ export class DefaultRacingExecutor implements RacingExecutor {
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
     timeoutMs: number,
+    intent?: import('./router.js').TaskIntent,
   ): Promise<FusionResult<T>> {
     if (candidates.length === 0) {
       throw new Error('FusionExecutor: at least one candidate required')
@@ -346,7 +358,7 @@ export class DefaultRacingExecutor implements RacingExecutor {
       }
 
       // 📊 发射遥测
-      this.emitTelemetry(startMs, telemetryData, drafts[0]?.backend)
+      this.emitTelemetry(startMs, telemetryData, drafts[0]?.backend, intent)
 
       return fusionResult
     } finally {
