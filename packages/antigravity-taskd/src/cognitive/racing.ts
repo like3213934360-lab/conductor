@@ -59,6 +59,31 @@ export interface RacingResult<T> {
   abortedBackends: WorkerBackend[]
 }
 
+// ── 赛马遥测 (Racing Telemetry) ──────────────────────────────────────────────
+
+export type RaceCandidateOutcome = 'winner' | 'loser' | 'error' | 'validate_failed'
+
+export interface RaceCandidateTelemetry {
+  backend: WorkerBackend
+  outcome: RaceCandidateOutcome
+  /** 该候选从启动到结束（完成/abort/报错）的耗时（ms） */
+  latencyMs: number
+  /** 报错时的错误信息 */
+  error?: string
+}
+
+/** 一场赛马的完整战报 — 由 RacingExecutor 在每场比赛结束后发射 */
+export interface RaceTelemetry {
+  /** 赛马总耗时（= 胜者耗时） */
+  totalElapsedMs: number
+  /** 每个参赛者的详细战报 */
+  candidates: RaceCandidateTelemetry[]
+  /** 胜者 backend（全部失败时为 undefined） */
+  winner?: WorkerBackend
+  /** 时间戳 */
+  timestamp: number
+}
+
 export interface RacingExecutor {
   race<T>(
     candidates: RacingCandidate<T>[],
@@ -69,6 +94,12 @@ export interface RacingExecutor {
 // ── 实现 ─────────────────────────────────────────────────────────────────────
 
 export class DefaultRacingExecutor implements RacingExecutor {
+  private readonly onRaceComplete?: (telemetry: RaceTelemetry) => void
+
+  constructor(options?: { onRaceComplete?: (telemetry: RaceTelemetry) => void }) {
+    this.onRaceComplete = options?.onRaceComplete
+  }
+
   async race<T>(
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
@@ -81,6 +112,12 @@ export class DefaultRacingExecutor implements RacingExecutor {
 
     // 每个候选拥有独立的 AbortController，以便胜者可以精准取消 loser
     const controllers = candidates.map(() => new AbortController())
+    // 📊 每个候选的遥测数据收集器
+    const telemetryData: RaceCandidateTelemetry[] = candidates.map(c => ({
+      backend: c.backend,
+      outcome: 'loser' as RaceCandidateOutcome,  // 默认为 loser，胜者/报错会覆盖
+      latencyMs: 0,
+    }))
 
     // 外层 Job 取消时，同步取消所有候选
     const onParentAbort = () => {
@@ -98,12 +135,16 @@ export class DefaultRacingExecutor implements RacingExecutor {
 
         candidates.forEach((candidate, idx) => {
           const ctrl = controllers[idx]!
+          const candidateStartMs = Date.now()
 
           candidate.run(ctrl.signal).then((value) => {
+            telemetryData[idx]!.latencyMs = Date.now() - candidateStartMs
+
             if (settled) return
 
             // 合法性校验：失败则视为该路不可用，不 abort 其他路
             if (!candidate.validate(value)) {
+              telemetryData[idx]!.outcome = 'validate_failed'
               errors[idx] = new Error(`${candidate.backend} result failed validate()`)
               pendingCount--
               if (pendingCount === 0) {
@@ -118,13 +159,15 @@ export class DefaultRacingExecutor implements RacingExecutor {
 
             // 🏆 胜者：立即 abort 所有其他候选（loser）+ 触发清理钩子
             settled = true
+            telemetryData[idx]!.outcome = 'winner'
             const abortedBackends: WorkerBackend[] = []
             candidates.forEach((c, i) => {
               if (i !== idx) {
                 controllers[i]!.abort()
                 abortedBackends.push(c.backend)
+                // loser 的 latency 记录到被 abort 的时刻
+                telemetryData[i]!.latencyMs = telemetryData[i]!.latencyMs || (Date.now() - candidateStartMs)
                 // 触发 loser 的资源清理钩子（fire-and-forget，错误静默吞掉）
-                // onAborted 不能影响 winner 路径，所以 catch 强制兜底
                 Promise.resolve(c.onAborted?.()).catch(() => {})
               }
             })
@@ -136,6 +179,10 @@ export class DefaultRacingExecutor implements RacingExecutor {
               abortedBackends,
             })
           }).catch((error: unknown) => {
+            telemetryData[idx]!.latencyMs = Date.now() - candidateStartMs
+            telemetryData[idx]!.outcome = 'error'
+            telemetryData[idx]!.error = error instanceof Error ? error.message : String(error)
+
             if (settled) return
             errors[idx] = error instanceof Error ? error : new Error(String(error))
             pendingCount--
@@ -150,13 +197,39 @@ export class DefaultRacingExecutor implements RacingExecutor {
         })
       })
 
+      // 📊 发射战报：胜者确定后
+      this.emitTelemetry(startMs, telemetryData, result.winner)
+
       return result
+    } catch (raceError) {
+      // 📊 全军覆没也要发射战报
+      this.emitTelemetry(startMs, telemetryData, undefined)
+      throw raceError
     } finally {
       parentSignal.removeEventListener('abort', onParentAbort)
       // 确保所有 controller 都被 abort（防止获胜后 loser 还在后台跑）
       for (const ctrl of controllers) {
         if (!ctrl.signal.aborted) ctrl.abort()
       }
+    }
+  }
+
+  /** 🔥 发射赛马战报 — fire-and-forget，绝不影响主流程 */
+  private emitTelemetry(
+    startMs: number,
+    candidates: RaceCandidateTelemetry[],
+    winner: WorkerBackend | undefined,
+  ): void {
+    if (!this.onRaceComplete) return
+    try {
+      this.onRaceComplete({
+        totalElapsedMs: Date.now() - startMs,
+        candidates,
+        winner,
+        timestamp: Date.now(),
+      })
+    } catch {
+      // 战报回调不能影响赛马流程
     }
   }
 }

@@ -12,6 +12,8 @@
 
 import type { WorkerBackend } from '../schema.js'
 
+import type { RaceTelemetry } from './racing.js'
+
 // ── 任务意图枚举 ──────────────────────────────────────────────────────────────
 
 export type TaskIntent = 'scout' | 'analyze' | 'generate' | 'verify'
@@ -175,9 +177,55 @@ export interface RouteConstraints {
  *  2. route() 保持向后兼容（单模型选择）
  *  3. routeMulti() 返回 top-N 候选（供 RacingExecutor 赛马）
  *  4. 意图→能力维度映射的评分矩阵
+ *  5. 🆕 ELO 动态表现因子：基于赛马战报自适应调权
  */
+
+// ── ELO 动态表现状态 ─────────────────────────────────────────────────────────
+
+/** 单个模型的运行时 ELO 状态 */
+interface ModelEloState {
+  /** 累计胜场 */
+  wins: number
+  /** 累计败场（被 abort） */
+  losses: number
+  /** 累计报错 */
+  errors: number
+  /** 累计校验失败 */
+  validateFailures: number
+  /** 指数移动平均延迟（ms），α = 0.3 */
+  emaLatencyMs: number
+  /**
+   * 动态表现乘数 — 作用于 routeMulti() 的静态评分
+   * 1.0 = 基线（等效于静态配置）
+   * > 1.0 = 超额表现（胜率高、延迟低）
+   * < 1.0 = 表现衰退（错误多、延迟高）
+   *
+   * 🛡️ 硬性钳位 [0.3, 2.0]：防止路由雪崩（永远不会完全归零）
+   */
+  performanceMultiplier: number
+}
+
+/** EMA 平滑系数 — 越大对最新数据越敏感 */
+const EMA_ALPHA = 0.3
+/** 表现乘数下界 — 防止被完全踢出候选队列 */
+const MULTIPLIER_FLOOR = 0.3
+/** 表现乘数上界 — 防止单一模型独占 */
+const MULTIPLIER_CEILING = 2.0
+/** 胜者奖励步长 */
+const WIN_REWARD = 0.08
+/** 败者惩罚步长（被 abort = 被对手甩开） */
+const LOSS_PENALTY = 0.03
+/** 报错惩罚步长（断路器衰减） */
+const ERROR_PENALTY = 0.15
+/** 校验失败惩罚步长 */
+const VALIDATE_FAIL_PENALTY = 0.10
+/** 延迟惩罚阈值（ms）— 超过此值的平均延迟会额外扣分 */
+const LATENCY_PENALTY_THRESHOLD_MS = 30_000
+
 export class DynamicRouterPolicy implements RouterPolicy {
   private readonly models = new Map<string, ModelCapability>()
+  /** 🧬 每个模型的 ELO 运行时状态 */
+  private readonly eloState = new Map<string, ModelEloState>()
 
   /** 默认预埋模型 */
   private static readonly BUILTIN_MODELS: ModelCapability[] = [
@@ -196,8 +244,6 @@ export class DynamicRouterPolicy implements RouterPolicy {
       supportedIntents: ['scout', 'analyze', 'generate', 'verify'],
     },
     // 🛡️ SOC2 Air-Gap: 本地模型兜底 — 物理隔离网络中的唯一存活者
-    // 分数刻意低于云端模型，确保联网时不会被优先选择；
-    // 但在 Air-Gap 模式下（deregister 掉 codex/gemini），它将自动成为唯一候选。
     {
       id: 'ollama',
       backend: 'ollama',
@@ -219,23 +265,131 @@ export class DynamicRouterPolicy implements RouterPolicy {
     // 加载预埋模型
     for (const model of DynamicRouterPolicy.BUILTIN_MODELS) {
       this.models.set(model.id, model)
+      this.eloState.set(model.id, this.createDefaultEloState())
     }
+  }
+
+  /** 创建默认 ELO 状态（基线 1.0） */
+  private createDefaultEloState(): ModelEloState {
+    return {
+      wins: 0, losses: 0, errors: 0, validateFailures: 0,
+      emaLatencyMs: 10_000,  // 初始假设 10 秒（保守估计）
+      performanceMultiplier: 1.0,
+    }
+  }
+
+  /** 钳位函数：防止乘数越界引发路由雪崩 */
+  private static clampMultiplier(value: number): number {
+    return Math.max(MULTIPLIER_FLOOR, Math.min(MULTIPLIER_CEILING, value))
   }
 
   /** 注册来自 Hub 的模型能力 */
   registerModel(capability: ModelCapability): void {
     this.models.set(capability.id, capability)
+    if (!this.eloState.has(capability.id)) {
+      this.eloState.set(capability.id, this.createDefaultEloState())
+    }
   }
 
   /** 淘汰模型（断路器触发） */
   deregisterModel(modelId: string): void {
     this.models.delete(modelId)
+    this.eloState.delete(modelId)
   }
 
   /** 获取已注册模型列表 */
   listModels(): ModelCapability[] {
     return [...this.models.values()]
   }
+
+  /** 获取模型的 ELO 状态（调试/监控用） */
+  getEloState(modelId: string): ModelEloState | undefined {
+    return this.eloState.get(modelId)
+  }
+
+  /** 获取所有模型的 ELO 排名快照 */
+  getEloRankings(): Array<{ modelId: string; multiplier: number; wins: number; losses: number; errors: number; emaLatencyMs: number }> {
+    const rankings: Array<{ modelId: string; multiplier: number; wins: number; losses: number; errors: number; emaLatencyMs: number }> = []
+    for (const [modelId, state] of this.eloState) {
+      rankings.push({
+        modelId,
+        multiplier: state.performanceMultiplier,
+        wins: state.wins,
+        losses: state.losses,
+        errors: state.errors,
+        emaLatencyMs: Math.round(state.emaLatencyMs),
+      })
+    }
+    return rankings.sort((a, b) => b.multiplier - a.multiplier)
+  }
+
+  // ── 🧬 ELO 反馈回路 ──────────────────────────────────────────────────────
+
+  /**
+   * 消化赛马战报，更新各模型的 ELO 动态表现因子。
+   *
+   * 调权算法：EMA 平滑步进（α = 0.3）
+   *  - Winner：multiplier += WIN_REWARD，EMA 延迟更新
+   *  - Loser（被 abort）：multiplier -= LOSS_PENALTY
+   *  - Error：multiplier -= ERROR_PENALTY（断路器衰减）
+   *  - Validate Failed：multiplier -= VALIDATE_FAIL_PENALTY
+   *  - 延迟惩罚：EMA 延迟超过 30s 额外扣 0.05
+   *
+   * 所有调权后钳位到 [0.3, 2.0]，防止任何模型被完全踢出或无限膨胀。
+   */
+  ingestTelemetry(telemetry: RaceTelemetry): void {
+    for (const candidate of telemetry.candidates) {
+      // 通过 backend 查找对应的模型 ID
+      const modelId = this.findModelIdByBackend(candidate.backend)
+      if (!modelId) continue
+
+      const state = this.eloState.get(modelId)
+      if (!state) continue
+
+      // 📊 更新 EMA 延迟（仅对有实际延迟的候选）
+      if (candidate.latencyMs > 0) {
+        state.emaLatencyMs = EMA_ALPHA * candidate.latencyMs + (1 - EMA_ALPHA) * state.emaLatencyMs
+      }
+
+      // 🎯 根据结果调整 performanceMultiplier
+      switch (candidate.outcome) {
+        case 'winner':
+          state.wins++
+          state.performanceMultiplier += WIN_REWARD
+          break
+        case 'loser':
+          state.losses++
+          state.performanceMultiplier -= LOSS_PENALTY
+          break
+        case 'error':
+          state.errors++
+          state.performanceMultiplier -= ERROR_PENALTY
+          break
+        case 'validate_failed':
+          state.validateFailures++
+          state.performanceMultiplier -= VALIDATE_FAIL_PENALTY
+          break
+      }
+
+      // ⏱️ 额外延迟惩罚：EMA 延迟超过阈值，进一步降低速度分的等效加权
+      if (state.emaLatencyMs > LATENCY_PENALTY_THRESHOLD_MS) {
+        state.performanceMultiplier -= 0.05
+      }
+
+      // 🛡️ 钳位：绝对防止路由雪崩
+      state.performanceMultiplier = DynamicRouterPolicy.clampMultiplier(state.performanceMultiplier)
+    }
+  }
+
+  /** 通过 backend 名称查找模型 ID（反向映射） */
+  private findModelIdByBackend(backend: WorkerBackend): string | undefined {
+    for (const [id, model] of this.models) {
+      if (model.backend === backend) return id
+    }
+    return undefined
+  }
+
+  // ── 路由接口 ──────────────────────────────────────────────────────────────
 
   /**
    * 🔧 route() — 向后兼容接口
@@ -251,10 +405,13 @@ export class DynamicRouterPolicy implements RouterPolicy {
   }
 
   /**
-   * 🎯 routeMulti() — 多模型路由核心
+   * 🎯 routeMulti() — 多模型路由核心（ELO 加权版）
    *
-   * 根据意图的能力维度权重，对每个候选模型计算加权得分，
-   * 返回 top-N 候选（默认 top-2，供 RacingExecutor 赛马使用）。
+   * 评分公式：finalScore = staticScore × performanceMultiplier
+   *
+   * staticScore 来自意图权重矩阵 × 模型能力声明；
+   * performanceMultiplier 来自赛马战报的 ELO 实时反馈。
+   * 当 multiplier = 1.0 时等价于旧的纯静态路由。
    */
   routeMulti(
     intent: TaskIntent,
@@ -276,18 +433,23 @@ export class DynamicRouterPolicy implements RouterPolicy {
       // 筛选 3：成本约束
       if (constraints?.maxCost !== undefined && model.scores.cost > constraints.maxCost) continue
 
-      // 加权评分
-      let score = 0
+      // 静态加权评分
+      let staticScore = 0
       for (const [dim, weight] of Object.entries(weights)) {
-        score += (model.scores[dim as keyof ModelCapability['scores']] ?? 0) * weight
+        staticScore += (model.scores[dim as keyof ModelCapability['scores']] ?? 0) * weight
       }
 
       // 语言偏好加权
       if (constraints?.preferredLanguage === 'zh') {
-        score += model.scores.chinese * 0.15  // 额外中文加成
+        staticScore += model.scores.chinese * 0.15
       }
 
-      candidates.push({ model, score })
+      // 🧬 ELO 动态乘数：将静态分数乘以运行时表现因子
+      const elo = this.eloState.get(model.id)
+      const multiplier = elo?.performanceMultiplier ?? 1.0
+      const finalScore = staticScore * multiplier
+
+      candidates.push({ model, score: finalScore })
     }
 
     // 按得分降序排列

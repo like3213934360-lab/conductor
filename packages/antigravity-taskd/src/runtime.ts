@@ -379,7 +379,14 @@ export class AntigravityTaskdRuntime {
     return {
       blackboard: new InMemoryMcpBlackboard(),
       routerPolicy,
-      racingExecutor: new DefaultRacingExecutor(),
+      racingExecutor: new DefaultRacingExecutor({
+        // 🧬 ELO 反馈回路：赛马战报 → 路由策略动态调权
+        onRaceComplete: (telemetry) => {
+          if (routerPolicy instanceof DynamicRouterPolicy) {
+            routerPolicy.ingestTelemetry(telemetry)
+          }
+        },
+      }),
       vfs: new InMemoryVirtualFileSystem(snapshot.workspaceRoot),
       lsp: new NoopLspDiagnosticsProvider(),
       memoryStore: this.memoryStore,
