@@ -12,6 +12,10 @@
     "type": "git",
     "url": "https://github.com/like3213934360-lab/conductor"
   },
+  "bugs": {
+    "url": "https://github.com/like3213934360-lab/conductor/issues"
+  },
+  "homepage": "https://github.com/like3213934360-lab/conductor#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
