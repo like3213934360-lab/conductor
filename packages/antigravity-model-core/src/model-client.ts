@@ -11,6 +11,10 @@ import { createLogger } from './logger.js';
 
 const log = createLogger('model-client');
 
+// ── 调试/安全阈值 ─────────────────────────────────────────────────────────────
+/** API 错误响应体预览最大字符数（防止巨型 HTML 错误页泄露到日志） */
+const MAX_ERROR_PREVIEW_CHARS = 300;
+
 // 全局 Circuit Breaker 注册表 (按 modelId 独立管理)
 const circuitBreakers = new CircuitBreakerRegistry();
 
@@ -49,7 +53,7 @@ export async function callModel(
     if (!res.ok) {
         const errText = await res.text();
         log.warn('API error', { model: route.modelId, status: res.status, ms: Date.now() - start });
-        throw new Error(`${route.label} API ${res.status}: ${errText.slice(0, 300)}`);
+        throw new Error(`${route.label} API ${res.status}: ${errText.slice(0, MAX_ERROR_PREVIEW_CHARS)}`);
     }
 
     const data = await res.json() as Record<string, unknown>;

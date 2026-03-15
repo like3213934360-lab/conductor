@@ -7,6 +7,13 @@
 import type { AntigravityModelConfig, ModelConfig, RouteResult } from '@anthropic/antigravity-model-shared';
 import { TASK_KEYWORDS } from '@anthropic/antigravity-model-shared';
 
+// ── 路由阈值常量 ─────────────────────────────────────────────────────────────
+
+/** 超过此字符数的消息自动路由到长上下文模型（如 Gemini 128K） */
+const LONG_CONTEXT_THRESHOLD_CHARS = 3_000;
+/** 低于此字符数且包含代码关键词的消息路由到代码生成模型 */
+const SHORT_CODE_THRESHOLD_CHARS = 100;
+
 // ── 任务类型检测 ──────────────────────────────────────────────────────────────
 
 /**
@@ -22,10 +29,10 @@ export function detectTaskType(message: string): string {
     const msg = message.toLowerCase();
 
     // ── 长度感知路由 (最高优先级) ────────────────────────────────────────────
-    if (message.length > 3000) {
+    if (message.length > LONG_CONTEXT_THRESHOLD_CHARS) {
         return 'long_context';
     }
-    if (message.length < 100 && (msg.includes('code') || msg.includes('代码') || msg.includes('function') || msg.includes('函数'))) {
+    if (message.length < SHORT_CODE_THRESHOLD_CHARS && (msg.includes('code') || msg.includes('代码') || msg.includes('function') || msg.includes('函数'))) {
         return 'code_gen';
     }
 

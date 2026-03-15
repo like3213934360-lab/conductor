@@ -22,3 +22,10 @@ export type {
     RequestRecord,
     FileContextResult,
 } from './types.js'
+
+// Workflow 运行时契约（从 core 下沉至 model-shared，打破反向依赖）
+export type {
+    WorkflowAgentRuntime,
+    WorkflowAskResult,
+    WorkflowConsensusResult,
+} from './workflow-agent-runtime.js'

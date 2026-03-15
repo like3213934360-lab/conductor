@@ -94,6 +94,14 @@ const WRITE_BATCH_SIZE = 3
 // 所有 stage 的硬上限总和约 82 分钟；全局安全网设为 60 分钟
 const GLOBAL_JOB_TIMEOUT_MS = 60 * 60 * 1000  // 60 min
 
+// ── 执行配置阈值（决定 single/dual/sharded 策略） ──────────────────────
+/** ≤ 6 个文件且 ≤ 300KB 时使用单 worker（避免小任务分片开销） */
+const SINGLE_WORKER_MAX_FILES = 6;
+const SINGLE_WORKER_MAX_BYTES = 300 * 1024;  // 300KB
+/** ≤ 20 个文件且 ≤ 900KB 时使用双 worker（平衡速度与开销） */
+const DUAL_WORKER_MAX_FILES = 20;
+const DUAL_WORKER_MAX_BYTES = 900 * 1024;    // 900KB
+
 const STAGE_BUDGETS: Record<TaskStageId, { softBudgetMs: number; hardBudgetMs: number }> = {
   SCOUT: { softBudgetMs: 60_000, hardBudgetMs: 120_000 },
   SHARD_ANALYZE: { softBudgetMs: 1_800_000, hardBudgetMs: 2_100_000 },
@@ -297,10 +305,10 @@ function coerceWrite(raw: string): WriteAnalysis {
 function chooseExecutionProfile(files: WorkspaceFileEntry[]): ExecutionProfile {
   const count = files.length
   const bytes = totalBytes(files)
-  if (count <= 6 && bytes <= 300 * 1024) {
+  if (count <= SINGLE_WORKER_MAX_FILES && bytes <= SINGLE_WORKER_MAX_BYTES) {
     return { kind: 'single' }
   }
-  if (count <= 20 && bytes <= 900 * 1024) {
+  if (count <= DUAL_WORKER_MAX_FILES && bytes <= DUAL_WORKER_MAX_BYTES) {
     return { kind: 'dual' }
   }
   return { kind: 'sharded' }

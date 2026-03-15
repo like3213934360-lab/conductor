@@ -86,6 +86,13 @@ export class EpisodicMemoryStore {
   private readonly filePath: string
   private readonly episodes = new Map<string, BugFixEpisode>()
   private readonly index: MiniSearch<SearchDocument>
+  /**
+   * 🛡️ 写入序列化队列
+   * 多个 shard worker 并发调用 recordEpisode 时，
+   * appendFileSync 可能交织 JSONL 行。
+   * Promise chain 将写入串行化，零外部依赖。
+   */
+  private _writeQueue: Promise<void> = Promise.resolve()
 
   constructor(dataDir: string) {
     fs.mkdirSync(dataDir, { recursive: true })
@@ -131,22 +138,24 @@ export class EpisodicMemoryStore {
     // MiniSearch 索引
     this.indexEpisode(episode)
 
-    // JSONL Append-only 持久化
-    try {
-      const line = JSON.stringify(episode) + '\n'
-      fs.appendFileSync(this.filePath, line, 'utf8')
-
-      // 🛡️ 文件大小统计（懒加的，仅在写入后检查）
+    // JSONL Append-only 持久化（序列化写入）
+    this._writeQueue = this._writeQueue.then(() => {
       try {
-        const stat = fs.statSync(this.filePath)
-        if (stat.size > MAX_FILE_BYTES) {
-          this.rotateLogFile()
-        }
-      } catch { /* 统计失败不阻断 */ }
-    } catch (error) {
-      // 持久化失败不阻断主流程（内存索引已更新，重启后丢失本条——可接受）
-      console.warn(`[memory] Failed to persist episode ${episode.episodeId}: ${error}`)
-    }
+        const line = JSON.stringify(episode) + '\n'
+        fs.appendFileSync(this.filePath, line, 'utf8')
+
+        // 🛡️ 文件大小统计（懒加的，仅在写入后检查）
+        try {
+          const stat = fs.statSync(this.filePath)
+          if (stat.size > MAX_FILE_BYTES) {
+            this.rotateLogFile()
+          }
+        } catch { /* 统计失败不阻断 */ }
+      } catch (error) {
+        // 持久化失败不阻断主流程（内存索引已更新，重启后丢失本条——可接受）
+        console.warn(`[memory] Failed to persist episode ${episode.episodeId}: ${error}`)
+      }
+    })
   }
 
   /**

@@ -41,19 +41,26 @@ export interface GatekeeperResult {
  */
 const API_FALLBACK_CHAIN = ['deepseek', 'codex', 'gemini'];
 
-// ── 可用性探针 ────────────────────────────────────────────────────────────────
+// ── 可用性探针（原子化，防止并发探测竞争） ─────────────────────────────────────
 
-let _availabilityCache: ProviderAvailability | null = null;
-let _cacheTimestamp = 0;
+/** 原子缓存结构：将 cache + timestamp 合为单一不可变引用，
+ *  赋值操作在 V8 中对指针是原子的，消除了并发半更新风险 */
+let _cachedProbe: { availability: ProviderAvailability; timestamp: number } | null = null;
 const CACHE_TTL_MS = 60_000; // 缓存 1 分钟
 
 /**
- * 探测当前可用的 providers（带缓存）
+ * 探测当前可用的 providers（带原子缓存）
+ *
+ * 🛡️ 并发安全保证：
+ *  1. cache + timestamp 封装为单一不可变对象引用
+ *  2. 赋值 `_cachedProbe = { ... }` 是 V8 指针原子操作
+ *  3. 两个并发调用最多各探测一次，不会出现半更新读取
  */
 export function probeAvailability(config: AntigravityModelConfig, forceRefresh = false): ProviderAvailability {
     const now = Date.now();
-    if (!forceRefresh && _availabilityCache && (now - _cacheTimestamp) < CACHE_TTL_MS) {
-        return _availabilityCache;
+    const snapshot = _cachedProbe; // 原子读取当前快照
+    if (!forceRefresh && snapshot && (now - snapshot.timestamp) < CACHE_TTL_MS) {
+        return snapshot.availability;
     }
 
     // API 模型：从配置中读取已启用且有 API Key 的
@@ -65,9 +72,10 @@ export function probeAvailability(config: AntigravityModelConfig, forceRefresh =
     const codexAvailable = isCliInstalled('codex');
     const geminiAvailable = isCliInstalled('gemini');
 
-    _availabilityCache = { apiModels, codexAvailable, geminiAvailable };
-    _cacheTimestamp = now;
-    return _availabilityCache;
+    const availability = { apiModels, codexAvailable, geminiAvailable };
+    // 单一赋值：原子更新缓存引用
+    _cachedProbe = { availability, timestamp: now };
+    return availability;
 }
 
 function isCliInstalled(cmd: string): boolean {
@@ -178,6 +186,5 @@ export function gatekeeperResolveBatch(
  * 清除可用性缓存（用于测试或配置变更后）
  */
 export function clearAvailabilityCache(): void {
-    _availabilityCache = null;
-    _cacheTimestamp = 0;
+    _cachedProbe = null;
 }

@@ -42,6 +42,15 @@ function stripDangerousKeys(obj: unknown): unknown {
 }
 
 export class TaskPersistenceStore {
+  /**
+   * 🛡️ 并发写入序列化锁 (Per-Job Write Queue)
+   *
+   * 当多个 shard worker 并发完成并同时调用 appendEvent 时，
+   * appendFileSync 的 JSONL 行可能交织损坏。
+   * 使用 Promise chain 将同一 jobId 的写入串行化。
+   */
+  private readonly _writeLocks = new Map<string, Promise<void>>()
+
   constructor(private readonly jobsDir: string) {
     ensureDir(this.jobsDir)
   }
@@ -69,7 +78,14 @@ export class TaskPersistenceStore {
 
   appendEvent(jobId: string, event: TaskJobEvent): void {
     this.ensureJob(jobId)
-    fs.appendFileSync(this.eventsPath(jobId), `${JSON.stringify(event)}\n`, 'utf8')
+    // 序列化写入：链式 Promise 确保同一 jobId 的写入不会交织
+    const prev = this._writeLocks.get(jobId) ?? Promise.resolve()
+    const next = prev.then(() => {
+      fs.appendFileSync(this.eventsPath(jobId), `${JSON.stringify(event)}\n`, 'utf8')
+    }).catch((err) => {
+      console.warn(`[persistence] appendEvent failed for job ${jobId}: ${err}`)
+    })
+    this._writeLocks.set(jobId, next)
   }
 
   readSnapshot(jobId: string): TaskJobSnapshot | null {

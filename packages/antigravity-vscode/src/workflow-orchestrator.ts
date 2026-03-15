@@ -6,7 +6,7 @@ import {
   type TaskJobMode,
   type TaskJobSnapshot,
   type TaskJobEvent,
-} from '../../antigravity-taskd/dist/index.js'
+} from '@anthropic/antigravity-taskd'
 
 type WorkflowLifecycleState = 'idle' | 'starting' | 'running' | 'completed' | 'failed'
 
