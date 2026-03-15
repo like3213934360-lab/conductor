@@ -61,6 +61,29 @@ export class ReflexionFailedError extends Error {
   }
 }
 
+/** commit() 检测到人类在 AI 处理期间修改了文件 */
+export class ConcurrentModificationError extends Error {
+  constructor(public readonly filePath: string, public readonly scoutMtime: number, public readonly currentMtime: number) {
+    super(
+      `TOCTOU conflict: file "${filePath}" was modified by another process during AI processing. ` +
+      `SCOUT mtime=${new Date(scoutMtime).toISOString()}, current mtime=${new Date(currentMtime).toISOString()}. ` +
+      `AI output has been discarded to prevent data loss.`,
+    )
+    this.name = 'ConcurrentModificationError'
+  }
+}
+
+/** VFS write() 目标路径超出沙箱 */
+export class PathTraversalError extends Error {
+  constructor(public readonly requestedPath: string, public readonly jailRoot: string) {
+    super(
+      `Path traversal blocked: "${requestedPath}" escapes workspace sandbox "${jailRoot}". ` +
+      `All VFS operations must target files within the workspace root.`,
+    )
+    this.name = 'PathTraversalError'
+  }
+}
+
 // ── LSP Diagnostic 类型 ───────────────────────────────────────────────────────
 
 export interface LspDiagnostic {
@@ -121,21 +144,37 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
   private readonly memory = new Map<string, string>()
   /** 初始磁盘快照（只读，仅用于 rollback 和 diff） */
   private readonly diskSnapshot = new Map<string, string | undefined>()
+  /** SCOUT 时刻的文件 mtime（用于 TOCTOU 乐观锁） */
+  private readonly scoutMtimes = new Map<string, number>()
+  /** 已解析且验证安全的 workspaceRoot 绝对路径 */
+  private readonly jailRoot: string
 
-  constructor(private readonly workspaceRoot: string) {}
+  constructor(private readonly workspaceRoot: string) {
+    // 使用 realpathSync 解析软链接，确保 jail 判定不被 symlink 绕过
+    try {
+      this.jailRoot = fs.realpathSync.native(workspaceRoot)
+    } catch {
+      // workspaceRoot 尚不存在时，退回到 path.resolve
+      this.jailRoot = path.resolve(workspaceRoot)
+    }
+  }
 
   write(filePath: string, content: string): void {
     const absPath = this.resolve(filePath)
-    // 首次写入：记录磁盘原始状态（用于 diff 和 rollback）
+    // 首次写入：记录磁盘原始状态（用于 diff、rollback 和 TOCTOU 检测）
     let diskContent: string | undefined
     if (!this.diskSnapshot.has(absPath)) {
       try {
         diskContent = fs.readFileSync(absPath, 'utf8')
         this.diskSnapshot.set(absPath, diskContent)
+        // ── TOCTOU 乐观锁基线：记录 SCOUT 时刻的 mtime ──────────
+        const stat = fs.statSync(absPath)
+        this.scoutMtimes.set(absPath, stat.mtimeMs)
       } catch {
         // 文件原本不存在（新建文件）
         diskContent = undefined
         this.diskSnapshot.set(absPath, undefined)
+        // 新建文件无 mtime，不需要 TOCTOU 检测
       }
     } else {
       diskContent = this.diskSnapshot.get(absPath)
@@ -163,13 +202,30 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
   }
 
   /**
-   * SRE 级原子落盘：
-   * openSync(.tmp) → writeSync → fsyncSync(fd) → closeSync → renameSync
-   *
-   * 这与 journal.ts / persistence.ts 已审计过的 writeJsonAtomic 逻辑一致。
-   * fsyncSync 保证数据物理落盘，renameSync 的元数据原子性由文件系统保证。
+   * SRE 级原子落盘 + TOCTOU 乐观锁：
+   * 1. 重新读取物理文件 mtime，与 SCOUT 时刻记录的 mtime 比对
+   *    → 不一致说明人类在 AI 处理期间修改了文件 → 拒绝覆盖，抛出 ConcurrentModificationError
+   * 2. openSync(.tmp) → writeSync → fsyncSync(fd) → closeSync → renameSync
    */
   async commit(): Promise<void> {
+    // ── Phase 1: TOCTOU 乐观锁检测 ─────────────────────────────────
+    for (const [absPath] of this.memory) {
+      const scoutMtime = this.scoutMtimes.get(absPath)
+      if (scoutMtime === undefined) continue  // 新建文件，无需检测
+
+      try {
+        const currentMtime = fs.statSync(absPath).mtimeMs
+        if (currentMtime !== scoutMtime) {
+          // 人类在 AI 处理期间修改了文件 → 拒绝覆盖，保护人类数据
+          throw new ConcurrentModificationError(absPath, scoutMtime, currentMtime)
+        }
+      } catch (err) {
+        if (err instanceof ConcurrentModificationError) throw err
+        // 文件被删除也属于外部修改 → 保守起见，继续写入（新建）
+      }
+    }
+
+    // ── Phase 2: 原子落盘 ─────────────────────────────────────────
     for (const [absPath, content] of this.memory) {
       const dir = path.dirname(absPath)
       // 确保目录存在
@@ -194,18 +250,36 @@ export class InMemoryVirtualFileSystem implements VirtualFileSystem {
     // commit 成功后清空 VFS（本次写入已持久化）
     this.memory.clear()
     this.diskSnapshot.clear()
+    this.scoutMtimes.clear()
   }
 
   rollback(): void {
     // 丢弃所有内存修改，不触碰磁盘 — 磁盘状态保持原样
     this.memory.clear()
     this.diskSnapshot.clear()
+    this.scoutMtimes.clear()
   }
 
+  /**
+   * 路径沙箱禁锢（Path Jailing）：
+   * 1. path.resolve() 规范化 `../` 穿越
+   * 2. 判断 resolved path 是否以 jailRoot 开头
+   * 3. realpathSync 在构造时已解析软链接，防止 symlink 逃逸
+   *
+   * 如果 LLM 被 Prompt Injection 诱导请求 `/etc/passwd`，
+   * 此处立即抛出 PathTraversalError，绝不碰磁盘。
+   */
   private resolve(filePath: string): string {
-    return path.isAbsolute(filePath)
-      ? filePath
-      : path.join(this.workspaceRoot, filePath)
+    const resolved = path.isAbsolute(filePath)
+      ? path.resolve(filePath)
+      : path.resolve(this.jailRoot, filePath)
+
+    // ── 沙箱校验：resolved 必须以 jailRoot + path.sep 开头（或等于 jailRoot） ──
+    if (resolved !== this.jailRoot && !resolved.startsWith(this.jailRoot + path.sep)) {
+      throw new PathTraversalError(filePath, this.jailRoot)
+    }
+
+    return resolved
   }
 }
 
