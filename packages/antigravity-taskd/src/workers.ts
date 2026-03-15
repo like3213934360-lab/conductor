@@ -293,6 +293,18 @@ class CodexAppServerWorkerAdapter implements WorkerAdapter {
     const rl = readline.createInterface({ input: child.stdout })
     const stderrRl = child.stderr ? readline.createInterface({ input: child.stderr }) : null
 
+    // ── OS 管道死锁防御：原始 stderr drain ────────────────────────────────────────
+    // readline 是行缓冲的——如果 CLI 狂吐 100MB C++ 崩溃堆栈，行很长时
+    // readline 内部队列背压会将 OS 64KB pipe 塞满，导致子进程被内核挂起
+    //（kill(0) 探活返回成功，但主进程还在傘等 stdout）——系统级死锁。
+    //
+    // 修复：在 readline 之外另挂一个无操作的原始 data 处理器。
+    // Node 流的 data 事件先于 readline 的 line 事件触发，所以 readline 仍能正常工作。
+    // 这个空操作 drain 确保 OS pipe buffer 永远被消耗，小进程绝不会被内核挂起。
+    if (child.stderr) {
+      child.stderr.on('data', () => {})  // raw drain — 防 64KB pipe 死锁
+    }
+
     stderrRl?.on('line', (line) => {
       if (!line.trim()) return
       touch({
@@ -665,6 +677,13 @@ class GeminiStreamJsonWorkerAdapter implements WorkerAdapter {
 
     const rl = readline.createInterface({ input: child.stdout })
     const stderrRl = child.stderr ? readline.createInterface({ input: child.stderr }) : null
+
+    // ── OS 管道死锁防御：原始 stderr drain ────────────────────────────────────────
+    // readline 行缓冲在 Gemini CLI 狂吐堆栈时同样可能导致 64KB pipe 死锁。
+    if (child.stderr) {
+      child.stderr.on('data', () => {})  // raw drain — 防 64KB pipe 死锁
+    }
+
     stderrRl?.on('line', (line) => {
       if (!line.trim()) return
       onEvent({
