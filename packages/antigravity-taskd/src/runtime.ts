@@ -968,56 +968,174 @@ export class AntigravityTaskdRuntime {
         shardId: shard.shardId, backend: singleDecision.backend, outcome: outcome.status,
       })
     } else if (profile.kind === 'dual') {
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🏎️ SPECULATIVE RACING — 推测性赛马取代盲并行
+      //
+      // 旧逻辑：Promise.all 盲目并行跑 codex + gemini，两路互不知情，不是协作是浪费。
+      // 新逻辑：routeMulti() 选出 top-2 异构候选 → RacingExecutor.race()
+      //         谁先返回合法结果就立即采纳，abort 另一路释放资源。
+      // ═══════════════════════════════════════════════════════════════════════
       const shardFilePaths = manifest.relevantPaths.length > 0 ? manifest.relevantPaths : relevantEntries.map(file => file.path)
       const sharedFiles = pickSharedFiles(shardFilePaths)
       const shardId = 'shard-1'
-      // dual 模式：Router 选出两个互补后端，推测性赛马
-      const analyzerDecision = cogCtx.routerPolicy.route('analyze')
-      const reviewerDecision = cogCtx.routerPolicy.route('verify')
-      this.emitJobEvent(jobId, 'shard.started', { shardId, backends: [analyzerDecision.backend, reviewerDecision.backend] })
-      const [analyzerOutcome, reviewerOutcome] = await Promise.all([
-        this.runWorkerSafe(
-          snapshot, analyzerDecision.backend, 'analyzer',
-          buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
-          unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE', `${shardId}:${analyzerDecision.backend}`,
-        ),
-        this.runWorkerSafe(
-          snapshot, reviewerDecision.backend, 'reviewer',
-          buildShardPrompt(snapshot.goal, shardId, shardFilePaths),
-          unique([...sharedFiles, ...shardFilePaths]),
-          'SHARD_ANALYZE', `${shardId}:${reviewerDecision.backend}`,
-        ),
-      ])
-      shardOutcomes.push(analyzerOutcome, reviewerOutcome)
-      if (analyzerOutcome.result) shardResults.push(analyzerOutcome.result)
-      if (reviewerOutcome.result) shardResults.push(reviewerOutcome.result)
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: analyzerDecision.backend, outcome: analyzerOutcome.status })
-      this.emitJobEvent(jobId, 'shard.completed', { shardId, backend: reviewerDecision.backend, outcome: reviewerOutcome.status })
+      const shardPrompt = buildShardPrompt(snapshot.goal, shardId, shardFilePaths)
+      const allFilePaths = unique([...sharedFiles, ...shardFilePaths])
+
+      // 🎯 routeMulti 获取排名前 2 的异构模型（如 codex + gemini）
+      const topCandidates = cogCtx.routerPolicy.routeMulti('analyze', 0, undefined, 2)
+      const racingBackends = topCandidates.map(c => c.backend)
+      this.emitJobEvent(jobId, 'shard.started', { shardId, backends: racingBackends })
+
+      // 组装 RacingCandidate 数组
+      const candidates = topCandidates.map(decision => ({
+        backend: decision.backend,
+
+        // 🚀 run: 启动实际 Worker。signal 由 RacingExecutor 控制——
+        // 当另一路胜出时，此 signal 会被 abort，传导到 runWorker 内部的 hardController
+        run: async (raceSignal: AbortSignal): Promise<ShardOutcome> => {
+          // 创建一个竞赛级 AbortController，合并赛马信号与 Job 级取消信号
+          const raceCtrl = new AbortController()
+          const propagateAbort = () => raceCtrl.abort()
+          raceSignal.addEventListener('abort', propagateAbort, { once: true })
+
+          // 临时将竞赛 controller 注册为 job controller，让 runWorker 内部能响应
+          const originalController = this.controllers.get(jobId)
+          this.controllers.set(jobId, raceCtrl)
+
+          try {
+            return await this.runWorkerSafe(
+              snapshot, decision.backend, 'analyzer',
+              shardPrompt, allFilePaths,
+              'SHARD_ANALYZE', `${shardId}:${decision.backend}`,
+            )
+          } finally {
+            // 🛡️ 恢复原始 controller，防止同一 Job 后续阶段受影响
+            if (originalController) {
+              this.controllers.set(jobId, originalController)
+            }
+            raceSignal.removeEventListener('abort', propagateAbort)
+          }
+        },
+
+        // 🧪 validate: 质量校验门 — 拒绝垃圾结果，让赛马继续等待另一路
+        // 必须满足：(1) 状态非 failed (2) 有结果文本 (3) 包含有效 JSON 结构
+        validate: (outcome: ShardOutcome): boolean => {
+          if (outcome.status === 'failed') return false
+          if (!outcome.result) return false
+          // 检查关键字段非空：summary 是 ShardAnalysis 的核心字段
+          if (!outcome.result.summary || outcome.result.summary.length < 10) return false
+          return true
+        },
+
+        // 🗑️ onAborted: loser 清理钩子 — 火烧连营后的残骸清理
+        onAborted: () => {
+          console.log(`[taskd] 🏁 Racing loser: ${decision.backend} aborted for shard ${shardId}`)
+        },
+      }))
+
+      try {
+        // 🏁 点火！RacingExecutor 内部会 Promise.any-like 竞争
+        const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+
+        // 采纳胜者结果
+        const winnerOutcome = raceResult.result
+        shardOutcomes.push(winnerOutcome)
+        if (winnerOutcome.result) shardResults.push(winnerOutcome.result)
+
+        this.emitJobEvent(jobId, 'shard.completed', {
+          shardId,
+          backend: raceResult.winner,
+          outcome: winnerOutcome.status,
+          racingElapsedMs: raceResult.elapsedMs,
+          abortedBackends: raceResult.abortedBackends,
+        })
+        console.log(`[taskd] 🏆 Racing winner: ${raceResult.winner} (${raceResult.elapsedMs}ms), aborted: [${raceResult.abortedBackends.join(', ')}]`)
+      } catch (raceError) {
+        // 所有候选全部失败 — AllCandidatesFailedError
+        console.warn(`[taskd] All racing candidates failed for shard ${shardId}:`, raceError)
+        shardOutcomes.push({
+          status: 'failed',
+          shardId,
+          error: raceError instanceof Error ? raceError.message : String(raceError),
+          durationMs: 0,
+        })
+      }
     } else {
-      // sharded 模式：2 个 worker 并行消费 shard 队列，单个失败不影响其余
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🏎️ SHARDED RACING — 每个 Shard 独立赛马
+      //
+      // 旧逻辑：2 个 worker 串行消费 shard 队列（每个 shard 只用单模型）。
+      // 新逻辑：每个 Shard 独立调用 routeMulti() + race()，
+      //         最多 2 个 Shard 的赛马同时进行，限制并发上限。
+      // ═══════════════════════════════════════════════════════════════════════
       const shards = manifest.shards.length > 0 ? manifest.shards : createFallbackScoutManifest(snapshot.goal, relevantEntries).shards
+      const MAX_CONCURRENT_RACES = 2  // 限流：最多同时跑 2 场赛马
+
+      // 使用滑动窗口控制并发赛马数
       const queue = [...shards]
-      const workerPool = Array.from({ length: 2 }, async (_value, index) => {
+      const racePool = Array.from({ length: MAX_CONCURRENT_RACES }, async () => {
         while (queue.length > 0) {
           const shard = queue.shift()
           if (!shard) return
-          const poolDecision = cogCtx.routerPolicy.route('analyze')
-          this.emitJobEvent(jobId, 'shard.started', { shardId: shard.shardId, backends: [`${poolDecision.backend}-${index + 1}`] })
-          const outcome = await this.runWorkerSafe(
-            snapshot, poolDecision.backend, 'analyzer',
-            buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths),
-            unique([...shard.sharedFiles, ...shard.filePaths]),
-            'SHARD_ANALYZE', shard.shardId,
-          )
-          shardOutcomes.push(outcome)
-          if (outcome.result) shardResults.push(outcome.result)
-          this.emitJobEvent(jobId, 'shard.completed', {
-            shardId: shard.shardId, backend: poolDecision.backend, outcome: outcome.status,
+
+          const shardPrompt = buildShardPrompt(snapshot.goal, shard.shardId, shard.filePaths)
+          const allFilePaths = unique([...shard.sharedFiles, ...shard.filePaths])
+          const topCandidates = cogCtx.routerPolicy.routeMulti('analyze', 0, undefined, 2)
+
+          this.emitJobEvent(jobId, 'shard.started', {
+            shardId: shard.shardId,
+            backends: topCandidates.map(c => c.backend),
           })
+
+          // 组装本 Shard 的赛马候选
+          const candidates = topCandidates.map(decision => ({
+            backend: decision.backend,
+            run: async (raceSignal: AbortSignal): Promise<ShardOutcome> => {
+              const raceCtrl = new AbortController()
+              const propagateAbort = () => raceCtrl.abort()
+              raceSignal.addEventListener('abort', propagateAbort, { once: true })
+              const originalController = this.controllers.get(jobId)
+              this.controllers.set(jobId, raceCtrl)
+              try {
+                return await this.runWorkerSafe(
+                  snapshot, decision.backend, 'analyzer',
+                  shardPrompt, allFilePaths,
+                  'SHARD_ANALYZE', `${shard.shardId}:${decision.backend}`,
+                )
+              } finally {
+                if (originalController) this.controllers.set(jobId, originalController)
+                raceSignal.removeEventListener('abort', propagateAbort)
+              }
+            },
+            validate: (outcome: ShardOutcome): boolean => {
+              if (outcome.status === 'failed' || !outcome.result) return false
+              return !!(outcome.result.summary && outcome.result.summary.length >= 10)
+            },
+            onAborted: () => {
+              console.log(`[taskd] 🏁 Racing loser: ${decision.backend} aborted for shard ${shard.shardId}`)
+            },
+          }))
+
+          try {
+            const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+            shardOutcomes.push(raceResult.result)
+            if (raceResult.result.result) shardResults.push(raceResult.result.result)
+            this.emitJobEvent(jobId, 'shard.completed', {
+              shardId: shard.shardId,
+              backend: raceResult.winner,
+              outcome: raceResult.result.status,
+              racingElapsedMs: raceResult.elapsedMs,
+            })
+          } catch {
+            // 单 Shard 全军覆没不影响其余 Shard，优雅降级
+            shardOutcomes.push({
+              status: 'failed', shardId: shard.shardId,
+              error: 'All racing candidates failed', durationMs: 0,
+            })
+          }
         }
       })
-      await Promise.all(workerPool)
+      await Promise.all(racePool)
     }
 
     // 统计 shard 执行结果

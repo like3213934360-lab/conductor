@@ -80,6 +80,13 @@ export interface RouterDecision {
 
 export interface RouterPolicy {
   route(intent: TaskIntent, contextTokenEstimate?: number): RouterDecision
+  /** 多模型路由：返回 top-N 异构候选（供 RacingExecutor 赛马） */
+  routeMulti(
+    intent: TaskIntent,
+    contextTokenEstimate?: number,
+    constraints?: RouteConstraints,
+    topN?: number,
+  ): RouterDecision[]
 }
 
 // ── 默认实现 ──────────────────────────────────────────────────────────────────
@@ -122,6 +129,16 @@ export class DefaultRouterPolicy implements RouterPolicy {
         throw new Error(`Unknown TaskIntent: ${String(_exhaustive)}`)
       }
     }
+  }
+
+  /** 兼容接口：DefaultRouterPolicy 不支持多模型，返回单候选 */
+  routeMulti(
+    intent: TaskIntent,
+    contextTokenEstimate: number = 0,
+    _constraints?: RouteConstraints,
+    _topN: number = 2,
+  ): RouterDecision[] {
+    return [this.route(intent, contextTokenEstimate)]
   }
 }
 
