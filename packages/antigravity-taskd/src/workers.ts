@@ -4,6 +4,7 @@ import { buildFileContext } from './file-context.js'
 import type { WorkerAdapter, WorkerBackend, WorkerEvent, WorkerRunRequest, WorkerRunResult } from './schema.js'
 import { buildPeerDiscoveryPrompt } from './cognitive/swarm-mesh.js'
 import type { PeerDescriptor } from './cognitive/swarm-mesh.js'
+import { killProcessTree } from '@anthropic/antigravity-shared'
 
 interface JsonRpcResponse {
   id?: number | string
@@ -17,27 +18,7 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
-/**
- * 杀死进程及其整个进程组（子进程 + 孙子进程），防止僵尸进程泄漏。
- * 在 POSIX 系统中，`process.kill(-pid)` 发送信号到整个进程组。
- * 如果进程组 kill 失败（例如权限不足或 Windows），退化为单进程 kill。
- */
-function killProcessTree(child: import('node:child_process').ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
-  if (child.killed) return
-  try {
-    if (child.pid != null) {
-      // 杀死整个进程组（pid 取负 = 进程组）
-      process.kill(-child.pid, signal)
-    }
-  } catch {
-    // 进程组 kill 失败（Windows 或已退出）→ 降级为直接 kill
-    try {
-      child.kill(signal)
-    } catch {
-      // 进程已退出 — 静默忽略
-    }
-  }
-}
+// killProcessTree 已迁移至 @anthropic/antigravity-shared (V1.1.0)
 
 function startSyntheticProgress(onEvent: (event: WorkerEvent) => void): () => void {
   let lastSemanticEventAt = Date.now()

@@ -50,3 +50,6 @@ export { WorkflowError, isWorkflowError, toWorkflowError } from './errors/workfl
 
 // Reflexion 类型 — 架构优化: 消除 core→persistence 循环依赖
 export * from './schema/reflexion.js'
+
+// 进程管理 — V1.1.0: 全局强约束进程管理器
+export * from './process/process-manager.js'

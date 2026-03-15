@@ -12,6 +12,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@anthropic/antigravity-shared": "1.0.0",
     "minisearch": "^7.2.0",
     "zod": "3.25.76"
   },
