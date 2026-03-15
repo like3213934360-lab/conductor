@@ -1,5 +1,6 @@
 import * as crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
+import { z } from 'zod'
 import {
   type AggregateAnalysis,
   CancelTaskJobResponseSchema,
@@ -24,7 +25,7 @@ import {
 } from './schema.js'
 import { TaskPersistenceStore } from './persistence.js'
 import { chunkShardFiles, listWorkspaceFiles, pickSharedFiles, totalBytes, type WorkspaceFileEntry } from './file-context.js'
-import { buildAggregatePrompt, buildFinalAnswer, buildScoutPrompt, buildShardPrompt, buildVerifyPrompt, buildWritePrompt } from './prompts.js'
+import { buildAggregatePrompt, buildFinalAnswer, buildFusionPrompt, buildScoutPrompt, buildShardPrompt, buildVerifyPrompt, buildWritePrompt } from './prompts.js'
 import { parseStructuredJson } from './parsing.js'
 import { createWorkerAdapters } from './workers.js'
 import type { TaskdPaths } from './runtime-contract.js'
@@ -433,7 +434,7 @@ export class AntigravityTaskdRuntime {
     console.log('[taskd] Shutdown complete')
   }
 
-  createJob(input: CreateTaskJobRequest): TaskJobSnapshot {
+  createJob(input: z.input<typeof CreateTaskJobRequestSchema>): TaskJobSnapshot {
     const request = CreateTaskJobRequestSchema.parse(input)
     const createdAt = nowIso()
     const jobId = crypto.randomUUID()
@@ -465,6 +466,7 @@ export class AntigravityTaskdRuntime {
       },
       recentEvents: [],
       fileHints: request.fileHints ?? [],
+      enableMoA: request.enableMoA ?? false,
       createdAt,
       updatedAt: createdAt,
     }
@@ -976,12 +978,22 @@ export class AntigravityTaskdRuntime {
       })
     } else if (profile.kind === 'dual') {
       // ═══════════════════════════════════════════════════════════════════════
-      // 🏎️ SPECULATIVE RACING — 推测性赛马取代盲并行
+      // 🧬 ADAPTIVE DISPATCH — 条件触发式 MoA 融合 / 赛马自动切换
       //
-      // 旧逻辑：Promise.all 盲目并行跑 codex + gemini，两路互不知情，不是协作是浪费。
-      // 新逻辑：routeMulti() 选出 top-2 异构候选 → RacingExecutor.race()
-      //         谁先返回合法结果就立即采纳，abort 另一路释放资源。
+      // 复杂度启发式评估（Complexity Heuristics）：
+      //  条件 1: enableMoA 用户显式开启
+      //  条件 2: 估算 Token > 5000（高复杂度任务）
+      //  条件 3: Token 燃烧率 < 0.5（预算安全水位）
+      //
+      // 满足 (条件1 || (条件2 && 条件3)) → 融合模式 (MoA Fusion)
+      // 否则 → 赛马模式 (Racing)
       // ═══════════════════════════════════════════════════════════════════════
+      const GLOBAL_TOKEN_LIMIT = 2_000_000
+      const estimatedShardTokens = Math.ceil(totalBytes(relevantEntries) / 4)
+      const burnRate = snapshot.totalTokensUsed / GLOBAL_TOKEN_LIMIT
+      const isHighComplexity = estimatedShardTokens > 5_000
+      const isBudgetSafe = burnRate < 0.5
+      const useFusionMode = snapshot.enableMoA || (isHighComplexity && isBudgetSafe)
       const shardFilePaths = manifest.relevantPaths.length > 0 ? manifest.relevantPaths : relevantEntries.map(file => file.path)
       const sharedFiles = pickSharedFiles(shardFilePaths)
       const shardId = 'shard-1'
@@ -1041,22 +1053,94 @@ export class AntigravityTaskdRuntime {
       }))
 
       try {
-        // 🏁 点火！RacingExecutor 内部会 Promise.any-like 竞争
-        const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+        if (useFusionMode) {
+          // ═══════════════════════════════════════════════════════════════════
+          // 🧬 MoA FUSION MODE — 集思广益
+          //
+          // 步骤 1: fuse() → Promise.allSettled 等待所有候选完成（硬超时 120s）
+          // 步骤 2: 如果 ≥ 2 份草稿通过 validate()，送入终极合成器
+          // 步骤 3: 如果只有 1 份草稿，优雅降级（跳过融合，直接采纳）
+          // ═══════════════════════════════════════════════════════════════════
+          console.log(`[taskd] 🧬 MoA Fusion mode activated for shard ${shardId} (estimatedTokens=${estimatedShardTokens}, burnRate=${burnRate.toFixed(3)})`)
 
-        // 采纳胜者结果
-        const winnerOutcome = raceResult.result
-        shardOutcomes.push(winnerOutcome)
-        if (winnerOutcome.result) shardResults.push(winnerOutcome.result)
+          const FUSION_TIMEOUT_MS = 120_000  // 融合硬超时：2 分钟
+          const fusionResult = await cogCtx.racingExecutor.fuse<ShardOutcome>(candidates, signal, FUSION_TIMEOUT_MS)
 
-        this.emitJobEvent(jobId, 'shard.completed', {
-          shardId,
-          backend: raceResult.winner,
-          outcome: winnerOutcome.status,
-          racingElapsedMs: raceResult.elapsedMs,
-          abortedBackends: raceResult.abortedBackends,
-        })
-        console.log(`[taskd] 🏆 Racing winner: ${raceResult.winner} (${raceResult.elapsedMs}ms), aborted: [${raceResult.abortedBackends.join(', ')}]`)
+          if (fusionResult.canFuse) {
+            // ✅ 收集到 ≥ 2 份草稿 → 进入终极合成
+            const draftTexts = fusionResult.drafts.map((d, i) => {
+              const analysis = d.result.result
+              return analysis ? JSON.stringify(analysis) : `[Draft ${i + 1}: no analysis from ${d.backend}]`
+            })
+
+            // 🎯 选出推理能力最强的模型执行合成（routeMulti + verify 意图偏重 reasoning）
+            const synthesizerCandidates = cogCtx.routerPolicy.routeMulti('verify', 0, undefined, 1)
+            const synthesizerBackend = synthesizerCandidates[0]?.backend ?? 'codex'
+            const fusionPrompt = buildFusionPrompt(draftTexts[0]!, draftTexts[1]!, snapshot.goal)
+
+            console.log(`[taskd] 🧬 Sending fusion prompt to synthesizer: ${synthesizerBackend}`)
+
+            // 调用 synthesizer 模型执行融合
+            const synthOutcome = await this.runWorkerSafe(
+              snapshot, synthesizerBackend, 'analyzer',
+              fusionPrompt, allFilePaths,
+              'SHARD_ANALYZE', `${shardId}:fusion:${synthesizerBackend}`,
+            )
+
+            // 如果融合成功，采纳融合结果；否则降级采纳第一份草稿
+            if (synthOutcome.status !== 'failed' && synthOutcome.result) {
+              shardOutcomes.push(synthOutcome)
+              shardResults.push(synthOutcome.result)
+              this.emitJobEvent(jobId, 'shard.completed', {
+                shardId,
+                mode: 'fusion',
+                synthesizer: synthesizerBackend,
+                proposers: fusionResult.drafts.map(d => d.backend),
+                outcome: synthOutcome.status,
+                fusionElapsedMs: fusionResult.elapsedMs,
+              })
+              console.log(`[taskd] 🧬 Fusion complete: ${synthesizerBackend} synthesized ${fusionResult.drafts.length} drafts (${fusionResult.elapsedMs}ms)`)
+            } else {
+              // 🛡️ 降级回退 1：融合失败 → 采纳第一份草稿
+              console.warn(`[taskd] 🧬 Fusion synthesizer failed, falling back to first draft`)
+              const fallback = fusionResult.drafts[0]!
+              shardOutcomes.push(fallback.result)
+              if (fallback.result.result) shardResults.push(fallback.result.result)
+              this.emitJobEvent(jobId, 'shard.completed', {
+                shardId, backend: fallback.backend, outcome: fallback.result.status,
+                degraded: 'fusion_synthesizer_failed',
+              })
+            }
+          } else {
+            // 🛡️ 降级回退 2：只有 1 份草稿通过 → 跳过融合，直接采纳
+            console.log(`[taskd] 🧬 Only ${fusionResult.drafts.length} draft(s) passed validation, skipping fusion`)
+            const singleDraft = fusionResult.drafts[0]!
+            shardOutcomes.push(singleDraft.result)
+            if (singleDraft.result.result) shardResults.push(singleDraft.result.result)
+            this.emitJobEvent(jobId, 'shard.completed', {
+              shardId, backend: singleDraft.backend, outcome: singleDraft.result.status,
+              degraded: 'single_draft_only',
+            })
+          }
+        } else {
+          // ═══════════════════════════════════════════════════════════════════
+          // 🏎️ RACING MODE — 赛马模式（预算或复杂度不满足融合条件）
+          // ═══════════════════════════════════════════════════════════════════
+          const raceResult = await cogCtx.racingExecutor.race<ShardOutcome>(candidates, signal)
+
+          const winnerOutcome = raceResult.result
+          shardOutcomes.push(winnerOutcome)
+          if (winnerOutcome.result) shardResults.push(winnerOutcome.result)
+
+          this.emitJobEvent(jobId, 'shard.completed', {
+            shardId,
+            backend: raceResult.winner,
+            outcome: winnerOutcome.status,
+            racingElapsedMs: raceResult.elapsedMs,
+            abortedBackends: raceResult.abortedBackends,
+          })
+          console.log(`[taskd] 🏆 Racing winner: ${raceResult.winner} (${raceResult.elapsedMs}ms), aborted: [${raceResult.abortedBackends.join(', ')}]`)
+        }
       } catch (raceError) {
         // 所有候选全部失败 — AllCandidatesFailedError
         console.warn(`[taskd] All racing candidates failed for shard ${shardId}:`, raceError)

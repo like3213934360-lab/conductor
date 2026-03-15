@@ -89,6 +89,30 @@ export interface RacingExecutor {
     candidates: RacingCandidate<T>[],
     parentSignal: AbortSignal,
   ): Promise<RacingResult<T>>
+
+  /**
+   * 🧬 MoA 融合采集 — 等待所有候选完成（带硬超时），收集多份有效结果
+   *
+   * 与 race() 的 "赢者通吃" 不同，fuse() 使用 Promise.allSettled 语义：
+   * - 如果 2+ 个候选通过了 validate()，返回 { drafts: [A, B, ...] }
+   * - 如果只有 1 个通过，优雅降级为单结果（跳过下游融合阶段）
+   * - 如果全部失败，抛出 AllCandidatesFailedError
+   */
+  fuse<T>(
+    candidates: RacingCandidate<T>[],
+    parentSignal: AbortSignal,
+    timeoutMs: number,
+  ): Promise<FusionResult<T>>
+}
+
+/** MoA 融合采集结果 */
+export interface FusionResult<T> {
+  /** 所有通过 validate() 的有效草稿 */
+  drafts: Array<{ backend: WorkerBackend; result: T }>
+  /** 是否有足够的草稿可以做融合（≥ 2） */
+  canFuse: boolean
+  /** 总耗时 */
+  elapsedMs: number
 }
 
 // ── 实现 ─────────────────────────────────────────────────────────────────────
@@ -230,6 +254,108 @@ export class DefaultRacingExecutor implements RacingExecutor {
       })
     } catch {
       // 战报回调不能影响赛马流程
+    }
+  }
+
+  // ── 🧬 MoA 融合采集 ─────────────────────────────────────────────────────
+
+  async fuse<T>(
+    candidates: RacingCandidate<T>[],
+    parentSignal: AbortSignal,
+    timeoutMs: number,
+  ): Promise<FusionResult<T>> {
+    if (candidates.length === 0) {
+      throw new Error('FusionExecutor: at least one candidate required')
+    }
+
+    const startMs = Date.now()
+    const controllers = candidates.map(() => new AbortController())
+
+    // 📊 遥测收集
+    const telemetryData: RaceCandidateTelemetry[] = candidates.map(c => ({
+      backend: c.backend,
+      outcome: 'loser' as RaceCandidateOutcome,
+      latencyMs: 0,
+    }))
+
+    // 硬超时：到时间后 abort 所有尚未完成的候选
+    const timeoutCtrl = new AbortController()
+    const timeoutTimer = setTimeout(() => timeoutCtrl.abort(), timeoutMs)
+
+    const onParentAbort = () => {
+      for (const ctrl of controllers) ctrl.abort()
+      timeoutCtrl.abort()
+    }
+    parentSignal.addEventListener('abort', onParentAbort, { once: true })
+    const onTimeout = () => {
+      for (const ctrl of controllers) ctrl.abort()
+    }
+    timeoutCtrl.signal.addEventListener('abort', onTimeout, { once: true })
+
+    try {
+      // 🔁 Promise.allSettled — 等待所有候选完成（或被超时杀掉）
+      // 与 race() 的 "赢者通吃" 不同，这里不会因为一个完成就杀其他
+      const settledResults = await Promise.allSettled(
+        candidates.map(async (candidate, idx) => {
+          const candidateStartMs = Date.now()
+          try {
+            const value = await candidate.run(controllers[idx]!.signal)
+            telemetryData[idx]!.latencyMs = Date.now() - candidateStartMs
+
+            if (!candidate.validate(value)) {
+              telemetryData[idx]!.outcome = 'validate_failed'
+              throw new Error(`${candidate.backend} result failed validate()`)
+            }
+
+            // 在 fuse 模式，所有通过 validate() 的都算 "winner"
+            telemetryData[idx]!.outcome = 'winner'
+            return { backend: candidate.backend, result: value }
+          } catch (error) {
+            telemetryData[idx]!.latencyMs = Date.now() - candidateStartMs
+            if (telemetryData[idx]!.outcome !== 'validate_failed') {
+              telemetryData[idx]!.outcome = 'error'
+              telemetryData[idx]!.error = error instanceof Error ? error.message : String(error)
+            }
+            throw error
+          }
+        }),
+      )
+
+      // 📦 收集所有成功的草稿
+      const drafts: Array<{ backend: WorkerBackend; result: T }> = []
+      const errors: Error[] = []
+
+      for (const settled of settledResults) {
+        if (settled.status === 'fulfilled') {
+          drafts.push(settled.value)
+        } else {
+          errors.push(settled.reason instanceof Error ? settled.reason : new Error(String(settled.reason)))
+        }
+      }
+
+      // 🚨 全军覆没 — 抛出
+      if (drafts.length === 0) {
+        throw new AllCandidatesFailedError(errors, candidates.map(c => c.backend))
+      }
+
+      const fusionResult: FusionResult<T> = {
+        drafts,
+        // ≥ 2 份草稿才值得做融合，1 份则降级跳过融合阶段
+        canFuse: drafts.length >= 2,
+        elapsedMs: Date.now() - startMs,
+      }
+
+      // 📊 发射遥测
+      this.emitTelemetry(startMs, telemetryData, drafts[0]?.backend)
+
+      return fusionResult
+    } finally {
+      clearTimeout(timeoutTimer)
+      parentSignal.removeEventListener('abort', onParentAbort)
+      timeoutCtrl.signal.removeEventListener('abort', onTimeout)
+      for (const ctrl of controllers) {
+        if (!ctrl.signal.aborted) ctrl.abort()
+      }
     }
   }
 }

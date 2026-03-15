@@ -76,6 +76,48 @@ export function buildShardPrompt(goal: string, shardId: string, relevantFiles: s
   ].join('\n')
 }
 
+/**
+ * 🧬 MoA Fusion Prompt — 终极合成器
+ *
+ * 接收两个异构模型的分析草稿，让第三个推理模型进行交叉验证和融合。
+ * Together AI MoA 论文的核心思想：多个 Proposer 的输出 → 单个 Aggregator 融合。
+ */
+export function buildFusionPrompt(draftA: string, draftB: string, goal: string): string {
+  return [
+    'You are an architecture-level Synthesizer AI.',
+    'Two independent AI models have analyzed the same codebase task and produced separate drafts.',
+    'Your job is to CROSS-VALIDATE and FUSE them into a single, superior analysis.',
+    '',
+    `## Original Task Goal`,
+    goal,
+    '',
+    '## Draft A (from Model 1)',
+    '<draft_a>',
+    draftA,
+    '</draft_a>',
+    '',
+    '## Draft B (from Model 2)',
+    '<draft_b>',
+    draftB,
+    '</draft_b>',
+    '',
+    '## Your Instructions',
+    '1. Identify the STRENGTHS of each draft — where its analysis is deeper, more accurate, or covers areas the other missed.',
+    '2. Identify LOGICAL FLAWS or GAPS in each draft — incorrect assumptions, missing edge cases, or weak evidence.',
+    '3. Produce a FUSED analysis that combines the best of both, resolves conflicts, and fills coverage gaps.',
+    '4. If the two drafts CONTRADICT each other on a specific point, include both perspectives and note the disagreement.',
+    '',
+    'Return STRICT JSON only with this shape:',
+    '{"summary":"...","evidence":["..."],"symbols":["..."],"dependencies":["..."],"openQuestions":["..."],"confidence":0.0}',
+    '',
+    'Rules:',
+    '- The fused summary must be MORE comprehensive than either individual draft.',
+    '- Evidence must reference concrete files, functions, classes, commands, or behaviors.',
+    '- Confidence reflects YOUR assessment of the fused result (0-1). If drafts strongly agree, confidence should be high.',
+    '- No prose outside JSON.',
+  ].join('\n')
+}
+
 /** 单个 shard 摘要最大字节数（超出则截断 evidence/symbols） */
 const MAX_SHARD_SUMMARY_BYTES = 50_000  // ~50KB
 /** 全量 shard JSON 最大字节数（超出则退化为 summary-only 模式） */

@@ -146,6 +146,7 @@ export const TaskJobSnapshotSchema = z.object({
   recentEvents: z.array(TaskJobEventSchema).default([]),
   fileHints: z.array(z.string()).default([]),
   totalTokensUsed: z.number().int().nonnegative().default(0),
+  enableMoA: z.boolean().default(false),
   updatedAt: z.string(),
   createdAt: z.string(),
 })
@@ -157,6 +158,8 @@ export const CreateTaskJobRequestSchema = z.object({
   workspaceRoot: z.string().min(1),
   fileHints: z.array(z.string()).optional(),
   priority: z.enum(['low', 'normal', 'high']).optional(),
+  /** 🧬 MoA 融合模式：显式开启时，dual/sharded 阶段将收集多模型输出并合成最终结果 */
+  enableMoA: z.boolean().default(false),
 })
 export type CreateTaskJobRequest = z.infer<typeof CreateTaskJobRequestSchema>
 

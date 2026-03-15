@@ -20,7 +20,7 @@ export {
   ToolAccessViolationError,
 } from './router.js'
 
-export type { RacingCandidate, RacingResult, RacingExecutor, RaceTelemetry, RaceCandidateTelemetry, RaceCandidateOutcome } from './racing.js'
+export type { RacingCandidate, RacingResult, RacingExecutor, RaceTelemetry, RaceCandidateTelemetry, RaceCandidateOutcome, FusionResult } from './racing.js'
 export { DefaultRacingExecutor, AllCandidatesFailedError } from './racing.js'
 
 export type {
